@@ -9,6 +9,11 @@
 - Lightweight audit/auth tests passed before dependency-complete CI was available.
 - Source review confirmed Android verification uses a real HTTP `POST /v1/verify` and no longer generates fake `ACCEPTED_200` / `VERIFIED_100_PERCENT` provider responses.
 - Google documentation checked during assembly lists `gemini-3.6-flash` as a stable model and current agents-cli project guidance uses `google-adk[gcp]>=2.0.0,<3.0.0`.
+- GitHub repository visibility was verified as `public` after publication.
+
+## CI trigger
+
+This verification-record update intentionally creates a normal `push` event on `main` after `.github/workflows/backend-ci.yml` already exists in the branch. The resulting GitHub Actions run, if enabled for the repository, is the first dependency-complete CI evidence for the published source snapshot.
 
 ## Not yet claimed
 
