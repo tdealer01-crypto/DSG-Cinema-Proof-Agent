@@ -1,0 +1,49 @@
+name: Cinema agent verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Compile
+        run: python -m compileall -q app tests
+      - name: Test Z3, proof, auth, and cinema gate
+        env:
+          AUDIT_DB_PATH: ${{ runner.temp }}/dsg-audit.sqlite3
+        run: pytest --cov=app --cov-report=term-missing
+      - name: Import ADK, FastAPI, and MCP entrypoints
+        env:
+          AUDIT_DB_PATH: ${{ runner.temp }}/dsg-audit-import.sqlite3
+        run: |
+          python - <<'PY'
+          from app.agent import root_agent
+          from app.main import app, mcp
+          assert root_agent.name == "dsg_cinema_proof_agent"
+          print(app.title)
+          print(mcp.name)
+          PY
+      - name: Enforce Google-only AI provider boundary
+        working-directory: .
+        run: |
+          if grep -RInE --exclude-dir=.git --exclude=README.md '(from openai|import openai|from anthropic|import anthropic|LiteLlm|langchain|crewai)' backend; then
+            echo "Disallowed non-Google AI/agent dependency found"
+            exit 1
+          fi

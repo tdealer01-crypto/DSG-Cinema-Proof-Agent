@@ -1,0 +1,16 @@
+*.iml
+.gradle
+.kotlin
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.env
+debug.keystore
+*.jks
+backend/.venv/
+backend/.data/
+backend/**/__pycache__/
+backend/.pytest_cache/
+*.sqlite3

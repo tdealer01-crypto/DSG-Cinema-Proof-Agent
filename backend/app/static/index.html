@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DSG Cinema Proof Agent</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    body { margin:0; background:#0b1020; color:#eef2ff; }
+    main { max-width:900px; margin:auto; padding:32px 20px 64px; }
+    .card { background:#111831; border:1px solid #283250; border-radius:16px; padding:20px; margin:16px 0; }
+    textarea,input { width:100%; box-sizing:border-box; background:#090e1c; color:#fff; border:1px solid #384362; border-radius:10px; padding:12px; }
+    textarea { min-height:150px; resize:vertical; }
+    button { border:0; border-radius:10px; padding:12px 18px; font-weight:700; cursor:pointer; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#080d18; padding:16px; border-radius:10px; min-height:80px; }
+    .flow { font-family:ui-monospace, monospace; line-height:1.7; }
+    .muted { color:#aab4d0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>DSG Cinema Proof Agent</h1>
+  <p class="muted">Gemini + Google ADK → Grafana MCP evidence → deterministic Z3 recovery gate → proof/audit evidence.</p>
+  <div class="card flow">Studio incident → Grafana metrics/logs → Gemini investigation → Z3 policy gate → SAFE PLAN / BLOCK → proof hash + audit event</div>
+  <div class="card">
+    <label>DSG API key (only required when the deployment enables authentication)</label>
+    <input id="key" type="password" autocomplete="off" placeholder="Not stored by this page" />
+    <br/><br/>
+    <label>Production incident</label>
+    <textarea id="incident">Streaming playback errors increased after a release. Inspect real Grafana evidence, identify the likely cause, and propose the safest recovery plan. Do not restart anything unless the Z3 gate requirements and explicit human approval are satisfied.</textarea>
+    <br/><br/>
+    <button id="run">Investigate with Agent</button>
+  </div>
+  <div class="card">
+    <strong>Runtime result</strong>
+    <pre id="result">No run yet. This UI does not fabricate demo output.</pre>
+  </div>
+</main>
+<script>
+const run = document.getElementById('run');
+const result = document.getElementById('result');
+run.onclick = async () => {
+  run.disabled = true;
+  result.textContent = 'Calling live backend…';
+  const headers = {'Content-Type':'application/json'};
+  const key = document.getElementById('key').value.trim();
+  if (key) headers['X-API-Key'] = key;
+  try {
+    const response = await fetch('/v1/cinema/investigate', {
+      method:'POST', headers,
+      body: JSON.stringify({incident: document.getElementById('incident').value, user_id:'web-demo'})
+    });
+    const body = await response.json();
+    result.textContent = response.ok ? body.answer : JSON.stringify(body, null, 2);
+  } catch (error) {
+    result.textContent = 'Runtime request failed: ' + error;
+  } finally { run.disabled = false; }
+};
+</script>
+</body>
+</html>

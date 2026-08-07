@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dsg-cinema-proof-agent"
+version = "0.1.0"
+description = "Gemini + Google ADK cinema operations agent with Grafana MCP evidence and deterministic Z3 action gates."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "pydantic>=2.10,<3",
+  "z3-solver>=4.13,<5",
+  "mcp>=1.24,<2",
+  "google-adk[gcp]>=2.0,<3",
+  "google-genai>=1.0,<2",
+  "google-cloud-firestore>=2.21,<3",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.28,<1", "pytest>=8.3,<9", "pytest-cov>=6,<8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

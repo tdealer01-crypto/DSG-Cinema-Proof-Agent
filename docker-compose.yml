@@ -1,0 +1,29 @@
+services:
+  grafana-mcp:
+    image: grafana/mcp-grafana:latest
+    command: ["-t", "streamable-http", "--address", ":8000", "--disable-write", "--allowed-hosts", "grafana-mcp:8000,localhost:8000,127.0.0.1:8000"]
+    environment:
+      GRAFANA_URL: ${GRAFANA_URL:?Set GRAFANA_URL}
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: ${GRAFANA_SERVICE_ACCOUNT_TOKEN:?Set a least-privilege token}
+    expose: ["8000"]
+  dsg-cinema-agent:
+    build: { context: ./backend }
+    ports: ["8000:8000"]
+    depends_on: [grafana-mcp]
+    environment:
+      AUDIT_BACKEND: ${AUDIT_BACKEND:-sqlite}
+      AUDIT_DB_PATH: /data/dsg_audit.sqlite3
+      FIRESTORE_AUDIT_COLLECTION: ${FIRESTORE_AUDIT_COLLECTION:-dsg_cinema_audit}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      DSG_API_KEY: ${DSG_API_KEY:-}
+      PROOF_SIGNING_SECRET: ${PROOF_SIGNING_SECRET:-}
+      GOOGLE_GENAI_USE_VERTEXAI: ${GOOGLE_GENAI_USE_VERTEXAI:-true}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GRAFANA_MCP_URL: http://grafana-mcp:8000/mcp
+    volumes: ["dsg-audit-data:/data"]
+volumes:
+  dsg-audit-data:
