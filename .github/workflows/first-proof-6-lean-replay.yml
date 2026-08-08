@@ -1,0 +1,77 @@
+name: First Proof 6 deterministic Lean replay
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ARCHON_REPO: frenzymath/Archon-FirstProof-Results
+  ARCHON_COMMIT: a5694249bd8b94bd1dbab7cc7d477f0fdd322471
+  LEAN_TOOLCHAIN: leanprover/lean4:v4.28.0
+  THEOREM_FILE: FirstProof/FirstProof6/Problem6.lean
+
+jobs:
+  lean-proof-replay:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout DSG verification harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Checkout pinned First Proof formalization
+        run: |
+          git clone --no-checkout "https://github.com/${ARCHON_REPO}.git" formal-proof
+          cd formal-proof
+          git checkout --detach "${ARCHON_COMMIT}"
+          test "$(git rev-parse HEAD)" = "${ARCHON_COMMIT}"
+
+      - name: Verify deterministic source pins and proof hygiene
+        working-directory: formal-proof
+        run: |
+          test "$(tr -d '\r\n' < lean-toolchain)" = "${LEAN_TOOLCHAIN}"
+          grep -F 'theorem exists_eps_light_subset' "${THEOREM_FILE}"
+          grep -F 'ε / 256' "${THEOREM_FILE}"
+          if rg -n '\b(sorry|admit)\b' FirstProof/FirstProof6 --glob '*.lean'; then
+            echo 'Unresolved proof placeholder found in First Proof #6 formalization'
+            exit 1
+          fi
+          printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
+          sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
+
+      - name: Install pinned elan bootstrap
+        run: |
+          curl -fsSL 'https://raw.githubusercontent.com/leanprover/elan/464c9d28395000a2a0128e07081e4956d50eced2/elan-init.sh' -o /tmp/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm pinned Lean toolchain
+        working-directory: formal-proof
+        run: |
+          lean --version
+          lake --version
+          lean --version | grep -F 'version 4.28.0'
+
+      - name: Restore pinned Mathlib cache
+        working-directory: formal-proof
+        run: lake exe cache get
+
+      - name: Rebuild formal project from pinned source
+        working-directory: formal-proof
+        run: lake build
+
+      - name: Kernel recheck First Proof 6 theorem file
+        working-directory: formal-proof
+        run: lake env lean "${THEOREM_FILE}"
+
+      - name: Emit deterministic replay receipt
+        working-directory: formal-proof
+        run: |
+          echo 'REPRODUCIBLE_FORMAL_PROOF=PASS'
+          echo "ARCHON_COMMIT=${ARCHON_COMMIT}"
+          echo "LEAN_TOOLCHAIN=${LEAN_TOOLCHAIN}"
+          echo "THEOREM=Problem6.exists_eps_light_subset"
+          echo 'BOUND=c=1/256'
+          sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
