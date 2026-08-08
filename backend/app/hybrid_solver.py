@@ -16,7 +16,7 @@ UINT32_SCALE = 4294967296.0
 
 
 class DeterministicRNG:
-    """Mulberry32-compatible deterministic PRNG ported from the Android DSG solver."""
+    """Mulberry32-compatible deterministic PRNG ported from the Android solver."""
 
     def __init__(self, seed: int):
         self.state = seed & MASK32
@@ -199,7 +199,7 @@ def _feasibility_penalty(
 
 
 def qubo_to_ising(q: list[list[float]]) -> tuple[list[list[float]], list[float], float]:
-    """Map x∈{0,1} QUBO coefficients to s∈{-1,+1} Ising J/h/offset coefficients."""
+    """Map x∈{0,1} QUBO to E(s)=offset+Σhᵢsᵢ+Σᵢ<ⱼJᵢⱼsᵢsⱼ with s=2x-1."""
     n = len(q)
     j_matrix = [[0.0 for _ in range(n)] for _ in range(n)]
     h_vector = [0.0 for _ in range(n)]
@@ -218,7 +218,8 @@ def qubo_to_ising(q: list[list[float]]) -> tuple[list[list[float]], list[float],
                 h_vector[i] += (q[i][j] + q[j][i]) / 4.0
 
     for i in range(n):
-        offset += q[i][i] / 4.0
+        # Diagonal QUBO term q_ii*x_i contributes q_ii/2 to the constant offset.
+        offset += q[i][i] / 2.0
         for j in range(i + 1, n):
             offset += (q[i][j] + q[j][i]) / 4.0
 
