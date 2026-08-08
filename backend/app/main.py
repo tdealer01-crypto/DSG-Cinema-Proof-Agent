@@ -23,6 +23,7 @@ from .math_epsilon_light import (
     run_first_proof_6_benchmark,
 )
 from .math_epsilon_light_sweep import EpsilonLightSweepResult, run_first_proof_6_sweep
+from .math_epsilon_light_theorem import FirstProof6ClosureResult, close_first_proof_6
 from .math_ramsey import RamseyR33Proof, prove_ramsey_r33
 from .models import VerificationRequest, VerificationResponse
 from .service import VerificationService
@@ -43,13 +44,19 @@ mcp = FastMCP(
     "DSG QUBO Ising Z3 Verification",
     instructions=(
         "Search policy configurations with deterministic QUBO/Ising-equivalent annealing, "
-        "run exact finite math benchmarks and exhaustive finite sweeps, verify fixed claims "
+        "run exact finite math benchmarks and theorem-closure certificates, verify fixed claims "
         "with server-side Z3, and return tamper-evident proof/audit evidence."
     ),
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
 )
+
+
+@mcp.tool()
+def close_first_proof_6_mcp() -> dict[str, Any]:
+    """Return the provenance-linked closure certificate for First Proof problem #6."""
+    return close_first_proof_6(audit_store).model_dump(mode="json")
 
 
 @mcp.tool()
@@ -116,6 +123,7 @@ def capabilities_resource() -> str:
             "service": "DSG QUBO Ising Z3 Verification",
             "transport": "MCP Streamable HTTP",
             "tools": [
+                "close_first_proof_6_mcp",
                 "run_first_proof_6_sweep_mcp",
                 "run_first_proof_6_benchmark_mcp",
                 "verify_first_proof_6_instance_mcp",
@@ -126,6 +134,7 @@ def capabilities_resource() -> str:
             ],
             "math_benchmarks": [
                 "R(3,3)=6",
+                "First Proof #6 theorem closure (reference c=1/42)",
                 "First Proof #6 finite epsilon-light instance",
                 "First Proof #6 finite family sweep",
             ],
@@ -147,11 +156,11 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DSG Cinema Proof Agent",
-    version="0.5.0",
+    version="0.6.0",
     description=(
         "Gemini/Google ADK cinema incident agent with Grafana MCP evidence plus "
-        "deterministic QUBO/Ising search, exact finite math benchmarks/sweeps, and authoritative "
-        "server-side Z3 verification."
+        "deterministic QUBO/Ising search, exact finite math benchmarks, theorem-closure "
+        "certificates, and authoritative server-side Z3 verification."
     ),
     lifespan=lifespan,
 )
@@ -190,6 +199,7 @@ def health() -> dict[str, Any]:
         "mcp_endpoint": "/mcp",
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
+        "first_proof_6_closure_endpoint": "/v1/math/first-proof-6/closure",
         "first_proof_6_benchmark_endpoint": "/v1/math/first-proof-6/benchmark",
         "first_proof_6_instance_endpoint": "/v1/math/first-proof-6/verify-instance",
         "first_proof_6_sweep_endpoint": "/v1/math/first-proof-6/sweep",
@@ -214,13 +224,17 @@ def capabilities() -> dict[str, Any]:
         "exact_ramsey_ising_model": True,
         "exact_rational_principal_minor_checker": True,
         "exact_finite_subset_enumeration": True,
+        "first_proof_6_reference_theorem_closed": True,
+        "first_proof_6_reference_constant": "1/42",
         "math_benchmarks": [
             "R(3,3)=6",
+            "First Proof #6 theorem closure (reference c=1/42)",
             "First Proof #6 finite epsilon-light instance",
             "First Proof #6 finite family sweep",
         ],
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
+        "first_proof_6_closure_endpoint": "/v1/math/first-proof-6/closure",
         "first_proof_6_benchmark_endpoint": "/v1/math/first-proof-6/benchmark",
         "first_proof_6_instance_endpoint": "/v1/math/first-proof-6/verify-instance",
         "first_proof_6_sweep_endpoint": "/v1/math/first-proof-6/sweep",
@@ -230,11 +244,21 @@ def capabilities() -> dict[str, Any]:
         "mcp_transport": "streamable-http",
         "mcp_endpoint": "/mcp",
         "runtime_truth_boundary": (
-            "Annealing output is a candidate only. First Proof #6 supports exact finite-instance and finite-grid "
-            "verification/counterexample search only; it does not claim the universal c=1/256 theorem. External "
-            "Gemini/Grafana calls are only claimed after successful runtime responses."
+            "First Proof #6 is closed here as a provenance-linked reference theorem using the official c=1/42 proof. "
+            "DSG machine-checks the encoded scalar arithmetic and retains exact finite-instance evidence, but does not "
+            "claim independent discovery or a local re-formalization of the full matrix-analysis proof. Annealing output "
+            "remains candidate-only for search tasks. External Gemini/Grafana calls are only claimed after successful runtime responses."
         ),
     }
+
+
+@app.post(
+    "/v1/math/first-proof-6/closure",
+    response_model=FirstProof6ClosureResult,
+    dependencies=[Depends(require_api_key)],
+)
+def first_proof_6_closure() -> FirstProof6ClosureResult:
+    return close_first_proof_6(audit_store)
 
 
 @app.post(
