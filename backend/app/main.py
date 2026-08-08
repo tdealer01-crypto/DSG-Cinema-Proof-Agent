@@ -274,11 +274,12 @@ def capabilities() -> dict[str, Any]:
         "mcp_endpoint": "/mcp",
         "runtime_truth_boundary": (
             "First Proof #2 is represented as a provenance-linked human reference closure plus a DSG machine audit of "
-            "its quantifier/scalar reconstruction spine; DSG does not claim an independent formalization of the deep "
-            "p-adic representation-theoretic lemmas. First Proof #6 is closed here as a provenance-linked reference "
-            "theorem using the official c=1/42 proof, while its published c=1/256 Lean formalization is separately "
-            "replayed deterministically in CI. Annealing output remains candidate-only for search tasks. External "
-            "Gemini/Grafana calls are only claimed after successful runtime responses."
+            "its quantifier/scalar reconstruction spine; DSG does not claim independent discovery and does not claim an "
+            "independent formalization of the deep p-adic representation-theoretic lemmas. First Proof #6 is closed here "
+            "as a provenance-linked reference theorem using the official c=1/42 proof; DSG does not claim independent "
+            "discovery, while its published c=1/256 Lean formalization is separately replayed deterministically in CI. "
+            "Annealing output remains candidate-only for search tasks. External Gemini/Grafana calls are only claimed "
+            "after successful runtime responses."
         ),
     }
 
