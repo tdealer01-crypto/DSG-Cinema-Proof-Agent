@@ -1,0 +1,83 @@
+name: First Proof 2 scalar Lean proof
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_DIR: formal/first-proof-2-scalar
+  LEAN_TOOLCHAIN: leanprover/lean4:v4.28.0
+  THEOREM_FILE: FirstProof2Scalar/Problem2Scalar.lean
+
+jobs:
+  scalar-lean-proof:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout DSG formalization
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify deterministic source pins
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < lean-toolchain)" = "${LEAN_TOOLCHAIN}"
+          grep -F 'rev = "v4.28.0"' lakefile.toml
+          grep -F 'theorem proposition6_scalar_spine' "${THEOREM_FILE}"
+          grep -F 'theorem exponent_cancellation' "${THEOREM_FILE}"
+          grep -F 'theorem nonzero_scalar_factor' "${THEOREM_FILE}"
+          sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
+
+      - name: Install pinned elan bootstrap
+        run: |
+          set -euo pipefail
+          curl -fsSL 'https://raw.githubusercontent.com/leanprover/elan/464c9d28395000a2a0128e07081e4956d50eced2/elan-init.sh' -o /tmp/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm pinned Lean toolchain
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          lean --version
+          lake --version
+          lean --version | grep -F 'version 4.28.0'
+
+      - name: Restore pinned Mathlib cache
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: lake exe cache get
+
+      - name: Build First Proof 2 scalar project
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: lake build
+
+      - name: Kernel recheck scalar theorem file
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: lake env lean "${THEOREM_FILE}"
+
+      - name: Audit theorem axioms for sorryAx
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          cat > FirstProof2ScalarAxiomAudit.lean <<'EOF'
+          import FirstProof2Scalar.Problem2Scalar
+          #print axioms Problem2Scalar.proposition6_scalar_spine
+          EOF
+          lake env lean FirstProof2ScalarAxiomAudit.lean 2>&1 | tee /tmp/first-proof-2-scalar-axioms.txt
+          if grep -F 'sorryAx' /tmp/first-proof-2-scalar-axioms.txt; then
+            echo 'The theorem transitively depends on Lean sorryAx'
+            exit 1
+          fi
+          echo 'NO_SORRY_AXIOM=PASS'
+
+      - name: Emit deterministic scalar proof receipt
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo 'FIRST_PROOF_2_SCALAR_LEAN=PASS'
+          echo 'NO_SORRY_AXIOM=PASS'
+          echo "LEAN_TOOLCHAIN=${LEAN_TOOLCHAIN}"
+          echo 'THEOREM=Problem2Scalar.proposition6_scalar_spine'
+          echo 'SCOPE=scalar exponent/basepoint/nonzero-factor spine only'
+          echo 'CLAIM_BOUNDARY=deep p-adic representation-theoretic lemmas remain external dependencies'
+          sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
