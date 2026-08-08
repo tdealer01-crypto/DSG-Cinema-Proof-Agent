@@ -59,7 +59,9 @@ def test_formal_evidence_is_partial_fail_closed_and_auditable(tmp_path) -> None:
     assert scalar.sorry_axiom == "ABSENT"
     assert logical.sorry_axiom == "ABSENT"
     assert fourier.sorry_axiom == "ABSENT"
-    assert "finite ZMod" in fourier.scope
+    assert "ZMod N" in fourier.scope
+    assert "kernel-checked sublemma" in fourier.scope
+    assert "full Fourier-to-K1(q)" in fourier.scope
     assert "partial formalization" in result.truth_boundary
     assert "does not claim a full formal proof" in result.truth_boundary
 
