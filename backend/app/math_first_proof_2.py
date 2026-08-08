@@ -6,6 +6,9 @@ from pydantic import BaseModel
 
 from .math_epsilon_light import AuditStoreProtocol, _sha256
 from .math_first_proof_2_formal import (
+    FOURIER_SOURCE,
+    FOURIER_SOURCE_SHA256,
+    FOURIER_THEOREM,
     LOGICAL_SOURCE,
     LOGICAL_SOURCE_SHA256,
     LOGICAL_THEOREM,
@@ -61,7 +64,7 @@ def reference_proof_contract() -> tuple[list[ReferenceProofStep], list[FailureMo
     """Record the dependency structure of the published proof of First Proof #2.
 
     This deliberately does not present Python, Z3, or finite computation as a proof of
-    p-adic representation theory.  It captures the quantifier/dependency contract that
+    p-adic representation theory. It captures the quantifier/dependency contract that
     invalidated several LLM attempts and the published route that avoids that failure.
     """
 
@@ -101,7 +104,7 @@ def reference_proof_contract() -> tuple[list[ReferenceProofStep], list[FailureMo
         ReferenceProofStep(
             name="newvector_nonvanishing",
             statement=(
-                "Take V to be the normalized K1(q)-invariant newvector of pi.  After applying "
+                "Take V to be the normalized K1(q)-invariant newvector of pi. After applying "
                 "the transformed integral identity, the Rankin-Selberg integral reduces to a "
                 "nonzero constant times vol(K1(q)), hence is finite and nonzero for every s."
             ),
@@ -145,27 +148,28 @@ def reference_proof_contract() -> tuple[list[ReferenceProofStep], list[FailureMo
 def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureResult:
     steps, failures = reference_proof_contract()
 
-    # Quantifier/dependency guard: the universal W0 step must not depend on pi, q, or Q.
     universal_step = next(item for item in steps if item.name == "fixed_whittaker_vector")
     forbidden = {"pi", "q", "Q"}
     if forbidden.intersection(universal_step.depends_on):
         raise RuntimeError("First Proof #2 contract violation: universal W depends on pi/conductor")
 
-    formal_theorems = [SCALAR_THEOREM, LOGICAL_THEOREM]
+    formal_theorems = [SCALAR_THEOREM, LOGICAL_THEOREM, FOURIER_THEOREM]
     formal_source_hashes = {
         SCALAR_SOURCE: SCALAR_SOURCE_SHA256,
         LOGICAL_SOURCE: LOGICAL_SOURCE_SHA256,
+        FOURIER_SOURCE: FOURIER_SOURCE_SHA256,
     }
     formal_ci_receipts = [
         "FIRST_PROOF_2_SCALAR_LEAN=PASS",
         "FIRST_PROOF_2_LOGICAL_SKELETON=PASS",
+        "FIRST_PROOF_2_FINITE_FOURIER=PASS",
         "NO_SORRY_AXIOM=PASS",
     ]
     remaining_external_dependencies = [
         "Kirillov-model extension",
         "Godement-Jacquet local functional equation",
         "Mellin support transform",
-        "Fourier-to-K1(q) identity",
+        "Fourier-to-K1(q) full p-adic identity (finite ZMod orthogonality sublemma kernel-checked)",
         "normalized newvector theory",
         "local epsilon-factor nonvanishing",
     ]
@@ -211,16 +215,17 @@ def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureRe
         full_problem_formalized=False,
         evidence_level=(
             "Published human reference proof by Paul Nelson + DSG dependency/provenance guards + "
-            "Z3 scalar reconstruction audit + in-repository Lean kernel checks for the scalar spine "
-            "and quantifier/dependency logical skeleton."
+            "Z3 scalar reconstruction audit + in-repository Lean kernel checks for the scalar spine, "
+            "quantifier/dependency logical skeleton, and finite conductor-quotient Fourier orthogonality."
         ),
         proof_hash=proof_hash,
         audit_event_hash=audit.event_hash,
         truth_boundary=(
             "Problem #2 is mathematically answered YES by the cited published human solution. DSG has "
-            "kernel-checked a partial Lean formalization of the scalar obligations and the logical "
-            "quantifier/dependency skeleton, but the six deep p-adic representation-theoretic results "
-            "remain external theorem dependencies. full_problem_formalized=false. DSG does not claim "
-            "a full independent formal proof or independent discovery."
+            "kernel-checked a partial Lean formalization of the scalar obligations, logical quantifier "
+            "skeleton, and a finite ZMod Fourier orthogonality sublemma. The full p-adic "
+            "Fourier-to-K1(q) identity and the other deep representation-theoretic results remain "
+            "external theorem dependencies. full_problem_formalized=false. DSG does not claim a full "
+            "independent formal proof or independent discovery."
         ),
     )

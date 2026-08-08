@@ -11,16 +11,20 @@ LEAN_TOOLCHAIN = "leanprover/lean4:v4.28.0"
 MATHLIB_REV = "v4.28.0"
 SCALAR_THEOREM = "Problem2Scalar.proposition6_scalar_spine"
 LOGICAL_THEOREM = "Problem2Logical.reference_dependency_logical_closure"
+FOURIER_THEOREM = "Problem2FiniteFourier.dft_const_one_support"
 SCALAR_SOURCE = "formal/first-proof-2-scalar/FirstProof2Scalar/Problem2Scalar.lean"
 LOGICAL_SOURCE = "formal/first-proof-2-scalar/FirstProof2Scalar/Problem2Logical.lean"
+FOURIER_SOURCE = "formal/first-proof-2-scalar/FirstProof2Scalar/Problem2FiniteFourier.lean"
 WORKFLOW = ".github/workflows/first-proof-2-scalar-lean.yml"
 
 SCALAR_SOURCE_SHA256 = "8e4920a9e95208b47e848510519511424f7db462899b251fefca2f870b8c688a"
 LOGICAL_SOURCE_SHA256 = "41e410603fc9ae4ae6f4184bde061e3f441525a089e3336be0f3ce4dafe09d68"
+FOURIER_SOURCE_SHA256 = "c3ba43b3b735125581e9c6d926c15025985976c9750b1857d979a3ffb27cadd6"
 LEAN_TOOLCHAIN_SHA256 = "db7bb24b756d745bbde83fe92718b51bd3625dae3701ba0f598d0eedcd3f3028"
 LAKEFILE_SHA256 = "837ebb2e2d31e8b08e44ff3a9944e622e6158c4936bdca1d082896106bced3c1"
 SCALAR_MERGE_COMMIT = "c59c72120b56da2d223bf7cee8f3bb91d48fd88e"
 LOGICAL_MERGE_COMMIT = "6ceb5b3e38b0ca75eb000f8c59514653a01d6eb9"
+FOURIER_MERGE_COMMIT = "8dde5d239fe8ef100a73678880c4a2ad0533e81d"
 
 
 class LeanTheoremEvidence(BaseModel):
@@ -79,28 +83,42 @@ def first_proof_2_formal_evidence(audit_store: AuditStoreProtocol) -> FirstProof
                 "the universally quantified smaller representation pi."
             ),
         ),
+        LeanTheoremEvidence(
+            theorem=FOURIER_THEOREM,
+            source=FOURIER_SOURCE,
+            source_sha256=FOURIER_SOURCE_SHA256,
+            reported_axioms=["propext", "Classical.choice", "Quot.sound"],
+            scope=(
+                "Finite conductor-quotient Fourier orthogonality on ZMod N: the DFT of the "
+                "constant-one function is supported only at zero frequency, with value N at zero. "
+                "This is a kernel-checked sublemma toward the full Fourier-to-K1(q) identity."
+            ),
+        ),
     ]
     dependencies = [
         "Kirillov-model extension",
         "Godement-Jacquet local functional equation",
         "Mellin support transform",
-        "Fourier-to-K1(q) identity",
+        "Fourier-to-K1(q) full p-adic identity (finite ZMod orthogonality sublemma kernel-checked)",
         "normalized newvector theory",
         "local epsilon-factor nonvanishing",
     ]
     source_hashes = {
         SCALAR_SOURCE: SCALAR_SOURCE_SHA256,
         LOGICAL_SOURCE: LOGICAL_SOURCE_SHA256,
+        FOURIER_SOURCE: FOURIER_SOURCE_SHA256,
         "formal/first-proof-2-scalar/lean-toolchain": LEAN_TOOLCHAIN_SHA256,
         "formal/first-proof-2-scalar/lakefile.toml": LAKEFILE_SHA256,
     }
     merge_provenance = {
         "scalar_formalization": SCALAR_MERGE_COMMIT,
         "logical_skeleton": LOGICAL_MERGE_COMMIT,
+        "finite_fourier_sublemma": FOURIER_MERGE_COMMIT,
     }
     receipts = [
         "FIRST_PROOF_2_SCALAR_LEAN=PASS",
         "FIRST_PROOF_2_LOGICAL_SKELETON=PASS",
+        "FIRST_PROOF_2_FINITE_FOURIER=PASS",
         "NO_SORRY_AXIOM=PASS",
     ]
     payload = {
@@ -109,7 +127,7 @@ def first_proof_2_formal_evidence(audit_store: AuditStoreProtocol) -> FirstProof
         "lean_toolchain": LEAN_TOOLCHAIN,
         "mathlib_revision": MATHLIB_REV,
         "workflow": WORKFLOW,
-        "build_jobs": 8029,
+        "build_jobs": 8030,
         "theorem_evidence": [item.model_dump(mode="json") for item in theorem_evidence],
         "ci_receipts": receipts,
         "source_hashes": source_hashes,
@@ -124,7 +142,7 @@ def first_proof_2_formal_evidence(audit_store: AuditStoreProtocol) -> FirstProof
         lean_toolchain=LEAN_TOOLCHAIN,
         mathlib_revision=MATHLIB_REV,
         workflow=WORKFLOW,
-        build_jobs=8029,
+        build_jobs=8030,
         theorem_evidence=theorem_evidence,
         ci_receipts=receipts,
         source_hashes=source_hashes,
@@ -133,10 +151,11 @@ def first_proof_2_formal_evidence(audit_store: AuditStoreProtocol) -> FirstProof
         proof_hash=proof_hash,
         audit_event_hash=audit.event_hash,
         truth_boundary=(
-            "DSG has kernel-checked an in-repository Lean formalization of the scalar obligations "
-            "and the quantifier/dependency deduction skeleton for First Proof #2. This is a partial "
-            "formalization only. The six deep p-adic representation-theoretic results remain explicit "
-            "external theorem dependencies; DSG does not claim a full formal proof of Problem #2 or "
-            "independent discovery of its mathematical solution."
+            "DSG has kernel-checked in-repository Lean formalizations of the scalar obligations, "
+            "the quantifier/dependency deduction skeleton, and a finite ZMod conductor-quotient "
+            "Fourier orthogonality sublemma for First Proof #2. This remains a partial formalization. "
+            "The full Fourier-to-K1(q) p-adic identity and the other deep representation-theoretic "
+            "results remain explicit external theorem dependencies; DSG does not claim a full formal "
+            "proof of Problem #2 or independent discovery of its mathematical solution."
         ),
     )
