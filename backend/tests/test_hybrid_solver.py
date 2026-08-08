@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from app.audit import AuditStore
-from app.hybrid_solver import HybridSolveRequest, solve_and_verify, solve_annealing
+from app.hybrid_solver import (
+    HybridSolveRequest,
+    compute_qubo_energy,
+    qubo_to_ising,
+    solve_and_verify,
+    solve_annealing,
+)
 from app.service import VerificationService
 
 
@@ -56,6 +62,21 @@ def sat_request() -> HybridSolveRequest:
             },
         }
     )
+
+
+def test_qubo_to_ising_preserves_energy_for_every_binary_state() -> None:
+    q = [[-2.0, 3.0], [0.0, -5.0]]
+    j_matrix, h_vector, offset = qubo_to_ising(q)
+
+    for x0 in (0, 1):
+        for x1 in (0, 1):
+            configuration = [x0, x1]
+            spins = [2 * value - 1 for value in configuration]
+            qubo_energy = compute_qubo_energy(configuration, q)
+            ising_energy = offset
+            ising_energy += sum(h_vector[i] * spins[i] for i in range(2))
+            ising_energy += j_matrix[0][1] * spins[0] * spins[1]
+            assert abs(qubo_energy - ising_energy) < 1e-9
 
 
 def test_annealing_is_replay_deterministic() -> None:
