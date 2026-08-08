@@ -1,0 +1,47 @@
+{
+  "preset_name": "HYBRID_TEST",
+  "rules": [
+    {
+      "id": 10,
+      "name": "A",
+      "cost": 10,
+      "risk_reduction": 5,
+      "business_value": 10,
+      "category": "TEST"
+    },
+    {
+      "id": 20,
+      "name": "B",
+      "cost": 10,
+      "risk_reduction": 10,
+      "business_value": 20,
+      "category": "TEST"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "implication",
+      "if_rule": 10,
+      "then_rule": 20,
+      "description": "A requires B"
+    },
+    {
+      "type": "min_active",
+      "minimum": 1,
+      "description": "At least one active"
+    },
+    {
+      "type": "max_cost",
+      "budget": 20,
+      "description": "Budget cap"
+    }
+  ],
+  "config": {
+    "seed": 42,
+    "max_iterations": 5000,
+    "initial_temperature": 100.0,
+    "min_temperature": 0.001,
+    "cooling_rate": 0.995,
+    "penalty_weight": 1000.0
+  }
+}
