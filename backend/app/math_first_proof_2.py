@@ -5,6 +5,14 @@ from typing import Literal
 from pydantic import BaseModel
 
 from .math_epsilon_light import AuditStoreProtocol, _sha256
+from .math_first_proof_2_formal import (
+    LOGICAL_SOURCE,
+    LOGICAL_SOURCE_SHA256,
+    LOGICAL_THEOREM,
+    SCALAR_SOURCE,
+    SCALAR_SOURCE_SHA256,
+    SCALAR_THEOREM,
+)
 
 
 OFFICIAL_SOLUTIONS_URL = "https://1stproof.org/documents/FirstProofSolutionsComments.pdf"
@@ -37,6 +45,12 @@ class FirstProof2ClosureResult(BaseModel):
     openai_status: str
     proof_steps: list[ReferenceProofStep]
     rejected_failure_modes: list[FailureMode]
+    formalization_status: Literal["PARTIAL_FORMALIZATION_KERNEL_CHECKED"]
+    formal_theorems: list[str]
+    formal_source_hashes: dict[str, str]
+    formal_ci_receipts: list[str]
+    remaining_external_dependencies: list[str]
+    full_problem_formalized: Literal[False] = False
     evidence_level: str
     proof_hash: str
     audit_event_hash: str
@@ -137,6 +151,25 @@ def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureRe
     if forbidden.intersection(universal_step.depends_on):
         raise RuntimeError("First Proof #2 contract violation: universal W depends on pi/conductor")
 
+    formal_theorems = [SCALAR_THEOREM, LOGICAL_THEOREM]
+    formal_source_hashes = {
+        SCALAR_SOURCE: SCALAR_SOURCE_SHA256,
+        LOGICAL_SOURCE: LOGICAL_SOURCE_SHA256,
+    }
+    formal_ci_receipts = [
+        "FIRST_PROOF_2_SCALAR_LEAN=PASS",
+        "FIRST_PROOF_2_LOGICAL_SKELETON=PASS",
+        "NO_SORRY_AXIOM=PASS",
+    ]
+    remaining_external_dependencies = [
+        "Kirillov-model extension",
+        "Godement-Jacquet local functional equation",
+        "Mellin support transform",
+        "Fourier-to-K1(q) identity",
+        "normalized newvector theory",
+        "local epsilon-factor nonvanishing",
+    ]
+
     proof_payload = {
         "answer": "YES",
         "scope": "generic irreducible admissible Pi of GL_{n+1}(F) and every generic pi of GL_n(F)",
@@ -144,6 +177,12 @@ def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureRe
         "openai_status": OPENAI_STATUS_URL,
         "proof_steps": [item.model_dump(mode="json") for item in steps],
         "rejected_failure_modes": [item.model_dump(mode="json") for item in failures],
+        "formalization_status": "PARTIAL_FORMALIZATION_KERNEL_CHECKED",
+        "formal_theorems": formal_theorems,
+        "formal_source_hashes": formal_source_hashes,
+        "formal_ci_receipts": formal_ci_receipts,
+        "remaining_external_dependencies": remaining_external_dependencies,
+        "full_problem_formalized": False,
     }
     proof_hash = _sha256(proof_payload)
     audit = audit_store.append(payload={"first_proof_2_closure": proof_payload}, proof_hash=proof_hash)
@@ -164,16 +203,24 @@ def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureRe
         openai_status=OPENAI_STATUS_URL,
         proof_steps=steps,
         rejected_failure_modes=failures,
+        formalization_status="PARTIAL_FORMALIZATION_KERNEL_CHECKED",
+        formal_theorems=formal_theorems,
+        formal_source_hashes=formal_source_hashes,
+        formal_ci_receipts=formal_ci_receipts,
+        remaining_external_dependencies=remaining_external_dependencies,
+        full_problem_formalized=False,
         evidence_level=(
-            "Published human reference proof by Paul Nelson + DSG dependency/provenance contract and "
-            "regression guards for the failure modes documented by the First Proof commentary."
+            "Published human reference proof by Paul Nelson + DSG dependency/provenance guards + "
+            "Z3 scalar reconstruction audit + in-repository Lean kernel checks for the scalar spine "
+            "and quantifier/dependency logical skeleton."
         ),
         proof_hash=proof_hash,
         audit_event_hash=audit.event_hash,
         truth_boundary=(
-            "Problem #2 is mathematically answered YES by the cited published human solution. "
-            "This DSG artifact does not independently prove p-adic representation theory and does not "
-            "claim independent discovery. It records the valid proof dependency chain and rejects the "
-            "specific quantifier/support mistakes that made the prior LLM/OpenAI route incorrect."
+            "Problem #2 is mathematically answered YES by the cited published human solution. DSG has "
+            "kernel-checked a partial Lean formalization of the scalar obligations and the logical "
+            "quantifier/dependency skeleton, but the six deep p-adic representation-theoretic results "
+            "remain external theorem dependencies. full_problem_formalized=false. DSG does not claim "
+            "a full independent formal proof or independent discovery."
         ),
     )
