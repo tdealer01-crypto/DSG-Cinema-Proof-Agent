@@ -11,7 +11,8 @@ permissions:
 env:
   PROJECT_DIR: formal/first-proof-2-scalar
   LEAN_TOOLCHAIN: leanprover/lean4:v4.28.0
-  THEOREM_FILE: FirstProof2Scalar/Problem2Scalar.lean
+  SCALAR_FILE: FirstProof2Scalar/Problem2Scalar.lean
+  LOGICAL_FILE: FirstProof2Scalar/Problem2Logical.lean
 
 jobs:
   scalar-lean-proof:
@@ -26,10 +27,11 @@ jobs:
           set -euo pipefail
           test "$(tr -d '\r\n' < lean-toolchain)" = "${LEAN_TOOLCHAIN}"
           grep -F 'rev = "v4.28.0"' lakefile.toml
-          grep -F 'theorem proposition6_scalar_spine' "${THEOREM_FILE}"
-          grep -F 'theorem exponent_cancellation' "${THEOREM_FILE}"
-          grep -F 'theorem nonzero_scalar_factor' "${THEOREM_FILE}"
-          sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
+          grep -F 'theorem proposition6_scalar_spine' "${SCALAR_FILE}"
+          grep -F 'theorem reference_dependency_logical_closure' "${LOGICAL_FILE}"
+          grep -F 'def WeakerPiDependentShape' "${LOGICAL_FILE}"
+          grep -F 'def RequiredUniversalShape' "${LOGICAL_FILE}"
+          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" lean-toolchain lakefile.toml
 
       - name: Install pinned elan bootstrap
         run: |
@@ -49,35 +51,41 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: lake exe cache get
 
-      - name: Build First Proof 2 scalar project
+      - name: Build First Proof 2 formal project
         working-directory: ${{ env.PROJECT_DIR }}
         run: lake build
 
-      - name: Kernel recheck scalar theorem file
+      - name: Kernel recheck theorem files
         working-directory: ${{ env.PROJECT_DIR }}
-        run: lake env lean "${THEOREM_FILE}"
+        run: |
+          lake env lean "${SCALAR_FILE}"
+          lake env lean "${LOGICAL_FILE}"
 
       - name: Audit theorem axioms for sorryAx
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          cat > FirstProof2ScalarAxiomAudit.lean <<'EOF'
+          cat > FirstProof2AxiomAudit.lean <<'EOF'
           import FirstProof2Scalar.Problem2Scalar
+          import FirstProof2Scalar.Problem2Logical
           #print axioms Problem2Scalar.proposition6_scalar_spine
+          #print axioms Problem2Logical.reference_dependency_logical_closure
           EOF
-          lake env lean FirstProof2ScalarAxiomAudit.lean 2>&1 | tee /tmp/first-proof-2-scalar-axioms.txt
-          if grep -F 'sorryAx' /tmp/first-proof-2-scalar-axioms.txt; then
-            echo 'The theorem transitively depends on Lean sorryAx'
+          lake env lean FirstProof2AxiomAudit.lean 2>&1 | tee /tmp/first-proof-2-axioms.txt
+          if grep -F 'sorryAx' /tmp/first-proof-2-axioms.txt; then
+            echo 'A theorem transitively depends on Lean sorryAx'
             exit 1
           fi
           echo 'NO_SORRY_AXIOM=PASS'
 
-      - name: Emit deterministic scalar proof receipt
+      - name: Emit deterministic proof receipt
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           echo 'FIRST_PROOF_2_SCALAR_LEAN=PASS'
+          echo 'FIRST_PROOF_2_LOGICAL_SKELETON=PASS'
           echo 'NO_SORRY_AXIOM=PASS'
           echo "LEAN_TOOLCHAIN=${LEAN_TOOLCHAIN}"
-          echo 'THEOREM=Problem2Scalar.proposition6_scalar_spine'
-          echo 'SCOPE=scalar exponent/basepoint/nonzero-factor spine only'
-          echo 'CLAIM_BOUNDARY=deep p-adic representation-theoretic lemmas remain external dependencies'
-          sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
+          echo 'SCALAR_THEOREM=Problem2Scalar.proposition6_scalar_spine'
+          echo 'LOGICAL_THEOREM=Problem2Logical.reference_dependency_logical_closure'
+          echo 'QUANTIFIER_TARGET=exists W before forall pi'
+          echo 'CLAIM_BOUNDARY=deep p-adic representation-theoretic theorem hypotheses remain external dependencies'
+          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" lean-toolchain lakefile.toml
