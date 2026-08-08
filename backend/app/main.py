@@ -15,6 +15,13 @@ from .auth import ApiKeyASGI
 from .cinema_runtime import CinemaIncidentRequest, CinemaIncidentResponse, run_cinema_incident
 from .config import load_settings
 from .hybrid_solver import HybridSolveRequest, HybridSolveResponse, solve_and_verify
+from .math_epsilon_light import (
+    EpsilonLightBenchmarkResult,
+    EpsilonLightInstanceRequest,
+    EpsilonLightInstanceResult,
+    run_epsilon_light_instance,
+    run_first_proof_6_benchmark,
+)
 from .math_ramsey import RamseyR33Proof, prove_ramsey_r33
 from .models import VerificationRequest, VerificationResponse
 from .service import VerificationService
@@ -35,13 +42,26 @@ mcp = FastMCP(
     "DSG QUBO Ising Z3 Verification",
     instructions=(
         "Search policy configurations with deterministic QUBO/Ising-equivalent annealing, "
-        "run exact Ising math benchmarks, verify claims with server-side Z3, and return "
+        "run exact finite math benchmarks, verify fixed claims with server-side Z3, and return "
         "tamper-evident proof/audit evidence."
     ),
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
 )
+
+
+@mcp.tool()
+def run_first_proof_6_benchmark_mcp() -> dict[str, Any]:
+    """Run the finite K8 epsilon-light benchmark derived from First Proof problem #6."""
+    return run_first_proof_6_benchmark(audit_store).model_dump(mode="json")
+
+
+@mcp.tool()
+def verify_first_proof_6_instance_mcp(payload: dict[str, Any]) -> dict[str, Any]:
+    """Search and exactly verify one finite epsilon-light graph instance."""
+    request = EpsilonLightInstanceRequest.model_validate(payload)
+    return run_epsilon_light_instance(request, audit_store).model_dump(mode="json")
 
 
 @mcp.tool()
@@ -89,14 +109,19 @@ def capabilities_resource() -> str:
             "service": "DSG QUBO Ising Z3 Verification",
             "transport": "MCP Streamable HTTP",
             "tools": [
+                "run_first_proof_6_benchmark_mcp",
+                "verify_first_proof_6_instance_mcp",
                 "prove_ramsey_r33_mcp",
                 "solve_policy_hybrid",
                 "verify_policy_solution",
                 "validate_policy_payload",
             ],
-            "math_benchmarks": ["R(3,3)=6"],
+            "math_benchmarks": [
+                "R(3,3)=6",
+                "First Proof #6 finite epsilon-light instance",
+            ],
             "candidate_solver": "deterministic QUBO/Ising-equivalent simulated annealing",
-            "authoritative_verifier": "server-side z3-solver",
+            "authoritative_verifier": "server-side z3-solver plus exact rational certificates",
             "audit": f"{settings.audit_backend} tamper-evident hash chain",
             "authentication": "X-API-Key or Bearer when DSG_API_KEY is configured",
         },
@@ -113,10 +138,10 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DSG Cinema Proof Agent",
-    version="0.3.0",
+    version="0.4.0",
     description=(
         "Gemini/Google ADK cinema incident agent with Grafana MCP evidence plus "
-        "deterministic QUBO/Ising search, exact math benchmarks, and authoritative "
+        "deterministic QUBO/Ising search, exact finite math benchmarks, and authoritative "
         "server-side Z3 verification."
     ),
     lifespan=lifespan,
@@ -156,6 +181,8 @@ def health() -> dict[str, Any]:
         "mcp_endpoint": "/mcp",
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
+        "first_proof_6_benchmark_endpoint": "/v1/math/first-proof-6/benchmark",
+        "first_proof_6_instance_endpoint": "/v1/math/first-proof-6/verify-instance",
         "api_auth_enabled": settings.api_key is not None,
         "grafana_mcp_configured": settings.grafana_mcp_url is not None,
         "gemini_model": settings.gemini_model,
@@ -175,20 +202,44 @@ def capabilities() -> dict[str, Any]:
         "deterministic_qubo_annealing": True,
         "qubo_to_ising_transform": True,
         "exact_ramsey_ising_model": True,
-        "math_benchmarks": ["R(3,3)=6"],
+        "exact_rational_principal_minor_checker": True,
+        "math_benchmarks": [
+            "R(3,3)=6",
+            "First Proof #6 finite epsilon-light instance",
+        ],
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
+        "first_proof_6_benchmark_endpoint": "/v1/math/first-proof-6/benchmark",
+        "first_proof_6_instance_endpoint": "/v1/math/first-proof-6/verify-instance",
         "server_side_z3": True,
         "tamper_evident_audit_chain": True,
         "proof_signature_enabled": settings.proof_signing_secret is not None,
         "mcp_transport": "streamable-http",
         "mcp_endpoint": "/mcp",
         "runtime_truth_boundary": (
-            "Annealing output is a candidate only. A mathematical theorem is reported PROVED only "
-            "when its explicit finite lower/upper-bound conditions are established by exact Z3 checks. "
-            "External Gemini/Grafana calls are only claimed after successful runtime responses."
+            "Annealing output is a candidate only. First Proof #6 currently supports finite-instance "
+            "verification only; it does not claim the universal c=1/256 theorem. External Gemini/Grafana "
+            "calls are only claimed after successful runtime responses."
         ),
     }
+
+
+@app.post(
+    "/v1/math/first-proof-6/benchmark",
+    response_model=EpsilonLightBenchmarkResult,
+    dependencies=[Depends(require_api_key)],
+)
+def first_proof_6_benchmark() -> EpsilonLightBenchmarkResult:
+    return run_first_proof_6_benchmark(audit_store)
+
+
+@app.post(
+    "/v1/math/first-proof-6/verify-instance",
+    response_model=EpsilonLightInstanceResult,
+    dependencies=[Depends(require_api_key)],
+)
+def first_proof_6_verify_instance(request: EpsilonLightInstanceRequest) -> EpsilonLightInstanceResult:
+    return run_epsilon_light_instance(request, audit_store)
 
 
 @app.post(
