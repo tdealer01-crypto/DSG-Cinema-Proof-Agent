@@ -1,2 +1,3 @@
 import FirstProof2Scalar.Problem2Scalar
 import FirstProof2Scalar.Problem2Logical
+import FirstProof2Scalar.Problem2FiniteFourier

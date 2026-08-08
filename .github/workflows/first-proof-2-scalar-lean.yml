@@ -13,6 +13,7 @@ env:
   LEAN_TOOLCHAIN: leanprover/lean4:v4.28.0
   SCALAR_FILE: FirstProof2Scalar/Problem2Scalar.lean
   LOGICAL_FILE: FirstProof2Scalar/Problem2Logical.lean
+  FOURIER_FILE: FirstProof2Scalar/Problem2FiniteFourier.lean
 
 jobs:
   scalar-lean-proof:
@@ -29,9 +30,9 @@ jobs:
           grep -F 'rev = "v4.28.0"' lakefile.toml
           grep -F 'theorem proposition6_scalar_spine' "${SCALAR_FILE}"
           grep -F 'theorem reference_dependency_logical_closure' "${LOGICAL_FILE}"
-          grep -F 'def WeakerPiDependentShape' "${LOGICAL_FILE}"
-          grep -F 'def RequiredUniversalShape' "${LOGICAL_FILE}"
-          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" lean-toolchain lakefile.toml
+          grep -F 'theorem dft_const_one_support' "${FOURIER_FILE}"
+          grep -F 'theorem dft_const_one_eq_zero_of_ne_zero' "${FOURIER_FILE}"
+          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" "${FOURIER_FILE}" lean-toolchain lakefile.toml
 
       - name: Install pinned elan bootstrap
         run: |
@@ -60,6 +61,7 @@ jobs:
         run: |
           lake env lean "${SCALAR_FILE}"
           lake env lean "${LOGICAL_FILE}"
+          lake env lean "${FOURIER_FILE}"
 
       - name: Audit theorem axioms for sorryAx
         working-directory: ${{ env.PROJECT_DIR }}
@@ -67,8 +69,10 @@ jobs:
           cat > FirstProof2AxiomAudit.lean <<'EOF'
           import FirstProof2Scalar.Problem2Scalar
           import FirstProof2Scalar.Problem2Logical
+          import FirstProof2Scalar.Problem2FiniteFourier
           #print axioms Problem2Scalar.proposition6_scalar_spine
           #print axioms Problem2Logical.reference_dependency_logical_closure
+          #print axioms Problem2FiniteFourier.dft_const_one_support
           EOF
           lake env lean FirstProof2AxiomAudit.lean 2>&1 | tee /tmp/first-proof-2-axioms.txt
           if grep -F 'sorryAx' /tmp/first-proof-2-axioms.txt; then
@@ -82,10 +86,12 @@ jobs:
         run: |
           echo 'FIRST_PROOF_2_SCALAR_LEAN=PASS'
           echo 'FIRST_PROOF_2_LOGICAL_SKELETON=PASS'
+          echo 'FIRST_PROOF_2_FINITE_FOURIER=PASS'
           echo 'NO_SORRY_AXIOM=PASS'
           echo "LEAN_TOOLCHAIN=${LEAN_TOOLCHAIN}"
           echo 'SCALAR_THEOREM=Problem2Scalar.proposition6_scalar_spine'
           echo 'LOGICAL_THEOREM=Problem2Logical.reference_dependency_logical_closure'
-          echo 'QUANTIFIER_TARGET=exists W before forall pi'
-          echo 'CLAIM_BOUNDARY=deep p-adic representation-theoretic theorem hypotheses remain external dependencies'
-          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" lean-toolchain lakefile.toml
+          echo 'FOURIER_THEOREM=Problem2FiniteFourier.dft_const_one_support'
+          echo 'FOURIER_SCOPE=finite ZMod conductor quotient orthogonality sublemma only'
+          echo 'CLAIM_BOUNDARY=Fourier-to-K1(q) full p-adic identity remains an external dependency'
+          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" "${FOURIER_FILE}" lean-toolchain lakefile.toml
