@@ -35,15 +35,19 @@ def test_first_proof_2_closure_is_reference_scoped(tmp_path) -> None:
     assert result.formal_theorems == [
         "Problem2Scalar.proposition6_scalar_spine",
         "Problem2Logical.reference_dependency_logical_closure",
+        "Problem2FiniteFourier.dft_const_one_support",
     ]
-    assert len(result.formal_source_hashes) == 2
+    assert len(result.formal_source_hashes) == 3
     assert result.formal_ci_receipts == [
         "FIRST_PROOF_2_SCALAR_LEAN=PASS",
         "FIRST_PROOF_2_LOGICAL_SKELETON=PASS",
+        "FIRST_PROOF_2_FINITE_FOURIER=PASS",
         "NO_SORRY_AXIOM=PASS",
     ]
     assert len(result.remaining_external_dependencies) == 6
+    assert any("finite ZMod orthogonality" in item for item in result.remaining_external_dependencies)
     assert len(result.proof_hash) == 64
     assert len(result.audit_event_hash) == 64
     assert "full_problem_formalized=false" in result.truth_boundary
+    assert "full p-adic" in result.truth_boundary
     assert "does not claim" in result.truth_boundary
