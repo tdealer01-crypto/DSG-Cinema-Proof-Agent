@@ -34,10 +34,11 @@ jobs:
           test "$(tr -d '\r\n' < lean-toolchain)" = "${LEAN_TOOLCHAIN}"
           grep -F 'theorem exists_eps_light_subset' "${THEOREM_FILE}"
           grep -F 'ε / 256' "${THEOREM_FILE}"
-          if rg -n '\b(sorry|admit)\b' FirstProof/FirstProof6 --glob '*.lean'; then
+          if grep -RInE --include='*.lean' '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)' FirstProof/FirstProof6; then
             echo 'Unresolved proof placeholder found in First Proof #6 formalization'
             exit 1
           fi
+          echo 'NO_SORRY_ADMIT=PASS'
           printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
           sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
 
@@ -70,6 +71,7 @@ jobs:
         working-directory: formal-proof
         run: |
           echo 'REPRODUCIBLE_FORMAL_PROOF=PASS'
+          echo 'NO_SORRY_ADMIT=PASS'
           echo "ARCHON_COMMIT=${ARCHON_COMMIT}"
           echo "LEAN_TOOLCHAIN=${LEAN_TOOLCHAIN}"
           echo "THEOREM=Problem6.exists_eps_light_subset"
