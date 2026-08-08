@@ -14,6 +14,7 @@ from .audit import create_audit_store
 from .auth import ApiKeyASGI
 from .cinema_runtime import CinemaIncidentRequest, CinemaIncidentResponse, run_cinema_incident
 from .config import load_settings
+from .hybrid_solver import HybridSolveRequest, HybridSolveResponse, solve_and_verify
 from .models import VerificationRequest, VerificationResponse
 from .service import VerificationService
 from .verifier import verify_candidate
@@ -30,15 +31,22 @@ audit_store = create_audit_store(
 verification_service = VerificationService(audit_store, settings.proof_signing_secret)
 
 mcp = FastMCP(
-    "DSG QUBO Z3 Verification",
+    "DSG QUBO Ising Z3 Verification",
     instructions=(
-        "Verify a candidate QUBO policy configuration with server-side Z3 and return "
-        "a tamper-evident proof and audit-chain event."
+        "Search policy configurations with deterministic QUBO/Ising-equivalent annealing, "
+        "verify fixed candidates with server-side Z3, and return tamper-evident proof/audit evidence."
     ),
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
 )
+
+
+@mcp.tool()
+def solve_policy_hybrid(payload: dict[str, Any]) -> dict[str, Any]:
+    """Search with deterministic annealing, verify with real server-side Z3, and persist proof."""
+    request = HybridSolveRequest.model_validate(payload)
+    return solve_and_verify(request, verification_service).model_dump(mode="json")
 
 
 @mcp.tool()
@@ -70,9 +78,15 @@ def capabilities_resource() -> str:
     """Describe the verification service's supported capabilities."""
     return json.dumps(
         {
-            "service": "DSG QUBO Z3 Verification",
+            "service": "DSG QUBO Ising Z3 Verification",
             "transport": "MCP Streamable HTTP",
-            "tools": ["verify_policy_solution", "validate_policy_payload"],
+            "tools": [
+                "solve_policy_hybrid",
+                "verify_policy_solution",
+                "validate_policy_payload",
+            ],
+            "candidate_solver": "deterministic QUBO/Ising-equivalent simulated annealing",
+            "authoritative_verifier": "server-side z3-solver",
             "audit": f"{settings.audit_backend} tamper-evident hash chain",
             "authentication": "X-API-Key or Bearer when DSG_API_KEY is configured",
         },
@@ -89,8 +103,11 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DSG Cinema Proof Agent",
-    version="0.1.0",
-    description="Gemini/Google ADK cinema incident agent with Grafana MCP evidence and deterministic Z3 gates.",
+    version="0.2.0",
+    description=(
+        "Gemini/Google ADK cinema incident agent with Grafana MCP evidence plus "
+        "deterministic QUBO/Ising candidate search and authoritative server-side Z3 verification."
+    ),
     lifespan=lifespan,
 )
 app.mount("/mcp", ApiKeyASGI(mcp.streamable_http_app(), settings.api_key))
@@ -126,6 +143,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "service": "dsg-cinema-proof-agent",
         "mcp_endpoint": "/mcp",
+        "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "api_auth_enabled": settings.api_key is not None,
         "grafana_mcp_configured": settings.grafana_mcp_url is not None,
         "gemini_model": settings.gemini_model,
@@ -142,15 +160,28 @@ def capabilities() -> dict[str, Any]:
         "vertex_ai_mode": settings.use_vertex_ai,
         "google_cloud_project_configured": settings.google_cloud_project is not None,
         "grafana_mcp_configured": settings.grafana_mcp_url is not None,
+        "deterministic_qubo_annealing": True,
+        "qubo_to_ising_transform": True,
+        "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "server_side_z3": True,
         "tamper_evident_audit_chain": True,
         "proof_signature_enabled": settings.proof_signing_secret is not None,
         "mcp_transport": "streamable-http",
         "mcp_endpoint": "/mcp",
         "runtime_truth_boundary": (
+            "Annealing output is a candidate only; a verified claim requires server-side Z3 SAT. "
             "External Gemini/Grafana calls are only claimed after successful runtime responses."
         ),
     }
+
+
+@app.post(
+    "/v1/hybrid/solve",
+    response_model=HybridSolveResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def hybrid_solve(request: HybridSolveRequest) -> HybridSolveResponse:
+    return solve_and_verify(request, verification_service)
 
 
 @app.post(

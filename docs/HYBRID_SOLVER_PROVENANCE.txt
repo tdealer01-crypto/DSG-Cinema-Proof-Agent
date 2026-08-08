@@ -1,0 +1,18 @@
+Hybrid solver source provenance
+
+Source repository: tdealer01-crypto/Compliance-ising-z3-Deterministic-
+Source commit inspected: b85aa98445caecf8607738cd9d4b9f9ba178e8d3
+
+Deterministic RNG source:
+app/src/main/java/com/example/data/qubo/DeterministicRNG.kt
+blob sha: dced4c988ef71a6fe2c3103525570c6e6feb0264
+
+QUBO / annealing / Ising transformation source:
+app/src/main/java/com/example/data/qubo/QuboPolicyEngine.kt
+blob sha: 3ee915e6f25451143bd90bb563316590e323bdf4
+
+Authoritative verifier target repository:
+tdealer01-crypto/DSG-Cinema-Proof-Agent
+backend/app/verifier.py uses the Python z3-solver package.
+
+No MCP/provider simulation from Compliance-ising-z3-Deterministic- was copied into this integration.
