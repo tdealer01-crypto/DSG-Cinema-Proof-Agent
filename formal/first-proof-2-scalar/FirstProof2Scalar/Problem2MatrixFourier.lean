@@ -32,7 +32,7 @@ lemma matrixChar_ne_one_of_ne_zero
     exact h i j
   rcases hentry with ⟨i, j, hij⟩
   let E : Matrix (Fin r) (Fin c) (ZMod N) :=
-    fun a b => if a = i ∧ b = j then 1 else 0
+    fun a b => if a = i then (if b = j then 1 else 0) else 0
   refine ⟨E, ?_⟩
   have hdot : matrixDotHom K E = K i j := by
     simp [matrixDotHom, E]
