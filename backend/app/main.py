@@ -24,6 +24,11 @@ from .math_epsilon_light import (
 )
 from .math_epsilon_light_sweep import EpsilonLightSweepResult, run_first_proof_6_sweep
 from .math_epsilon_light_theorem import FirstProof6ClosureResult, close_first_proof_6
+from .math_first_proof_2 import FirstProof2ClosureResult, close_first_proof_2
+from .math_first_proof_2_reconstruction import (
+    FirstProof2ReconstructionResult,
+    audit_first_proof_2_reconstruction,
+)
 from .math_ramsey import RamseyR33Proof, prove_ramsey_r33
 from .models import VerificationRequest, VerificationResponse
 from .service import VerificationService
@@ -51,6 +56,18 @@ mcp = FastMCP(
     json_response=True,
     streamable_http_path="/",
 )
+
+
+@mcp.tool()
+def close_first_proof_2_mcp() -> dict[str, Any]:
+    """Return the provenance-linked closure certificate for First Proof problem #2."""
+    return close_first_proof_2(audit_store).model_dump(mode="json")
+
+
+@mcp.tool()
+def audit_first_proof_2_reconstruction_mcp() -> dict[str, Any]:
+    """Return the machine-audited reconstruction certificate for First Proof problem #2."""
+    return audit_first_proof_2_reconstruction(audit_store).model_dump(mode="json")
 
 
 @mcp.tool()
@@ -123,6 +140,8 @@ def capabilities_resource() -> str:
             "service": "DSG QUBO Ising Z3 Verification",
             "transport": "MCP Streamable HTTP",
             "tools": [
+                "close_first_proof_2_mcp",
+                "audit_first_proof_2_reconstruction_mcp",
                 "close_first_proof_6_mcp",
                 "run_first_proof_6_sweep_mcp",
                 "run_first_proof_6_benchmark_mcp",
@@ -133,6 +152,8 @@ def capabilities_resource() -> str:
                 "validate_policy_payload",
             ],
             "math_benchmarks": [
+                "First Proof #2 reference theorem closure",
+                "First Proof #2 reconstruction audit",
                 "R(3,3)=6",
                 "First Proof #6 theorem closure (reference c=1/42)",
                 "First Proof #6 finite epsilon-light instance",
@@ -156,7 +177,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DSG Cinema Proof Agent",
-    version="0.6.0",
+    version="0.7.0",
     description=(
         "Gemini/Google ADK cinema incident agent with Grafana MCP evidence plus "
         "deterministic QUBO/Ising search, exact finite math benchmarks, theorem-closure "
@@ -199,6 +220,8 @@ def health() -> dict[str, Any]:
         "mcp_endpoint": "/mcp",
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
+        "first_proof_2_closure_endpoint": "/v1/math/first-proof-2/closure",
+        "first_proof_2_reconstruction_endpoint": "/v1/math/first-proof-2/reconstruction",
         "first_proof_6_closure_endpoint": "/v1/math/first-proof-6/closure",
         "first_proof_6_benchmark_endpoint": "/v1/math/first-proof-6/benchmark",
         "first_proof_6_instance_endpoint": "/v1/math/first-proof-6/verify-instance",
@@ -224,9 +247,13 @@ def capabilities() -> dict[str, Any]:
         "exact_ramsey_ising_model": True,
         "exact_rational_principal_minor_checker": True,
         "exact_finite_subset_enumeration": True,
+        "first_proof_2_reference_theorem_closed": True,
+        "first_proof_2_reference_reconstruction_audited": True,
         "first_proof_6_reference_theorem_closed": True,
         "first_proof_6_reference_constant": "1/42",
         "math_benchmarks": [
+            "First Proof #2 reference theorem closure",
+            "First Proof #2 reconstruction audit",
             "R(3,3)=6",
             "First Proof #6 theorem closure (reference c=1/42)",
             "First Proof #6 finite epsilon-light instance",
@@ -234,6 +261,8 @@ def capabilities() -> dict[str, Any]:
         ],
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
+        "first_proof_2_closure_endpoint": "/v1/math/first-proof-2/closure",
+        "first_proof_2_reconstruction_endpoint": "/v1/math/first-proof-2/reconstruction",
         "first_proof_6_closure_endpoint": "/v1/math/first-proof-6/closure",
         "first_proof_6_benchmark_endpoint": "/v1/math/first-proof-6/benchmark",
         "first_proof_6_instance_endpoint": "/v1/math/first-proof-6/verify-instance",
@@ -244,12 +273,33 @@ def capabilities() -> dict[str, Any]:
         "mcp_transport": "streamable-http",
         "mcp_endpoint": "/mcp",
         "runtime_truth_boundary": (
-            "First Proof #6 is closed here as a provenance-linked reference theorem using the official c=1/42 proof. "
-            "DSG machine-checks the encoded scalar arithmetic and retains exact finite-instance evidence, but does not "
-            "claim independent discovery or a local re-formalization of the full matrix-analysis proof. Annealing output "
-            "remains candidate-only for search tasks. External Gemini/Grafana calls are only claimed after successful runtime responses."
+            "First Proof #2 is represented as a provenance-linked human reference closure plus a DSG machine audit of "
+            "its quantifier/scalar reconstruction spine; DSG does not claim independent discovery and does not claim an "
+            "independent formalization of the deep p-adic representation-theoretic lemmas. First Proof #6 is closed here "
+            "as a provenance-linked reference theorem using the official c=1/42 proof; DSG does not claim independent "
+            "discovery, while its published c=1/256 Lean formalization is separately replayed deterministically in CI. "
+            "Annealing output remains candidate-only for search tasks. External Gemini/Grafana calls are only claimed "
+            "after successful runtime responses."
         ),
     }
+
+
+@app.post(
+    "/v1/math/first-proof-2/closure",
+    response_model=FirstProof2ClosureResult,
+    dependencies=[Depends(require_api_key)],
+)
+def first_proof_2_closure() -> FirstProof2ClosureResult:
+    return close_first_proof_2(audit_store)
+
+
+@app.post(
+    "/v1/math/first-proof-2/reconstruction",
+    response_model=FirstProof2ReconstructionResult,
+    dependencies=[Depends(require_api_key)],
+)
+def first_proof_2_reconstruction() -> FirstProof2ReconstructionResult:
+    return audit_first_proof_2_reconstruction(audit_store)
 
 
 @app.post(
