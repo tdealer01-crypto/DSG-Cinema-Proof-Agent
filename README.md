@@ -6,7 +6,9 @@ Evidence-first incident response for cinema, streaming, rendering, and media-pro
 
 **Hybrid optimization path:** deterministic QUBO / Ising-equivalent annealing → real server-side Z3 → SHA-256 proof → tamper-evident audit chain.
 
-> **Truth boundary:** implementation is not the same as a verified live deployment. Annealing output is a candidate only; a verified policy claim requires server-side Z3 SAT. External Gemini, Grafana, Cloud Run, and audit-backend success is only claimed after real runtime evidence exists.
+**Math benchmark path:** exact Ising Hamiltonian → deterministic annealing witness → exact Z3 SAT/UNSAT proof → SHA-256 proof → audit chain.
+
+> **Truth boundary:** implementation is not the same as a verified live deployment. Annealing output is a candidate only; a verified policy claim requires server-side Z3 SAT. The math benchmark currently proves only the finite classical theorem `R(3,3)=6`; it is not a claim that DSG has solved a 2026 open research problem. External Gemini, Grafana, Cloud Run, and audit-backend success is only claimed after real runtime evidence exists.
 
 ## Implemented
 
@@ -17,7 +19,8 @@ Evidence-first incident response for cinema, streaming, rendering, and media-pro
 - Real deterministic QUBO / Ising-equivalent simulated annealing candidate search, ported from `Compliance-ising-z3-Deterministic-`.
 - Real server-side `z3-solver`; Android local checks are explicitly labeled local.
 - One-call hybrid endpoint: `POST /v1/hybrid/solve`.
-- MCP hybrid tool: `solve_policy_hybrid`.
+- Exact Ramsey `R(3,3)=6` benchmark: `POST /v1/math/ramsey-r33/prove`.
+- MCP tools: `solve_policy_hybrid` and `prove_ramsey_r33_mcp`.
 - SHA-256 proof, optional HMAC-SHA256, SQLite/Firestore/Supabase audit backends.
 - DSG MCP Streamable HTTP at `/mcp`, protected when `DSG_API_KEY` is configured.
 - Android companion: deterministic QUBO candidate → `/v1/verify` → HTTP/Z3/proof/audit evidence.
@@ -28,6 +31,7 @@ Evidence-first incident response for cinema, streaming, rendering, and media-pro
 - `/v1/cinema/investigate` rejects execution if `GRAFANA_MCP_URL` is absent.
 - Gemini/Grafana failures stay failures; no canned success response is substituted.
 - Hybrid annealing success is never promoted to a proof unless server-side Z3 verifies the exact candidate.
+- Ramsey benchmark reports `PROVED` only when the K5 zero-energy witness is Z3-SAT and the K6 no-monochromatic-triangle existence formula is Z3-UNSAT.
 - A restart plan is Z3-UNSAT without the required evidence and human approval.
 - Supabase service-role credentials are server-only and are not committed.
 
@@ -48,6 +52,14 @@ Policy / research client
   -> QUBO -> Ising J/h/offset
   -> seeded simulated annealing candidate
   -> real server-side Z3 verification
+  -> proof_hash + audit.event_hash
+
+Math benchmark client
+  -> POST /v1/math/ramsey-r33/prove
+  -> exact quadratic Ising model for monochromatic triangles
+  -> deterministic K5 witness search
+  -> Z3 verifies K5 witness SAT
+  -> Z3 proves K6 existence formula UNSAT
   -> proof_hash + audit.event_hash
 
 Android
@@ -75,8 +87,8 @@ pytest
 uvicorn app.main:app --reload
 ```
 
-Endpoints: `GET /health`, `GET /v1/capabilities`, `POST /v1/hybrid/solve`, `POST /v1/cinema/investigate`, `POST /v1/verify`, `GET /v1/audit/{event_hash}`, `/mcp`.
+Endpoints: `GET /health`, `GET /v1/capabilities`, `POST /v1/math/ramsey-r33/prove`, `POST /v1/hybrid/solve`, `POST /v1/cinema/investigate`, `POST /v1/verify`, `GET /v1/audit/{event_hash}`, `/mcp`.
 
-The Supabase migration is under `supabase/migrations/`. See `docs/HYBRID_SOLVER.md`, `docs/VERIFICATION.md`, and `docs/CONTEST_STATUS.md` for evidence boundaries.
+The Supabase migration is under `supabase/migrations/`. See `docs/RAMSEY_R33_BENCHMARK.md`, `docs/HYBRID_SOLVER.md`, `docs/VERIFICATION.md`, and `docs/CONTEST_STATUS.md` for evidence boundaries.
 
 MIT licensed.
