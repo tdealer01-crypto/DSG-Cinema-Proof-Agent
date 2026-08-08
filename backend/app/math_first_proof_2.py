@@ -12,9 +12,15 @@ from .math_first_proof_2_formal import (
     LOGICAL_SOURCE,
     LOGICAL_SOURCE_SHA256,
     LOGICAL_THEOREM,
+    MATRIX_FOURIER_SOURCE,
+    MATRIX_FOURIER_SOURCE_SHA256,
+    MATRIX_FOURIER_THEOREM,
     SCALAR_SOURCE,
     SCALAR_SOURCE_SHA256,
     SCALAR_THEOREM,
+    VECTOR_FOURIER_SOURCE,
+    VECTOR_FOURIER_SOURCE_SHA256,
+    VECTOR_FOURIER_THEOREM,
 )
 
 
@@ -61,13 +67,6 @@ class FirstProof2ClosureResult(BaseModel):
 
 
 def reference_proof_contract() -> tuple[list[ReferenceProofStep], list[FailureMode]]:
-    """Record the dependency structure of the published proof of First Proof #2.
-
-    This deliberately does not present Python, Z3, or finite computation as a proof of
-    p-adic representation theory. It captures the quantifier/dependency contract that
-    invalidated several LLM attempts and the published route that avoids that failure.
-    """
-
     steps = [
         ReferenceProofStep(
             name="fixed_whittaker_vector",
@@ -111,35 +110,19 @@ def reference_proof_contract() -> tuple[list[ReferenceProofStep], list[FailureMo
             depends_on=["pi", "q", "normalized newvector theory"],
         ),
     ]
-
     failures = [
-        FailureMode(
-            code="W_DEPENDS_ON_PI",
-            reason=(
-                "The problem requires one W that works for every smaller representation pi; "
-                "allowing W to depend on pi proves only a weaker statement."
-            ),
-        ),
+        FailureMode(code="W_DEPENDS_ON_PI", reason="The universal W may not vary with pi."),
         FailureMode(
             code="FALSE_HOWE_VECTOR_SUPPORT",
-            reason=(
-                "The stronger support condition used in the incorrect LLM route conflicts with "
-                "the central character and is not a valid standard Howe-vector theorem."
-            ),
+            reason="The invalid strong support shortcut conflicts with the central character.",
         ),
         FailureMode(
             code="CONSTANT_INTEGRAND_REQUIREMENT",
-            reason=(
-                "Nonvanishing does not require the integrand to be constant on its support; "
-                "already for n=1 the relevant integral is a normalized Gauss sum and is generally nonconstant."
-            ),
+            reason="Nonvanishing does not require a constant integrand on its support.",
         ),
         FailureMode(
             code="UNJUSTIFIED_NONVANISHING",
-            reason=(
-                "The nonvanishing step is the core obligation and must be derived from the "
-                "functional equation plus newvector calculation, not asserted from support heuristics."
-            ),
+            reason="Nonvanishing must follow from the functional equation/newvector calculation.",
         ),
     ]
     return steps, failures
@@ -147,33 +130,40 @@ def reference_proof_contract() -> tuple[list[ReferenceProofStep], list[FailureMo
 
 def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureResult:
     steps, failures = reference_proof_contract()
-
     universal_step = next(item for item in steps if item.name == "fixed_whittaker_vector")
-    forbidden = {"pi", "q", "Q"}
-    if forbidden.intersection(universal_step.depends_on):
+    if {"pi", "q", "Q"}.intersection(universal_step.depends_on):
         raise RuntimeError("First Proof #2 contract violation: universal W depends on pi/conductor")
 
-    formal_theorems = [SCALAR_THEOREM, LOGICAL_THEOREM, FOURIER_THEOREM]
+    formal_theorems = [
+        SCALAR_THEOREM,
+        LOGICAL_THEOREM,
+        FOURIER_THEOREM,
+        VECTOR_FOURIER_THEOREM,
+        MATRIX_FOURIER_THEOREM,
+    ]
     formal_source_hashes = {
         SCALAR_SOURCE: SCALAR_SOURCE_SHA256,
         LOGICAL_SOURCE: LOGICAL_SOURCE_SHA256,
         FOURIER_SOURCE: FOURIER_SOURCE_SHA256,
+        VECTOR_FOURIER_SOURCE: VECTOR_FOURIER_SOURCE_SHA256,
+        MATRIX_FOURIER_SOURCE: MATRIX_FOURIER_SOURCE_SHA256,
     }
     formal_ci_receipts = [
         "FIRST_PROOF_2_SCALAR_LEAN=PASS",
         "FIRST_PROOF_2_LOGICAL_SKELETON=PASS",
         "FIRST_PROOF_2_FINITE_FOURIER=PASS",
+        "FIRST_PROOF_2_VECTOR_FOURIER=PASS",
+        "FIRST_PROOF_2_MATRIX_FOURIER=PASS",
         "NO_SORRY_AXIOM=PASS",
     ]
     remaining_external_dependencies = [
         "Kirillov-model extension",
         "Godement-Jacquet local functional equation",
         "Mellin support transform",
-        "Fourier-to-K1(q) full p-adic identity (finite ZMod orthogonality sublemma kernel-checked)",
+        "Fourier-to-K1(q) subgroup/lattice and full p-adic identity (finite matrix quotient orthogonality kernel-checked)",
         "normalized newvector theory",
         "local epsilon-factor nonvanishing",
     ]
-
     proof_payload = {
         "answer": "YES",
         "scope": "generic irreducible admissible Pi of GL_{n+1}(F) and every generic pi of GL_n(F)",
@@ -194,15 +184,11 @@ def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureRe
     return FirstProof2ClosureResult(
         status="REFERENCE_THEOREM_CLOSED",
         theorem_scope=(
-            "For a fixed generic irreducible admissible Pi of GL_{n+1}(F), one Whittaker vector W "
-            "works simultaneously for every generic irreducible admissible pi of GL_n(F); the "
-            "conductor-dependent translate u_Q and the smaller-group vector V may vary with pi."
+            "For fixed Pi, one Whittaker vector W works simultaneously for every smaller generic pi; "
+            "conductor data and the smaller-group vector may vary with pi."
         ),
         universal_vector_contract="W depends on Pi and psi only; W must not depend on pi, q, or Q.",
-        smaller_representation_contract=(
-            "For each pi, q and Q are its conductor data and V may be chosen as the normalized "
-            "K1(q)-invariant newvector."
-        ),
+        smaller_representation_contract="For each pi, conductor data and normalized newvector V may vary.",
         official_solution=OFFICIAL_SOLUTIONS_URL,
         openai_status=OPENAI_STATUS_URL,
         proof_steps=steps,
@@ -214,18 +200,17 @@ def close_first_proof_2(audit_store: AuditStoreProtocol) -> FirstProof2ClosureRe
         remaining_external_dependencies=remaining_external_dependencies,
         full_problem_formalized=False,
         evidence_level=(
-            "Published human reference proof by Paul Nelson + DSG dependency/provenance guards + "
-            "Z3 scalar reconstruction audit + in-repository Lean kernel checks for the scalar spine, "
-            "quantifier/dependency logical skeleton, and finite conductor-quotient Fourier orthogonality."
+            "Published human reference proof + DSG provenance/quantifier guards + Z3 scalar audit + "
+            "Lean kernel checks for scalar, logical, finite Fourier, vector Fourier, and finite matrix "
+            "Fourier orthogonality stages."
         ),
         proof_hash=proof_hash,
         audit_event_hash=audit.event_hash,
         truth_boundary=(
-            "Problem #2 is mathematically answered YES by the cited published human solution. DSG has "
-            "kernel-checked a partial Lean formalization of the scalar obligations, logical quantifier "
-            "skeleton, and a finite ZMod Fourier orthogonality sublemma. The full p-adic "
-            "Fourier-to-K1(q) identity and the other deep representation-theoretic results remain "
-            "external theorem dependencies. full_problem_formalized=false. DSG does not claim a full "
-            "independent formal proof or independent discovery."
+            "Problem #2 is mathematically answered YES by the cited human solution. DSG has kernel-checked "
+            "partial Lean formalizations through the finite matrix additive conductor quotient. The K1(q) "
+            "subgroup/lattice restriction, full p-adic Fourier identity, and other deep representation-theoretic "
+            "results remain external. full_problem_formalized=false. DSG does not claim a full independent "
+            "formal proof or independent discovery."
         ),
     )
