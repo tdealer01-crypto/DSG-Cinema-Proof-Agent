@@ -28,17 +28,12 @@ jobs:
           git checkout --detach "${ARCHON_COMMIT}"
           test "$(git rev-parse HEAD)" = "${ARCHON_COMMIT}"
 
-      - name: Verify deterministic source pins and proof hygiene
+      - name: Verify deterministic source pins
         working-directory: formal-proof
         run: |
           test "$(tr -d '\r\n' < lean-toolchain)" = "${LEAN_TOOLCHAIN}"
           grep -F 'theorem exists_eps_light_subset' "${THEOREM_FILE}"
           grep -F 'ε / 256' "${THEOREM_FILE}"
-          if grep -RInE --include='*.lean' '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)' FirstProof/FirstProof6; then
-            echo 'Unresolved proof placeholder found in First Proof #6 formalization'
-            exit 1
-          fi
-          echo 'NO_SORRY_ADMIT=PASS'
           printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
           sha256sum "${THEOREM_FILE}" lean-toolchain lakefile.toml
 
@@ -67,11 +62,25 @@ jobs:
         working-directory: formal-proof
         run: lake env lean "${THEOREM_FILE}"
 
+      - name: Audit theorem axioms for sorryAx
+        working-directory: formal-proof
+        run: |
+          cat > FirstProof6AxiomAudit.lean <<'EOF'
+          import FirstProof.FirstProof6.Problem6
+          #print axioms Problem6.exists_eps_light_subset
+          EOF
+          lake env lean FirstProof6AxiomAudit.lean 2>&1 | tee /tmp/first-proof-6-axioms.txt
+          if grep -F 'sorryAx' /tmp/first-proof-6-axioms.txt; then
+            echo 'The theorem transitively depends on Lean sorryAx'
+            exit 1
+          fi
+          echo 'NO_SORRY_AXIOM=PASS'
+
       - name: Emit deterministic replay receipt
         working-directory: formal-proof
         run: |
           echo 'REPRODUCIBLE_FORMAL_PROOF=PASS'
-          echo 'NO_SORRY_ADMIT=PASS'
+          echo 'NO_SORRY_AXIOM=PASS'
           echo "ARCHON_COMMIT=${ARCHON_COMMIT}"
           echo "LEAN_TOOLCHAIN=${LEAN_TOOLCHAIN}"
           echo "THEOREM=Problem6.exists_eps_light_subset"
