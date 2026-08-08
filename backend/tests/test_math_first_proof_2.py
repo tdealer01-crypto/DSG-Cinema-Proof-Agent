@@ -30,6 +30,20 @@ def test_first_proof_2_closure_is_reference_scoped(tmp_path) -> None:
     assert "normalized" in result.smaller_representation_contract
     assert len(result.proof_steps) == 5
     assert len(result.rejected_failure_modes) == 4
+    assert result.formalization_status == "PARTIAL_FORMALIZATION_KERNEL_CHECKED"
+    assert result.full_problem_formalized is False
+    assert result.formal_theorems == [
+        "Problem2Scalar.proposition6_scalar_spine",
+        "Problem2Logical.reference_dependency_logical_closure",
+    ]
+    assert len(result.formal_source_hashes) == 2
+    assert result.formal_ci_receipts == [
+        "FIRST_PROOF_2_SCALAR_LEAN=PASS",
+        "FIRST_PROOF_2_LOGICAL_SKELETON=PASS",
+        "NO_SORRY_AXIOM=PASS",
+    ]
+    assert len(result.remaining_external_dependencies) == 6
     assert len(result.proof_hash) == 64
     assert len(result.audit_event_hash) == 64
-    assert "does not claim independent discovery" in result.truth_boundary
+    assert "full_problem_formalized=false" in result.truth_boundary
+    assert "does not claim" in result.truth_boundary
