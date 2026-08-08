@@ -15,6 +15,7 @@ env:
   LOGICAL_FILE: FirstProof2Scalar/Problem2Logical.lean
   FOURIER_FILE: FirstProof2Scalar/Problem2FiniteFourier.lean
   VECTOR_FOURIER_FILE: FirstProof2Scalar/Problem2VectorFourier.lean
+  MATRIX_FOURIER_FILE: FirstProof2Scalar/Problem2MatrixFourier.lean
 
 jobs:
   scalar-lean-proof:
@@ -33,8 +34,9 @@ jobs:
           grep -F 'theorem reference_dependency_logical_closure' "${LOGICAL_FILE}"
           grep -F 'theorem dft_const_one_support' "${FOURIER_FILE}"
           grep -F 'theorem vector_character_sum' "${VECTOR_FOURIER_FILE}"
-          grep -F 'theorem vector_character_sum_eq_zero_of_ne_zero' "${VECTOR_FOURIER_FILE}"
-          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" "${FOURIER_FILE}" "${VECTOR_FOURIER_FILE}" lean-toolchain lakefile.toml
+          grep -F 'theorem matrix_character_sum' "${MATRIX_FOURIER_FILE}"
+          grep -F 'theorem matrix_character_sum_eq_zero_of_ne_zero' "${MATRIX_FOURIER_FILE}"
+          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" "${FOURIER_FILE}" "${VECTOR_FOURIER_FILE}" "${MATRIX_FOURIER_FILE}" lean-toolchain lakefile.toml
 
       - name: Install pinned elan bootstrap
         run: |
@@ -65,6 +67,7 @@ jobs:
           lake env lean "${LOGICAL_FILE}"
           lake env lean "${FOURIER_FILE}"
           lake env lean "${VECTOR_FOURIER_FILE}"
+          lake env lean "${MATRIX_FOURIER_FILE}"
 
       - name: Audit theorem axioms for sorryAx
         working-directory: ${{ env.PROJECT_DIR }}
@@ -74,10 +77,12 @@ jobs:
           import FirstProof2Scalar.Problem2Logical
           import FirstProof2Scalar.Problem2FiniteFourier
           import FirstProof2Scalar.Problem2VectorFourier
+          import FirstProof2Scalar.Problem2MatrixFourier
           #print axioms Problem2Scalar.proposition6_scalar_spine
           #print axioms Problem2Logical.reference_dependency_logical_closure
           #print axioms Problem2FiniteFourier.dft_const_one_support
           #print axioms Problem2VectorFourier.vector_character_sum
+          #print axioms Problem2MatrixFourier.matrix_character_sum
           EOF
           lake env lean FirstProof2AxiomAudit.lean 2>&1 | tee /tmp/first-proof-2-axioms.txt
           if grep -F 'sorryAx' /tmp/first-proof-2-axioms.txt; then
@@ -93,12 +98,14 @@ jobs:
           echo 'FIRST_PROOF_2_LOGICAL_SKELETON=PASS'
           echo 'FIRST_PROOF_2_FINITE_FOURIER=PASS'
           echo 'FIRST_PROOF_2_VECTOR_FOURIER=PASS'
+          echo 'FIRST_PROOF_2_MATRIX_FOURIER=PASS'
           echo 'NO_SORRY_AXIOM=PASS'
           echo "LEAN_TOOLCHAIN=${LEAN_TOOLCHAIN}"
           echo 'SCALAR_THEOREM=Problem2Scalar.proposition6_scalar_spine'
           echo 'LOGICAL_THEOREM=Problem2Logical.reference_dependency_logical_closure'
           echo 'FOURIER_THEOREM=Problem2FiniteFourier.dft_const_one_support'
           echo 'VECTOR_FOURIER_THEOREM=Problem2VectorFourier.vector_character_sum'
-          echo 'VECTOR_FOURIER_SCOPE=finite coordinate conductor quotient orthogonality only'
-          echo 'CLAIM_BOUNDARY=matrix/lattice Fourier-to-K1(q) full p-adic identity remains external'
-          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" "${FOURIER_FILE}" "${VECTOR_FOURIER_FILE}" lean-toolchain lakefile.toml
+          echo 'MATRIX_FOURIER_THEOREM=Problem2MatrixFourier.matrix_character_sum'
+          echo 'MATRIX_FOURIER_SCOPE=finite matrix additive conductor quotient orthogonality only'
+          echo 'CLAIM_BOUNDARY=K1(q) subgroup/lattice and full p-adic Fourier identity remain external'
+          sha256sum "${SCALAR_FILE}" "${LOGICAL_FILE}" "${FOURIER_FILE}" "${VECTOR_FOURIER_FILE}" "${MATRIX_FOURIER_FILE}" lean-toolchain lakefile.toml
