@@ -1,0 +1,67 @@
+name: First Proof 2 Aletheia source replay
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  source-replay:
+    runs-on: ubuntu-24.04
+    env:
+      ALETHEIA_REPO: https://github.com/google-deepmind/superhuman.git
+      ALETHEIA_COMMIT: a02069ef66dbae4c5b0713ba0dc144a35375558f
+      ALETHEIA_PATH: aletheia/FirstProof/FP2_Af.tex
+      ALETHEIA_BLOB_SHA: 9cae0e02192093ac828d5688184ce7daf66e9eed
+    steps:
+      - name: Checkout DSG verification harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Checkout pinned Aletheia source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout "$ALETHEIA_REPO" /tmp/superhuman
+          cd /tmp/superhuman
+          git checkout --detach "$ALETHEIA_COMMIT"
+          test "$(git rev-parse HEAD)" = "$ALETHEIA_COMMIT"
+
+      - name: Verify immutable Problem 2 source pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/superhuman
+          actual_blob="$(git rev-parse "HEAD:${ALETHEIA_PATH}")"
+          echo "ALETHEIA_BLOB_SHA_ACTUAL=${actual_blob}"
+          test "$actual_blob" = "$ALETHEIA_BLOB_SHA"
+          test -f "$ALETHEIA_PATH"
+
+      - name: Verify Problem 2 semantic markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="/tmp/superhuman/${ALETHEIA_PATH}"
+          grep -Fq 'FirstProof \# 2' "$file"
+          grep -Fq 'Universal Test Vector' "$file"
+          grep -Fq 'Annihilation of Analytic Dependence on $s$' "$file"
+          grep -Fq 'finite and nonzero for all' "$file"
+
+      - name: Emit deterministic source receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="/tmp/superhuman/${ALETHEIA_PATH}"
+          sha256="$(sha256sum "$file" | awk '{print $1}')"
+          {
+            echo "ALETHEIA_SOURCE_REPLAY=PASS"
+            echo "ALETHEIA_COMMIT=${ALETHEIA_COMMIT}"
+            echo "ALETHEIA_PATH=${ALETHEIA_PATH}"
+            echo "ALETHEIA_BLOB_SHA=${ALETHEIA_BLOB_SHA}"
+            echo "ALETHEIA_FILE_SHA256=${sha256}"
+            echo "CLAIM_BOUNDARY=source provenance replay only; not a Lean proof and not DSG authorship"
+          } | tee /tmp/first-proof-2-aletheia-receipt.txt
+          cat /tmp/first-proof-2-aletheia-receipt.txt >> "$GITHUB_STEP_SUMMARY"
