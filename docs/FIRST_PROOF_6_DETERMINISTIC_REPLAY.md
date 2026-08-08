@@ -20,14 +20,16 @@ A run is `REPRODUCIBLE_FORMAL_PROOF=PASS` only if all of the following hold in a
 
 1. The external formalization checkout resolves to the exact pinned commit.
 2. The `lean-toolchain` file is exactly Lean 4.28.0.
-3. The Problem #6 source tree contains no `sorry` or `admit` placeholders.
-4. The pinned Mathlib cache/dependencies resolve successfully.
-5. `lake build` succeeds from the pinned source.
-6. `lake env lean FirstProof/FirstProof6/Problem6.lean` succeeds, causing the Lean kernel to recheck the theorem file.
+3. The pinned Mathlib cache/dependencies resolve successfully.
+4. `lake build` succeeds from the pinned source.
+5. `lake env lean FirstProof/FirstProof6/Problem6.lean` succeeds, causing the Lean kernel to recheck the theorem file.
+6. Lean runs `#print axioms Problem6.exists_eps_light_subset`; the resulting transitive axiom report must not contain `sorryAx`.
 7. The run prints source/toolchain/file hashes as a replay receipt.
+
+The semantic `#print axioms` check is intentionally used instead of searching raw source text for the word `sorry`, because comments/documentation can contain that word without introducing a proof hole.
 
 ## Interpretation
 
-A PASS establishes that the formal proof is reproducible under the pinned source and toolchain: rerunning the same proof program yields successful kernel checking again.
+A PASS establishes that the formal proof is reproducible under the pinned source and toolchain: rerunning the same proof program yields successful kernel checking again, and the checked theorem does not transitively depend on Lean's `sorryAx` placeholder axiom.
 
 It does not establish independent discovery by DSG. Provenance remains separate from proof validity and reproducibility.
