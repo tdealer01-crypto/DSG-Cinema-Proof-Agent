@@ -1,14 +1,16 @@
 # DSG Cinema Proof Agent
 
-Evidence-first incident response for cinema, streaming, rendering, and media-production systems.
+Evidence-first incident response, deterministic optimization, and reproducible proof verification for cinema, streaming, rendering, media-production, policy, and mathematical research workflows.
 
 **Runtime path:** Gemini / Google ADK → Grafana MCP telemetry → deterministic Z3 recovery gate → SHA-256 proof → tamper-evident audit chain.
 
 **Hybrid optimization path:** deterministic QUBO / Ising-equivalent annealing → real server-side Z3 → SHA-256 proof → tamper-evident audit chain.
 
-**Math benchmark path:** deterministic Ising/QUBO candidate search → exact finite verifier → real Z3 → SHA-256 proof → audit chain.
+**Math verification path:** deterministic Ising/QUBO candidate search → exact finite verifier → real Z3 → SHA-256 proof → audit chain.
 
-> **Truth boundary:** implementation is not the same as a verified live deployment. Annealing output is a candidate only. The Ramsey benchmark proves only `R(3,3)=6`. The First Proof #6 path currently verifies finite ε-light graph instances only; it does not claim the universal theorem or the proposed constant `c=1/256`. External Gemini, Grafana, Cloud Run, and audit-backend success is only claimed after real runtime evidence exists.
+**Formal reproducibility path:** pinned external Lean source → pinned Lean/Mathlib toolchain → clean `lake build` → Lean kernel recheck → theorem axiom audit → deterministic replay receipt.
+
+> **Truth boundary:** implementation is not the same as a verified live deployment. Annealing output is a candidate only. The Ramsey benchmark proves only `R(3,3)=6`. First Proof #6 now has two distinct evidence paths in this repository: (1) a provenance-linked reference-theorem closure endpoint and exact finite-instance/sweep evidence, and (2) an independent deterministic replay of the published Archon/FrenzyMath Lean formalization of `Problem6.exists_eps_light_subset` with certified bound `c=1/256`. DSG verifies reproducibility of that published formal proof; it does **not** claim independent discovery or authorship of the proof. External Gemini, Grafana, Cloud Run, and audit-backend success is only claimed after real runtime evidence exists.
 
 ## Implemented
 
@@ -20,13 +22,58 @@ Evidence-first incident response for cinema, streaming, rendering, and media-pro
 - Real server-side `z3-solver`; Android local checks are explicitly labeled local.
 - One-call hybrid endpoint: `POST /v1/hybrid/solve`.
 - Exact Ramsey `R(3,3)=6` benchmark: `POST /v1/math/ramsey-r33/prove`.
+- First Proof #6 provenance-linked theorem closure: `POST /v1/math/first-proof-6/closure`.
 - First Proof #6 finite ε-light benchmark: `POST /v1/math/first-proof-6/benchmark`.
 - Generic finite ε-light instance endpoint: `POST /v1/math/first-proof-6/verify-instance`.
-- MCP tools for Ramsey, First Proof #6 finite instances, and policy hybrid solving.
+- Exact finite First Proof #6 family/epsilon/constant sweep: `POST /v1/math/first-proof-6/sweep`.
+- MCP tools for theorem closure, First Proof #6 finite evidence, Ramsey, and policy hybrid solving.
+- Deterministic Lean replay workflow for First Proof #6 with pinned source commit and Lean 4.28.0.
+- Lean theorem axiom audit using `#print axioms Problem6.exists_eps_light_subset`; the replay gate fails if `sorryAx` appears.
 - SHA-256 proof, optional HMAC-SHA256, SQLite/Firestore/Supabase audit backends.
 - DSG MCP Streamable HTTP at `/mcp`, protected when `DSG_API_KEY` is configured.
 - Android companion: deterministic QUBO candidate → `/v1/verify` → HTTP/Z3/proof/audit evidence.
 - Web demo at `/` that does not fabricate output.
+
+## First Proof #6 — reproducible formal verification
+
+The repository contains a CI gate that reproduces a published Lean 4 formalization of **First Proof Problem #6 — Large ε-Light Vertex Subsets** from a clean GitHub Actions runner.
+
+Pinned inputs:
+
+- Formalization: `frenzymath/Archon-FirstProof-Results`
+- Source commit: `a5694249bd8b94bd1dbab7cc7d477f0fdd322471`
+- Lean: `leanprover/lean4:v4.28.0`
+- Mathlib: `v4.28.0` as resolved by the pinned project
+- Theorem file: `FirstProof/FirstProof6/Problem6.lean`
+- Main theorem: `Problem6.exists_eps_light_subset`
+- Machine-checked bound in this formalization: `c = 1/256`
+
+The formal theorem states that for every finite simple graph `G` and every `ε ∈ (0,1]`, there exists an ε-light vertex set `S` satisfying
+
+```text
+|S| ≥ (ε / 256) |V|.
+```
+
+Latest verified replay evidence from the PR gate:
+
+- clean `lake build`: **PASS** — 2,905 jobs
+- `lake env lean FirstProof/FirstProof6/Problem6.lean`: **PASS**
+- `#print axioms Problem6.exists_eps_light_subset`: **PASS**
+- transitive `sorryAx`: **not present**
+- reported Lean axioms: `propext`, `Classical.choice`, `Quot.sound`
+- replay receipt: `REPRODUCIBLE_FORMAL_PROOF=PASS`
+
+Pinned replay hashes:
+
+```text
+Problem6.lean   50b1fd60f7ef6b09160c615883e0a2073f67c33d9e4529f3432ce5f02bd5605b
+lean-toolchain db7bb24b756d745bbde83fe92718b51bd3625dae3701ba0f598d0eedcd3f3028
+lakefile.toml  6ac555869c58b32dd4f266e727ac2882d354bc3829f74fe4e62a07d3a5789343
+```
+
+See `.github/workflows/first-proof-6-lean-replay.yml` and `docs/FIRST_PROOF_6_DETERMINISTIC_REPLAY.md` for the reproducibility gate.
+
+**Provenance:** the underlying Lean formalization is credited to **FrenzyMath / Archon** and is published under Apache-2.0. DSG independently reruns and verifies the published formal proof under pinned inputs; DSG does not claim to have independently discovered or authored that proof.
 
 ## Fail closed
 
@@ -34,7 +81,9 @@ Evidence-first incident response for cinema, streaming, rendering, and media-pro
 - Gemini/Grafana failures stay failures; no canned success response is substituted.
 - Hybrid annealing success is never promoted to a proof unless server-side Z3 verifies the exact candidate.
 - Ramsey benchmark reports `PROVED` only when the K5 zero-energy witness is Z3-SAT and the K6 no-monochromatic-triangle existence formula is Z3-UNSAT.
-- First Proof #6 reports `FINITE_INSTANCE_VERIFIED` only when the candidate meets the size target and every principal minor of `εL - L_S` is nonnegative under exact rational arithmetic, with the certificate checked by Z3.
+- First Proof #6 finite verification reports `FINITE_INSTANCE_VERIFIED` only when the candidate meets the size target and every principal minor of `εL - L_S` is nonnegative under exact rational arithmetic, with the certificate checked by Z3.
+- First Proof #6 theorem closure is explicitly provenance-linked; it is not labeled as independent DSG discovery.
+- Formal replay reports `REPRODUCIBLE_FORMAL_PROOF=PASS` only after pinned checkout, pinned toolchain validation, clean build, kernel recheck, and a transitive `sorryAx` audit all pass.
 - A restart plan is Z3-UNSAT without the required evidence and human approval.
 - Supabase service-role credentials are server-only and are not committed.
 
@@ -65,15 +114,30 @@ Ramsey benchmark client
   -> Z3 proves K6 existence formula UNSAT
   -> proof_hash + audit.event_hash
 
-First Proof #6 finite benchmark client
-  -> POST /v1/math/first-proof-6/benchmark
-  -> K8, epsilon=1/2, target |S|>=4
-  -> QUBO/Ising candidate search
-  -> build exact rational M = epsilon*L - L_S
-  -> check all 255 principal minors
-  -> Z3 checks fixed membership + rational minor certificate
-  -> FINITE_INSTANCE_VERIFIED / CANDIDATE_REJECTED / UNKNOWN
+First Proof #6 finite verifier
+  -> POST /v1/math/first-proof-6/benchmark or /verify-instance or /sweep
+  -> QUBO/Ising candidate search where applicable
+  -> exact rational M = epsilon*L - L_S
+  -> exact principal-minor PSD checks
+  -> Z3 certificate checks
+  -> FINITE_INSTANCE_VERIFIED / CANDIDATE_REJECTED / FINITE_COUNTEREXAMPLE / UNKNOWN
   -> proof_hash + audit.event_hash
+
+First Proof #6 theorem closure
+  -> POST /v1/math/first-proof-6/closure
+  -> provenance-linked reference theorem
+  -> DSG scalar Z3 obligations + proof/audit hashes
+  -> explicit no-independent-discovery truth boundary
+
+First Proof #6 deterministic Lean replay
+  -> checkout pinned Archon/FrenzyMath commit
+  -> verify Lean 4.28.0 + source hashes
+  -> lake exe cache get
+  -> lake build
+  -> Lean kernel rechecks Problem6.lean
+  -> #print axioms Problem6.exists_eps_light_subset
+  -> reject any sorryAx dependency
+  -> REPRODUCIBLE_FORMAL_PROOF=PASS
 
 Android
   -> deterministic local QUBO candidate
@@ -100,8 +164,8 @@ pytest
 uvicorn app.main:app --reload
 ```
 
-Endpoints: `GET /health`, `GET /v1/capabilities`, `POST /v1/math/first-proof-6/benchmark`, `POST /v1/math/first-proof-6/verify-instance`, `POST /v1/math/ramsey-r33/prove`, `POST /v1/hybrid/solve`, `POST /v1/cinema/investigate`, `POST /v1/verify`, `GET /v1/audit/{event_hash}`, `/mcp`.
+Endpoints: `GET /health`, `GET /v1/capabilities`, `POST /v1/math/first-proof-6/closure`, `POST /v1/math/first-proof-6/benchmark`, `POST /v1/math/first-proof-6/verify-instance`, `POST /v1/math/first-proof-6/sweep`, `POST /v1/math/ramsey-r33/prove`, `POST /v1/hybrid/solve`, `POST /v1/cinema/investigate`, `POST /v1/verify`, `GET /v1/audit/{event_hash}`, `/mcp`.
 
-The Supabase migration is under `supabase/migrations/`. See `docs/FIRST_PROOF_6_EPSILON_LIGHT.md`, `docs/RAMSEY_R33_BENCHMARK.md`, `docs/HYBRID_SOLVER.md`, `docs/VERIFICATION.md`, and `docs/CONTEST_STATUS.md` for evidence boundaries.
+The Supabase migration is under `supabase/migrations/`. See `docs/FIRST_PROOF_6_DETERMINISTIC_REPLAY.md`, `docs/FIRST_PROOF_6_EPSILON_LIGHT.md`, `docs/RAMSEY_R33_BENCHMARK.md`, `docs/HYBRID_SOLVER.md`, `docs/VERIFICATION.md`, and `docs/CONTEST_STATUS.md` for evidence boundaries.
 
 MIT licensed.
