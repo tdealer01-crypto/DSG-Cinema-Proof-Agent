@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 from dataclasses import dataclass
 
@@ -14,6 +16,23 @@ def _bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def derive_aimo_cinema_token(root_key: str) -> str:
+    digest = hmac.new(
+        root_key.encode("utf-8"),
+        b"dsg-aimo-v1:cinema",
+        hashlib.sha256,
+    ).hexdigest()
+    return f"dsg_aimo_{digest}"
+
+
+def _api_key() -> str | None:
+    service_key = _optional("DSG_API_KEY")
+    if service_key:
+        return service_key
+    root_key = _optional("DSG_AIMO_ROOT_KEY")
+    return derive_aimo_cinema_token(root_key) if root_key else None
 
 
 @dataclass(frozen=True)
@@ -37,7 +56,7 @@ class Settings:
 
 def load_settings() -> Settings:
     return Settings(
-        api_key=_optional("DSG_API_KEY"),
+        api_key=_api_key(),
         proof_signing_secret=_optional("PROOF_SIGNING_SECRET"),
         audit_db_path=os.getenv("AUDIT_DB_PATH", "./.data/dsg_audit.sqlite3"),
         audit_backend=os.getenv("AUDIT_BACKEND", "sqlite").strip().lower(),
