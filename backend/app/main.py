@@ -15,6 +15,7 @@ from .auth import ApiKeyASGI
 from .cinema_runtime import CinemaIncidentRequest, CinemaIncidentResponse, run_cinema_incident
 from .config import load_settings
 from .hybrid_solver import HybridSolveRequest, HybridSolveResponse, solve_and_verify
+from .math_aimo_exact import AimoExactEnergyRequest, AimoExactEnergyResult, verify_aimo_exact_energy
 from .math_epsilon_light import (
     EpsilonLightBenchmarkResult,
     EpsilonLightInstanceRequest,
@@ -56,6 +57,13 @@ mcp = FastMCP(
     json_response=True,
     streamable_http_path="/",
 )
+
+
+@mcp.tool()
+def verify_aimo_exact_energy_mcp(payload: dict[str, Any]) -> dict[str, Any]:
+    """Verify a deterministic AIMO QUBO/Ising witness and optionally prove global optimality."""
+    request = AimoExactEnergyRequest.model_validate(payload)
+    return verify_aimo_exact_energy(request, audit_store).model_dump(mode="json")
 
 
 @mcp.tool()
@@ -140,6 +148,7 @@ def capabilities_resource() -> str:
             "service": "DSG QUBO Ising Z3 Verification",
             "transport": "MCP Streamable HTTP",
             "tools": [
+                "verify_aimo_exact_energy_mcp",
                 "close_first_proof_2_mcp",
                 "audit_first_proof_2_reconstruction_mcp",
                 "close_first_proof_6_mcp",
@@ -152,6 +161,7 @@ def capabilities_resource() -> str:
                 "validate_policy_payload",
             ],
             "math_benchmarks": [
+                "AIMO exact QUBO/Ising witness + Z3 global-optimality certificate",
                 "First Proof #2 reference theorem closure",
                 "First Proof #2 reconstruction audit",
                 "R(3,3)=6",
@@ -160,7 +170,7 @@ def capabilities_resource() -> str:
                 "First Proof #6 finite family sweep",
             ],
             "candidate_solver": "deterministic QUBO/Ising-equivalent simulated annealing",
-            "authoritative_verifier": "server-side z3-solver plus exact rational certificates",
+            "authoritative_verifier": "server-side z3-solver plus exact integer/rational certificates",
             "audit": f"{settings.audit_backend} tamper-evident hash chain",
             "authentication": "X-API-Key or Bearer when DSG_API_KEY is configured",
         },
@@ -177,11 +187,11 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DSG Cinema Proof Agent",
-    version="0.7.0",
+    version="0.8.0",
     description=(
         "Gemini/Google ADK cinema incident agent with Grafana MCP evidence plus "
-        "deterministic QUBO/Ising search, exact finite math benchmarks, theorem-closure "
-        "certificates, and authoritative server-side Z3 verification."
+        "deterministic QUBO/Ising search, AIMO exact-energy/global-optimality certificates, "
+        "exact finite math benchmarks, theorem-closure certificates, and authoritative server-side Z3 verification."
     ),
     lifespan=lifespan,
 )
@@ -218,6 +228,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "service": "dsg-cinema-proof-agent",
         "mcp_endpoint": "/mcp",
+        "aimo_exact_energy_endpoint": "/v1/math/aimo/exact-energy-witness",
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
         "first_proof_2_closure_endpoint": "/v1/math/first-proof-2/closure",
@@ -244,6 +255,8 @@ def capabilities() -> dict[str, Any]:
         "grafana_mcp_configured": settings.grafana_mcp_url is not None,
         "deterministic_qubo_annealing": True,
         "qubo_to_ising_transform": True,
+        "aimo_exact_integer_energy_verifier": True,
+        "aimo_z3_global_optimality_gate": True,
         "exact_ramsey_ising_model": True,
         "exact_rational_principal_minor_checker": True,
         "exact_finite_subset_enumeration": True,
@@ -252,6 +265,7 @@ def capabilities() -> dict[str, Any]:
         "first_proof_6_reference_theorem_closed": True,
         "first_proof_6_reference_constant": "1/42",
         "math_benchmarks": [
+            "AIMO exact QUBO/Ising witness + Z3 global-optimality certificate",
             "First Proof #2 reference theorem closure",
             "First Proof #2 reconstruction audit",
             "R(3,3)=6",
@@ -259,6 +273,7 @@ def capabilities() -> dict[str, Any]:
             "First Proof #6 finite epsilon-light instance",
             "First Proof #6 finite family sweep",
         ],
+        "aimo_exact_energy_endpoint": "/v1/math/aimo/exact-energy-witness",
         "hybrid_solver_endpoint": "/v1/hybrid/solve",
         "ramsey_r33_endpoint": "/v1/math/ramsey-r33/prove",
         "first_proof_2_closure_endpoint": "/v1/math/first-proof-2/closure",
@@ -273,7 +288,10 @@ def capabilities() -> dict[str, Any]:
         "mcp_transport": "streamable-http",
         "mcp_endpoint": "/mcp",
         "runtime_truth_boundary": (
-            "First Proof #2 is represented as a provenance-linked human reference closure plus a DSG machine audit of "
+            "AIMO PASS applies only to a supplied finite integer QUBO/Ising encoding after problem/encoding hash binding, "
+            "exact energy recomputation, assignment replay, and a Z3 UNSAT proof that no strictly lower-energy assignment exists; "
+            "it does not by itself prove that the finite encoding faithfully captures every semantic requirement of a natural-language "
+            "olympiad problem. First Proof #2 is represented as a provenance-linked human reference closure plus a DSG machine audit of "
             "its quantifier/scalar reconstruction spine; DSG does not claim independent discovery and does not claim an "
             "independent formalization of the deep p-adic representation-theoretic lemmas. First Proof #6 is closed here "
             "as a provenance-linked reference theorem using the official c=1/42 proof; DSG does not claim independent "
@@ -282,6 +300,15 @@ def capabilities() -> dict[str, Any]:
             "after successful runtime responses."
         ),
     }
+
+
+@app.post(
+    "/v1/math/aimo/exact-energy-witness",
+    response_model=AimoExactEnergyResult,
+    dependencies=[Depends(require_api_key)],
+)
+def aimo_exact_energy(request: AimoExactEnergyRequest) -> AimoExactEnergyResult:
+    return verify_aimo_exact_energy(request, audit_store)
 
 
 @app.post(
