@@ -1,0 +1,155 @@
+# Monitoring & Logging Configuration for DSG Z3 Solver Service
+# Use with environment variables or direct configuration
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: INFO
+
+  # Log file location
+  file: /var/log/z3-solver/service.log
+
+  # Format: json or text
+  format: json
+
+  # Rotation settings
+  rotation:
+    max_bytes: 104857600  # 100 MB
+    backup_count: 10
+
+  # Include fields in logs
+  include_fields:
+    - timestamp
+    - level
+    - name
+    - message
+    - context
+    - duration_ms
+    - error_type
+
+# Prometheus metrics
+prometheus:
+  # Enable Prometheus endpoint
+  enabled: true
+
+  # Endpoint path
+  endpoint: /metrics
+
+  # Metrics to track
+  metrics:
+    - solver_requests_total
+    - solver_duration_seconds
+    - solver_queue_size
+    - z3_timeout_errors
+    - z3_sat_results
+    - api_requests_total
+    - api_request_duration_seconds
+    - auth_failures_total
+    - errors_total
+    - active_requests
+    - service_uptime_seconds
+
+# Azure Application Insights
+azure_insights:
+  # Enable Azure monitoring
+  enabled: false  # Set to true for production
+
+  # Instrumentation key (from env: AZURE_INSTRUMENTATION_KEY)
+  instrumentation_key: "${AZURE_INSTRUMENTATION_KEY}"
+
+  # Disable offline storage for cloud environments
+  disable_offline_storage: false
+
+  # Sampling rate (0.0 to 1.0)
+  sampling_rate: 1.0
+
+# Health checks
+health_checks:
+  # Liveness probe interval
+  liveness_interval_ms: 10000
+
+  # Readiness probe interval
+  readiness_interval_ms: 5000
+
+  # Degradation threshold (error count)
+  degradation_threshold: 10
+
+  # Check endpoints
+  endpoints:
+    - /health
+    - /health/live
+    - /health/ready
+
+# Audit logging
+audit:
+  # Enable audit trail
+  enabled: true
+
+  # Audit log file
+  file: /var/log/z3-solver/audit.log
+
+  # Events to log
+  events:
+    - authentication
+    - solve_requests
+    - z3_results
+    - timeout_errors
+    - api_errors
+
+# Performance monitoring
+performance:
+  # Track function performance
+  track_functions: true
+
+  # Performance thresholds (ms)
+  thresholds:
+    qubo_slow: 5000
+    sat_slow: 10000
+    api_slow: 1000
+
+  # Alert on threshold breach
+  alert_on_breach: true
+
+# Alerting
+alerting:
+  # Error rate threshold (0.0 to 1.0)
+  error_rate_threshold: 0.1
+
+  # Alert channels
+  channels:
+    - type: log
+      level: ERROR
+
+    # Uncomment for Azure Monitor
+    # - type: azure_monitor
+    #   alert_name: "Z3 Solver High Error Rate"
+    #   severity: 2
+
+    # Uncomment for webhooks
+    # - type: webhook
+    #   url: "${ALERT_WEBHOOK_URL}"
+    #   method: POST
+
+# Retention policies
+retention:
+  # Log retention (days)
+  log_retention_days: 30
+
+  # Metrics retention (days)
+  metrics_retention_days: 90
+
+  # Audit trail retention (days)
+  audit_retention_days: 365
+
+# Sampling & filtering
+sampling:
+  # Sample logs to reduce storage
+  enabled: false
+
+  # Sample rate (0.0 to 1.0)
+  rate: 1.0
+
+  # Skip sampling for error logs
+  skip_errors: true
+
+  # Skip sampling for audit logs
+  skip_audit: true

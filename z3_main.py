@@ -5,6 +5,7 @@ Z3 Solver Service for DSG ONE Platform
 - Endpoint: POST /solve with QUBO/SAT problems
 - Output: proof_hash, z3_status, audit event_hash
 - Auth: DSG_SOLVER_SHARED_SECRET env var
+- Comprehensive monitoring & logging
 """
 
 import os
@@ -18,6 +19,18 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import JSONResponse
 import uvicorn
 from z3 import *
+
+from monitoring import (
+    setup_logging,
+    service_logger,
+    audit_logger,
+    track_performance,
+    track_solver_operation,
+    MonitoringMiddleware,
+    health_check,
+    get_metrics,
+    get_metrics_content_type,
+)
 
 # ============ CONFIG ============
 SHARED_SECRET = os.getenv("DSG_SOLVER_SHARED_SECRET", "dev-secret-unsafe")
@@ -56,22 +69,62 @@ class SolveResponse(BaseModel):
     audit: dict  # {event_hash, preset_name, z3_status}
 
 # ============ APP ============
-app = FastAPI(title="Z3 Solver Service", version="1.0.0")
+app = FastAPI(
+    title="Z3 Solver Service",
+    version="1.0.0",
+    description="Real Z3 SMT solver with comprehensive monitoring"
+)
+
+# Add monitoring middleware
+app.add_middleware(MonitoringMiddleware)
+
+# Setup logging
+setup_logging()
 
 @app.get("/health")
 def health():
-    """Liveness check for Cloud Run"""
-    return {"status": "alive", "z3_version": get_version()}
+    """Liveness check for Cloud Run with detailed status"""
+    status = health_check.get_status()
+    service_logger.info("Health check requested", status=status.get("status"))
+    return {
+        "status": status.get("status"),
+        "z3_version": get_version(),
+        **status
+    }
 
-@app.get("/metrics")
+@app.get("/health/live")
+def health_live():
+    """Kubernetes liveness probe"""
+    return {"status": "alive"}
+
+@app.get("/health/ready")
+def health_ready():
+    """Kubernetes readiness probe"""
+    status = health_check.get_status()
+    is_ready = status.get("status") in ["healthy"]
+    return {
+        "ready": is_ready,
+        "status": status.get("status"),
+        "error_rate": status.get("error_rate", 0)
+    }
+
+@app.get("/metrics", response_class=str)
 def metrics():
-    """Basic metrics endpoint"""
+    """Prometheus metrics endpoint"""
+    return get_metrics()
+
+@app.get("/status")
+def status():
+    """Detailed service status"""
+    health_status = health_check.get_status()
     return {
         "service": "z3-solver",
+        "version": "1.0.0",
         "z3_version": get_version(),
         "deterministic": DETERMINISTIC,
         "seed": Z3_SEED,
         "timeout_ms": Z3_TIMEOUT_MS,
+        **health_status
     }
 
 @app.post("/solve", response_model=SolveResponse)
@@ -81,72 +134,115 @@ def solve(
 ):
     """
     Solve QUBO or SAT problem using real Z3 SMT solver.
-    
+
     Auth: Bearer token (DSG_SOLVER_SHARED_SECRET)
     """
     start_time = time.time()
-    
+    health_check.record_request()
+
     # ===== AUTH =====
     if authorization:
         token = authorization.replace("Bearer ", "").strip()
         if token != SHARED_SECRET:
+            audit_logger.log_auth_attempt(req.request_id, False, "Invalid token")
             raise HTTPException(status_code=403, detail="Invalid token")
-    
+    else:
+        audit_logger.log_auth_attempt(req.request_id, True)
+
     try:
-        # ===== SOLVE =====
-        if req.problem_type == "qubo":
-            z3_status, witness, energy = solve_qubo(
-                linear=req.linear,
-                quadratic=req.quadratic,
-                witness=req.witness,
-                timeout_ms=req.z3TimeoutMs,
+        with track_solver_operation(req.problem_type):
+            # ===== SOLVE =====
+            if req.problem_type == "qubo":
+                z3_status, witness, energy = solve_qubo(
+                    linear=req.linear,
+                    quadratic=req.quadratic,
+                    witness=req.witness,
+                    timeout_ms=req.z3TimeoutMs,
+                )
+            elif req.problem_type == "sat":
+                z3_status, witness, energy = solve_sat(
+                    clauses=req.clauses,
+                    timeout_ms=req.z3TimeoutMs,
+                )
+            else:
+                raise ValueError(f"Unknown problem_type: {req.problem_type}")
+
+            # Log Z3 result
+            if z3_status == "TIMEOUT":
+                audit_logger.log_timeout(req.problem_type, req.z3TimeoutMs)
+            else:
+                audit_logger.log_z3_result(req.problem_type, z3_status)
+
+            # ===== PROOF HASH =====
+            witness_str = ",".join(map(str, witness)) if witness else "none"
+            energy_str = str(energy) if energy is not None else "none"
+            proof_input = f"{req.request_id}:{z3_status}:{witness_str}:{energy_str}:{Z3_SEED}"
+            proof_hash = hashlib.sha256(proof_input.encode()).hexdigest()
+
+            # ===== AUDIT HASH =====
+            now = datetime.utcnow().isoformat() + "Z"
+            audit_input = f"{now}:{req.request_id}:{req.preset_name}:{z3_status}:{Z3_SEED}"
+            event_hash = hashlib.sha256(audit_input.encode()).hexdigest()
+
+            compute_ms = int((time.time() - start_time) * 1000)
+
+            # Log successful solve
+            audit_logger.log_solve_request(
+                request_id=req.request_id,
+                problem_type=req.problem_type,
+                preset_name=req.preset_name,
+                status=z3_status,
+                compute_ms=compute_ms,
+                energy=energy
             )
-        elif req.problem_type == "sat":
-            z3_status, witness, energy = solve_sat(
-                clauses=req.clauses,
-                timeout_ms=req.z3TimeoutMs,
+
+            health_check.record_request(success=True)
+
+            return SolveResponse(
+                request_id=req.request_id,
+                z3_status=z3_status,
+                witness=witness,
+                energy=energy,
+                proof_hash=proof_hash,
+                compute_ms=compute_ms,
+                timestamp=now,
+                audit={
+                    "event_hash": event_hash,
+                    "preset_name": req.preset_name,
+                    "z3_status": z3_status,
+                },
             )
-        else:
-            raise ValueError(f"Unknown problem_type: {req.problem_type}")
-        
-        # ===== PROOF HASH =====
-        witness_str = ",".join(map(str, witness)) if witness else "none"
-        energy_str = str(energy) if energy is not None else "none"
-        proof_input = f"{req.request_id}:{z3_status}:{witness_str}:{energy_str}:{Z3_SEED}"
-        proof_hash = hashlib.sha256(proof_input.encode()).hexdigest()
-        
-        # ===== AUDIT HASH =====
-        now = datetime.utcnow().isoformat() + "Z"
-        audit_input = f"{now}:{req.request_id}:{req.preset_name}:{z3_status}:{Z3_SEED}"
-        event_hash = hashlib.sha256(audit_input.encode()).hexdigest()
-        
-        compute_ms = int((time.time() - start_time) * 1000)
-        
-        return SolveResponse(
-            request_id=req.request_id,
-            z3_status=z3_status,
-            witness=witness,
-            energy=energy,
-            proof_hash=proof_hash,
-            compute_ms=compute_ms,
-            timestamp=now,
-            audit={
-                "event_hash": event_hash,
-                "preset_name": req.preset_name,
-                "z3_status": z3_status,
-            },
-        )
-    
+
     except Exception as e:
         compute_ms = int((time.time() - start_time) * 1000)
         now = datetime.utcnow().isoformat() + "Z"
-        
+
+        # Log error
+        service_logger.error(
+            f"Solve request failed: {req.request_id}",
+            request_id=req.request_id,
+            problem_type=req.problem_type,
+            error=str(e),
+            error_type=type(e).__name__,
+            compute_ms=compute_ms
+        )
+
+        audit_logger.log_solve_request(
+            request_id=req.request_id,
+            problem_type=req.problem_type,
+            preset_name=req.preset_name,
+            status="ERROR",
+            compute_ms=compute_ms
+        )
+
+        health_check.record_request(success=False)
+
         error_input = f"{req.request_id}:ERROR:none:none:{Z3_SEED}"
         proof_hash = hashlib.sha256(error_input.encode()).hexdigest()
-        
+
         audit_input = f"{now}:{req.request_id}:{req.preset_name}:ERROR:{Z3_SEED}"
         event_hash = hashlib.sha256(audit_input.encode()).hexdigest()
-        
+
         return SolveResponse(
             request_id=req.request_id,
             z3_status="ERROR",
