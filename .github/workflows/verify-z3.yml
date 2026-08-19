@@ -18,6 +18,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      PYTHONPATH: .
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,7 +31,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
       - name: Compile Python
         run: python -m py_compile z3_main.py tests/test_z3_main.py cinema_z3_integration.py
@@ -41,4 +43,4 @@ jobs:
         env:
           DSG_SOLVER_SHARED_SECRET: ci-test-secret
           Z3_DETERMINISTIC_SEED: '42'
-        run: pytest -q tests/test_z3_main.py
+        run: python -m pytest -q tests/test_z3_main.py
