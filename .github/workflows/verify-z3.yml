@@ -2,11 +2,6 @@ name: Verify Z3 Contract
 
 on:
   pull_request:
-    paths:
-      - 'z3_main.py'
-      - 'requirements.txt'
-      - 'tests/**'
-      - '.github/workflows/verify-z3.yml'
   push:
     branches: [main]
     paths:
@@ -37,7 +32,10 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
 
       - name: Compile Python
-        run: python -m py_compile z3_main.py tests/test_z3_main.py
+        run: python -m py_compile z3_main.py tests/test_z3_main.py cinema_z3_integration.py
+
+      - name: Check Bash wrapper syntax
+        run: bash -n CINEMA_Z3_AUTO_INTEGRATION.sh
 
       - name: Run deterministic verification tests
         env:
