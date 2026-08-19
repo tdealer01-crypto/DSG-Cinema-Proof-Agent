@@ -1,0 +1,163 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║ DSG ONE Z3 DEPLOYMENT — QUICK COMMANDS REFERENCE                         ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+OPTION A: SHELL SCRIPT (Full Automation)
+────────────────────────────────────────
+
+  chmod +x EXECUTE_ROUND_1_AZURE.sh
+  ./EXECUTE_ROUND_1_AZURE.sh
+
+  Expected: 15-20 min, verbose output, deployment complete ✅
+
+
+OPTION B: PYTHON SCRIPT (No Docker)
+────────────────────────────────────
+
+  export AZURE_ACCESS_TOKEN=$(az account get-access-token --query accessToken -o tsv)
+  python3 deploy_z3_azure_rest.py
+
+  Expected: 15-20 min, Python output, deployment complete ✅
+
+
+OPTION C: GITHUB ACTIONS (Recommended)
+───────────────────────────────────────
+
+  1. Create service principal (one time):
+     az ad sp create-for-rbac --name "github-z3-deployer" --role Contributor \
+       --scopes /subscriptions/dcf13c0d-0d9f-4f81-aa89-c6b50aaef839 --json-auth
+
+  2. Add GitHub Secrets (Settings → Secrets):
+     - AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+     - AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+     - AZURE_CLIENT_ID: (from service principal)
+     - AZURE_CLIENT_SECRET: (from service principal) ⚠️ Secret!
+
+  3. Push to repository:
+     git add .
+     git commit -m "Add Z3 solver deployment"
+     git push
+
+  4. Go to GitHub → Actions → "Deploy Z3 to Azure" → Run workflow
+
+  Expected: Automatic deployment, logs visible in GitHub UI ✅
+
+
+AZURE LOGIN (Required for Options A & B)
+─────────────────────────────────────────
+
+  az login --tenant cbc618d5-9aa3-46b5-ae64-d07794603a7a
+  az account set --subscription dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+  az account show
+
+
+AZURE CLI MANAGEMENT (After Deployment)
+────────────────────────────────────────
+
+  View container logs:
+    az container logs --resource-group rg-t.dealer01-0468 --name z3-solver-service
+
+  Restart container:
+    az container restart --resource-group rg-t.dealer01-0468 --name z3-solver-service
+
+  Delete container:
+    az container delete --resource-group rg-t.dealer01-0468 --name z3-solver-service
+
+  View container status:
+    az container show --resource-group rg-t.dealer01-0468 --name z3-solver-service
+
+
+TEST DEPLOYMENT
+────────────────
+
+  SERVICE_URL="http://z3-solver-service.westus3.azurecontainer.io:8080"
+  API_SECRET="<from-deployment-output>"
+
+  Health check:
+    curl "$SERVICE_URL/health"
+
+  QUBO solve test:
+    curl -X POST "$SERVICE_URL/solve" \
+      -H "Authorization: Bearer $API_SECRET" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "request_id": "test-001",
+        "problem_type": "QUBO",
+        "linear": [-4, -3, 1],
+        "quadratic": [[0, 1, 5], [1, 2, 2]],
+        "variables": 3,
+        "seed": 42
+      }' | jq .
+
+  Expected response:
+    {
+      "status": "SAT",
+      "z3_status": "sat",
+      "witness": [1, 0, 0],
+      "energy": -4,
+      "proof_hash": "sha256:...",
+      "execution_time_ms": <number>
+    }
+
+
+TROUBLESHOOTING
+────────────────
+
+  "az: command not found"
+    → Install Azure CLI: https://aka.ms/InstallAzureCLI
+
+  "docker: command not found"
+    → Install Docker Desktop: https://www.docker.com/products/docker-desktop
+
+  "not authenticated"
+    → Run: az login --tenant cbc618d5-9aa3-46b5-ae64-d07794603a7a
+
+  "permission denied"
+    → chmod +x EXECUTE_ROUND_1_AZURE.sh
+
+  "Container not starting"
+    → Check logs: az container logs --resource-group rg-t.dealer01-0468 --name z3-solver-service
+
+  "Health check timeout"
+    → Wait 30-60 seconds (container takes time to start)
+    → Check: curl http://z3-solver-service.westus3.azurecontainer.io:8080/health
+
+  "401 Unauthorized"
+    → Verify API_SECRET from deployment output
+    → Use: -H "Authorization: Bearer <SECRET>"
+
+
+CONFIGURATION
+──────────────
+
+  Subscription ID:     dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+  Tenant ID:           cbc618d5-9aa3-46b5-ae64-d07794603a7a
+  Resource Group:      rg-t.dealer01-0468
+  Location:            westus3
+  Registry Name:       tdealer01acr
+  Service Name:        z3-solver-service
+  Container Image:     tdealer01acr.azurecr.io/z3-solver-service:latest
+  Container CPU:       4 cores
+  Container Memory:    8 GB
+  Port:                8080
+  Protocol:            HTTP (with Bearer token auth)
+  Health check:        Every 10 seconds
+  Restart policy:      Always
+
+
+NEXT STEPS (After Deployment)
+───────────────────────────────
+
+  1. Save SERVICE_URL and API_SECRET from deployment output
+  2. Update Cinema BuildConfig.kt:
+     const val DSG_BACKEND_BASE_URL = "<SERVICE_URL>"
+     const val DSG_BACKEND_API_KEY = "<API_SECRET>"
+  3. Test AIMO integration
+  4. Enable revenue paths
+
+════════════════════════════════════════════════════════════════════════════════
+
+For more details, see:
+  - README.md (Quick start)
+  - ROUND_1_DEPLOYMENT_GUIDE.md (Comprehensive guide)
+  - GITHUB_ACTIONS_SETUP.md (GitHub Actions specific)

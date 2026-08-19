@@ -1,0 +1,244 @@
+name: Deploy Z3 to Azure
+
+on:
+  # เลือก trigger แบบไหนก็ได้:
+  push:
+    branches: [main]
+    paths:
+      - 'z3_main.py'
+      - 'requirements.txt'
+      - '.github/workflows/deploy-z3-azure.yml'
+  
+  workflow_dispatch:  # ← Run manually from GitHub UI
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    environment: production
+    
+    steps:
+      # ============================================================================
+      # 1. Checkout code
+      # ============================================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # ============================================================================
+      # 2. Login to Azure
+      # ============================================================================
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      # ============================================================================
+      # 3. Set Azure subscription
+      # ============================================================================
+      - name: Set Azure subscription
+        run: |
+          az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          az account show
+      
+      # ============================================================================
+      # 4. Create resource group (if not exists)
+      # ============================================================================
+      - name: Create Resource Group
+        run: |
+          az group create \
+            --name rg-t.dealer01-0468 \
+            --location westus3 \
+            || echo "Resource group already exists"
+      
+      # ============================================================================
+      # 5. Create/verify Container Registry
+      # ============================================================================
+      - name: Create Container Registry
+        run: |
+          REGISTRY_EXISTS=$(az acr list --resource-group rg-t.dealer01-0468 \
+            --query "[?name=='tdealer01acr'].name" -o tsv | wc -l)
+          
+          if [ "$REGISTRY_EXISTS" -eq 0 ]; then
+            echo "Creating Container Registry..."
+            az acr create \
+              --resource-group rg-t.dealer01-0468 \
+              --name tdealer01acr \
+              --sku Basic \
+              --location westus3 \
+              --admin-enabled true
+            echo "✅ Container Registry created"
+          else
+            echo "✅ Container Registry already exists"
+          fi
+      
+      # ============================================================================
+      # 6. Login to Container Registry
+      # ============================================================================
+      - name: Login to ACR
+        run: |
+          az acr login --name tdealer01acr
+      
+      # ============================================================================
+      # 7. Build and push Docker image using ACR
+      # ============================================================================
+      - name: Build and push image to ACR
+        run: |
+          az acr build \
+            --registry tdealer01acr \
+            --image z3-solver-service:latest \
+            --file Dockerfile \
+            .
+      
+      # ============================================================================
+      # 8. Deploy to Container Instances
+      # ============================================================================
+      - name: Deploy to Container Instances
+        run: |
+          # Generate API secret
+          API_SECRET=$(openssl rand -hex 32)
+          echo "API_SECRET=$API_SECRET" >> $GITHUB_ENV
+          
+          # Get registry credentials
+          REGISTRY_LOGIN=$(az acr credential show --name tdealer01acr --query username -o tsv)
+          REGISTRY_PASSWORD=$(az acr credential show --name tdealer01acr --query passwords[0].value -o tsv)
+          
+          # Deploy container
+          az container create \
+            --resource-group rg-t.dealer01-0468 \
+            --name z3-solver-service \
+            --image tdealer01acr.azurecr.io/z3-solver-service:latest \
+            --cpu 4 \
+            --memory 8 \
+            --port 8080 \
+            --environment-variables \
+              DSG_SOLVER_SHARED_SECRET=$API_SECRET \
+              Z3_DETERMINISTIC_SEED=42 \
+            --registry-login-server tdealer01acr.azurecr.io \
+            --registry-username "$REGISTRY_LOGIN" \
+            --registry-password "$REGISTRY_PASSWORD" \
+            --dns-name-label z3-solver-service \
+            --restart-policy Always \
+            || echo "Container already exists, updating..."
+      
+      # ============================================================================
+      # 9. Wait for container to be ready
+      # ============================================================================
+      - name: Wait for container startup
+        run: |
+          echo "Waiting 30 seconds for container to start..."
+          sleep 30
+          echo "✅ Ready"
+      
+      # ============================================================================
+      # 10. Get container details
+      # ============================================================================
+      - name: Get container details
+        run: |
+          CONTAINER_FQDN=$(az container show \
+            --resource-group rg-t.dealer01-0468 \
+            --name z3-solver-service \
+            --query ipAddress.fqdn -o tsv)
+          
+          SERVICE_URL="http://$CONTAINER_FQDN:8080"
+          echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
+          echo "CONTAINER_FQDN=$CONTAINER_FQDN" >> $GITHUB_ENV
+          
+          echo "Service URL: $SERVICE_URL"
+      
+      # ============================================================================
+      # 11. Test health endpoint
+      # ============================================================================
+      - name: Test health endpoint
+        run: |
+          echo "Testing health endpoint..."
+          
+          HEALTH_URL="${{ env.SERVICE_URL }}/health"
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o /tmp/health_response.txt "$HEALTH_URL" || echo "000")
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Health check PASSED (HTTP 200)"
+            cat /tmp/health_response.txt
+          else
+            echo "⚠️  Health check returned HTTP $HTTP_CODE"
+            cat /tmp/health_response.txt || echo "No response"
+          fi
+      
+      # ============================================================================
+      # 12. Save outputs as artifact
+      # ============================================================================
+      - name: Save deployment outputs
+        run: |
+          API_SECRET=$(openssl rand -hex 32)
+          
+          cat > deployment_output.txt << EOF
+          ╔════════════════════════════════════════════════════════════════════════════╗
+          ║ Z3 SOLVER DEPLOYMENT — AZURE (GitHub Actions)                            ║
+          ║ Deployment date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')                     ║
+          ╚════════════════════════════════════════════════════════════════════════════╝
+          
+          SERVICE_URL: ${{ env.SERVICE_URL }}
+          API_SECRET: $API_SECRET
+          CONTAINER_FQDN: ${{ env.CONTAINER_FQDN }}
+          
+          FOUNDRY_ENDPOINT:
+          https://tdealer01-1888-resource.services.ai.azure.com/api/projects/tdealer01-1888
+          
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          
+          Test curl command:
+          curl -X POST "${{ env.SERVICE_URL }}/solve" \
+            -H "Authorization: Bearer $API_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "request_id": "test-001",
+              "problem_type": "QUBO",
+              "linear": [-4, -3, 1],
+              "quadratic": [[0, 1, 5], [1, 2, 2]],
+              "variables": 3,
+              "seed": 42
+            }'
+          
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          EOF
+          
+          cat deployment_output.txt
+      
+      - name: Upload deployment outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-outputs
+          path: deployment_output.txt
+          retention-days: 30
+      
+      # ============================================================================
+      # 13. Notify on success
+      # ============================================================================
+      - name: ✅ Deployment successful
+        run: |
+          echo "🎉 Z3 Solver deployed successfully to Azure!"
+          echo ""
+          echo "Service URL: ${{ env.SERVICE_URL }}"
+          echo "Container FQDN: ${{ env.CONTAINER_FQDN }}"
+          echo ""
+          echo "📋 Deployment outputs saved to artifacts (see above)"
+      
+      # ============================================================================
+      # ERROR HANDLING: Notify on failure
+      # ============================================================================
+      - name: ❌ Deployment failed
+        if: failure()
+        run: |
+          echo "Deployment failed!"
+          echo "Check Azure Container Registry and Container Instances in Azure Portal"
+          exit 1
