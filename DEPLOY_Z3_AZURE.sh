@@ -172,6 +172,7 @@ az container create \
     --resource-group $RESOURCE_GROUP \
     --name $CONTAINER_NAME \
     --image $FULL_IMAGE \
+    --os-type Linux \
     --cpu 2 \
     --memory 2 \
     --registry-login-server $REGISTRY_URL \
