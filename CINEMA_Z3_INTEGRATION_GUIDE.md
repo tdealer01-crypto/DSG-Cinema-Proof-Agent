@@ -1,379 +1,206 @@
-# DSG ONE — Cinema + Z3 Integration Guide
+# DSG ONE — Cinema + Z3 End-to-End Integration
 
-**Purpose:** Connect Cinema Proof Agent to Z3 Solver automatically
+## Current design
 
-**Timeline:** ~20 minutes total
+This repository contains the Z3 verifier, Azure deployment workflow, and the
+Cinema runtime-integration helper. It does **not** contain the Cinema application
+source code itself.
 
-**Requirements Before Starting:**
-- ✅ Z3 Solver deployed and running
-- ✅ Z3 SERVICE_URL (e.g., `http://z3-solver-service.westus3.azurecontainer.io:8080`)
-- ✅ Z3 API_SECRET (32-character bearer token)
-- ✅ Cinema already deployed at `https://dsg-cinema-proof-agent.azurewebsites.net`
-- ✅ Local clone of `https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent`
+The supported flow is:
 
----
-
-## ⚠️ CRITICAL: Verify Z3 Is Running FIRST
-
-Before running any script, confirm Z3 is responding:
-
-```bash
-curl -s http://<YOUR_Z3_SERVICE_URL>/health
+```text
+candidate / QUBO request
+        ↓
+Cinema server
+        ↓ HTTPS + Bearer token
+DSG Z3 verifier
+        ↓
+Z3 candidate / supplied witness
+        ↓
+independent lower-energy query
+        ↓
+UNSAT => VERIFIED_GLOBAL_OPTIMUM
+        ↓
+deterministic request_hash + proof_hash
+        ↓
+Cinema response
+        ↓
+E2E verification gate
 ```
 
-**Expected response:**
+A proof is not considered verified merely because Z3 returned `SAT`. For QUBO,
+`verified=true` is only returned when the independent verifier proves that no
+assignment exists with lower energy than the candidate.
+
+## 1. Pull-request verification gate
+
+PRs that change the verifier run `.github/workflows/verify-z3.yml`.
+
+The gate installs the pinned dependencies, compiles the Python files, and runs
+`tests/test_z3_main.py`.
+
+Required test outcomes include:
+
+- missing Bearer token is rejected;
+- wrong Bearer token is rejected;
+- the reference QUBO returns witness `[1,0,0]` with exact energy `-4`;
+- the reference QUBO returns `VERIFIED_GLOBAL_OPTIMUM`;
+- a deliberately non-optimal witness returns `COUNTEREXAMPLE_FOUND`;
+- identical requests replay to the same `request_hash` and `proof_hash`;
+- invalid QUBO indices and invalid witnesses are rejected;
+- SAT results are deterministic.
+
+**Merge rule:** do not merge while this gate is failing or absent.
+
+## 2. Azure deployment
+
+Canonical deployment is `.github/workflows/deploy-z3-azure.yml`.
+
+It deploys the verifier to Azure Container Apps and exposes the application via
+HTTPS. The deployment uses an immutable image tag based on the Git commit SHA.
+
+### Required GitHub Environment secrets
+
+Configure these in the selected GitHub Environment (`staging` or `production`):
+
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+- `DSG_SOLVER_SHARED_SECRET` — at least 32 characters
+
+`DSG_SOLVER_SHARED_SECRET` is never generated a second time, written into source,
+or placed in the deployment artifact.
+
+### Deployment gate
+
+The workflow fails unless all of these are true:
+
+1. Azure login succeeds.
+2. ACR build succeeds.
+3. Container App becomes ready at `/ready`.
+4. Authenticated `/solve` returns HTTP 200.
+5. `verified == true`.
+6. `verification == "VERIFIED_GLOBAL_OPTIMUM"`.
+7. Witness is `[1,0,0]` and exact energy is `-4` for the reference problem.
+8. Two identical requests return the same `proof_hash` and `request_hash`.
+
+The uploaded `deployment_evidence.json` contains no API secret.
+
+## 3. Z3 API contract
+
+### Readiness
+
+```http
+GET /ready
+```
+
+Expected:
+
+```json
+{"status":"ready","service":"dsg-z3-verifier"}
+```
+
+### QUBO solve / verify
+
+```http
+POST /solve
+Authorization: Bearer <DSG_SOLVER_SHARED_SECRET>
+Content-Type: application/json
+```
+
+Example body:
+
 ```json
 {
-  "status": "ok",
-  "version": "4.13.0",
-  "timestamp": "2026-08-19T..."
+  "request_id": "example-001",
+  "preset_name": "cinema",
+  "problem_type": "qubo",
+  "linear": [-4, -3, 1],
+  "quadratic": [[0, 1, 5], [1, 2, 2]],
+  "proveOptimality": true,
+  "z3TimeoutMs": 30000
 }
 ```
 
-**If you get:**
-- `Connection refused` → Z3 not deployed yet
-- `404 Not Found` → Wrong SERVICE_URL
-- `401 Unauthorized` → Wrong API_SECRET (will test later)
+`quadratic` uses `[i, j, coefficient]` terms with `i <= j`.
 
-✋ **Stop here and deploy Z3 first** using `DSG-Z3-COMPLETE-DEPLOYMENT-PACKAGE.zip`
+Expected proof fields for the reference input:
 
----
-
-## 🎯 Option A: Bash Script (Recommended)
-
-**For:** macOS, Linux, WSL (Windows Subsystem for Linux)
-
-**Prerequisites:**
-```bash
-which bash           # Should output: /bin/bash or similar
-which git           # Should output a path
-which curl          # Should output a path
+```json
+{
+  "z3_status": "SAT",
+  "verification": "VERIFIED_GLOBAL_OPTIMUM",
+  "verified": true,
+  "witness": [1, 0, 0],
+  "energy": -4.0,
+  "energy_exact": "-4",
+  "request_hash": "<sha256>",
+  "proof_hash": "<sha256>"
+}
 ```
 
-### Step 1: Download Script
+If a caller supplies `witness`, the service verifies that candidate rather than
+silently replacing it. A non-optimal supplied witness returns
+`COUNTEREXAMPLE_FOUND` with `verified=false`.
 
-```bash
-# Make it executable
-chmod +x CINEMA_Z3_AUTO_INTEGRATION.sh
-```
+## 4. Connect the deployed Cinema App Service
 
-### Step 2: Run Integration
+Do **not** put the solver secret in `BuildConfig.kt`, source files, Git commits, or
+shell command arguments.
 
-```bash
-./CINEMA_Z3_AUTO_INTEGRATION.sh \
-  "http://z3-solver-service.westus3.azurecontainer.io:8080" \
-  "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
-```
-
-**Replace:**
-- `http://z3-solver-service.westus3.azurecontainer.io:8080` → Your actual Z3 SERVICE_URL
-- `a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6` → Your actual API_SECRET
-
-### Step 3: What the Script Does
-
-```
-✓ STEP 1: Verify Z3 is running
-   - Tests /health endpoint
-   - Confirms SERVICE_URL is correct
-
-✓ STEP 2: Locate Cinema BuildConfig
-   - Finds BuildConfig.kt in standard locations
-   - Or prompts you to provide path
-
-✓ STEP 3: Backup BuildConfig
-   - Creates BuildConfig.kt.backup.1724181000
-   - Safe to rollback if needed
-
-✓ STEP 4: Update BuildConfig with Z3 credentials
-   - Sets DSG_BACKEND_BASE_URL = <SERVICE_URL>
-   - Sets DSG_BACKEND_API_KEY = <API_SECRET>
-
-✓ STEP 5: Verify changes in BuildConfig
-   - Shows updated lines
-   - Confirms changes are correct
-
-✓ STEP 6: Commit and push changes
-   - git add BuildConfig.kt
-   - git commit -m "feat: Connect Cinema to Z3 Solver"
-   - git push origin main
-
-✓ STEP 7: Azure App Service will auto-redeploy
-   - Azure detects pushed changes
-   - Automatically triggers redeployment
-
-✓ STEP 8: Test Cinema + Z3 integration
-   - Waits 30 seconds for redeploy to start
-   - Tests Cinema health endpoint
-
-✓ STEP 9: Test Z3 solve endpoint
-   - Sends test QUBO problem to Z3
-   - Verifies Z3 responds correctly
-```
-
-### Step 4: Verify Success
-
-Script will print:
-```
-✅ INTEGRATION COMPLETE
-
-Summary:
-  ✅ Z3 health verified
-  ✅ BuildConfig updated with Z3 credentials
-  ✅ Changes committed to GitHub
-  ✅ Redeployment triggered
-  ✅ Z3 /solve endpoint tested
-```
-
----
-
-## 🎯 Option B: Python Script (No Dependencies)
-
-**For:** Windows, macOS, Linux (any OS with Python 3.6+)
-
-**Prerequisites:**
-```bash
-python3 --version    # Should output: Python 3.6+
-```
-
-### Step 1: Run Integration
+Set the required environment variables locally or in an authorized automation
+runtime:
 
 ```bash
-python3 cinema_z3_integration.py \
-  "http://z3-solver-service.westus3.azurecontainer.io:8080" \
-  "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6" \
-  "app/src/main/java/com/example/BuildConfig.kt"
+export Z3_SERVICE_URL='https://<z3-container-app-fqdn>'
+export Z3_API_SECRET='<same server-side solver secret used by deployment>'
+export AZURE_RESOURCE_GROUP='rg-t.dealer01-0468'
+export CINEMA_APP_NAME='dsg-cinema-proof-agent'
+export CINEMA_BASE_URL='https://dsg-cinema-proof-agent.azurewebsites.net'
+export CINEMA_VERIFY_PATH='/solve'
 ```
 
-**If you omit the path, script will search:**
-- `app/src/main/java/com/example/BuildConfig.kt`
-- `src/main/java/com/example/BuildConfig.kt`
-- `BuildConfig.kt`
-- `app/BuildConfig.kt`
-
-### Step 2: What Happens
-
-Same as bash script (see above), but:
-- Written in Python
-- No git required (but will try to use git if available)
-- Cross-platform compatible
-- Better error messages on Windows
-
----
-
-## ⏱️ What Happens Next (After Script Runs)
-
-### Timeline:
-
-**0 min:** Script completes
-- BuildConfig updated ✅
-- Changes pushed to GitHub ✅
-- Z3 tested ✅
-
-**0-2 min:** Azure detects new commit
-- Redeploy triggered automatically
-
-**2-10 min:** Cinema redeploys
-- App Service pulls latest code
-- BuildConfig with Z3 credentials loaded
-- App restarts
-
-**After 10 min:** Test integration manually
+Then run:
 
 ```bash
-# Test Cinema health
-curl https://dsg-cinema-proof-agent.azurewebsites.net/health
-
-# Test Cinema /solve endpoint (after redeploy)
-curl -X POST https://dsg-cinema-proof-agent.azurewebsites.net/solve \
-  -H "Authorization: Bearer <API_SECRET>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "request_id": "manual-test",
-    "problem_type": "QUBO",
-    "linear": [-4, -3, 1],
-    "quadratic": [[0, 1, 5], [1, 2, 2]],
-    "variables": 3
-  }'
+./CINEMA_Z3_AUTO_INTEGRATION.sh
 ```
 
----
-
-## 🔧 Troubleshooting
-
-### Problem: "BuildConfig.kt not found"
-
-**Solution:**
-```bash
-# Find it manually
-find . -name "BuildConfig.kt" -type f
-
-# Then run script with full path
-./CINEMA_Z3_AUTO_INTEGRATION.sh \
-  "http://..." \
-  "api_secret" \
-  "/path/to/BuildConfig.kt"
-```
-
-### Problem: "Z3 health check FAILED"
-
-**Verify Z3 is running:**
-```bash
-curl -s http://<Z3_SERVICE_URL>/health | jq .
-```
-
-**Check Z3 is accessible from your location:**
-```bash
-# If Z3 is in Azure
-az container show --resource-group rg-t.dealer01-0468 --name z3-solver-service
-```
-
-### Problem: "Not in a git repository"
-
-**Solution:**
-```bash
-# Navigate to Cinema repo root
-cd DSG-Cinema-Proof-Agent
-
-# Then run script
-../CINEMA_Z3_AUTO_INTEGRATION.sh "http://..." "secret"
-```
-
-### Problem: Cinema still shows "503 Service Unavailable"
-
-**This is normal during redeploy:**
-- Wait 5-10 minutes
-- Check Azure App Service deployment status:
+or:
 
 ```bash
-az deployment group list \
-  --resource-group rg-t.dealer01-0468 \
-  --query '[0].[name, properties.provisioningState]' \
-  -o table
+python3 cinema_z3_integration.py
 ```
 
-**Status meanings:**
-- `Accepted` → Redeploy started
-- `Running` → In progress (5-10 min)
-- `Succeeded` → Complete, app should be live
+The integration helper:
 
-### Problem: Z3 /solve returns 401 Unauthorized
+1. requires an HTTPS Z3 URL;
+2. verifies Z3 readiness;
+3. sends the reference QUBO directly to Z3 and requires an exact proof;
+4. stores `DSG_BACKEND_BASE_URL` and `DSG_BACKEND_API_KEY` as Azure App Service
+   runtime settings, not source code;
+5. confirms both setting names were persisted without printing the secret;
+6. restarts the Cinema App Service;
+7. waits for Cinema health to recover;
+8. sends the same QUBO through Cinema `/solve`;
+9. returns PASS only if the Cinema response contains the verified Z3 proof.
 
-**Your API_SECRET is wrong:**
-```bash
-# Verify API_SECRET from Z3 deployment output
-echo "Your Z3 API_SECRET should be: $API_SECRET"
+Use `--verify-only` to repeat the direct-Z3 and Cinema E2E checks without changing
+Azure App Service settings.
 
-# Test with curl
-curl -X POST http://<Z3_URL>/solve \
-  -H "Authorization: Bearer $API_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{...}'
-```
+## 5. Truth boundary / completion status
 
-### Problem: "Cinema still redeploying (HTTP 503)"
+Repository-level correctness and production deployment are separate gates.
 
-**This is expected.** Redeploy can take 5-10 minutes:
+- **Code gate:** `verify-z3.yml` must pass on the PR head.
+- **Deployment gate:** `deploy-z3-azure.yml` must finish successfully and produce
+  `deployment_evidence.json`.
+- **Cinema E2E gate:** `cinema_z3_integration.py` must return `PASS E2E` against the
+  real deployed Cinema application.
 
-```bash
-# Check progress every minute
-watch -n 60 'curl -s https://dsg-cinema-proof-agent.azurewebsites.net/health || echo "Still redeploying..."'
-```
+Until all three have evidence, do not describe the Cinema + Z3 path as production
+ready, fully integrated, or revenue-producing.
 
----
-
-## ✅ Verification Checklist
-
-After integration, verify each step:
-
-| Step | What to Test | Expected Result | Command |
-|------|-------------|-----------------|---------|
-| 1 | Z3 health | HTTP 200 + JSON response | `curl http://<Z3>/health` |
-| 2 | Cinema health | HTTP 200 + JSON response | `curl https://dsg-cinema-proof-agent.azurewebsites.net/health` |
-| 3 | Z3 /solve test | HTTP 200 + `"sat": true` | `curl -X POST http://<Z3>/solve ... ` |
-| 4 | Cinema /solve test | HTTP 200 + proof response | `curl -X POST https://dsg-cinema-proof-agent.azurewebsites.net/solve ...` |
-| 5 | GitHub commit | See commit in repo | `git log -1 --oneline` |
-| 6 | Azure redeploy | Deployment Succeeded | `az deployment group list ... ` |
-
----
-
-## 🔄 Rollback (If Needed)
-
-If something breaks, rollback is simple:
-
-```bash
-# 1. Restore backup
-cp BuildConfig.kt.backup.1724181000 BuildConfig.kt
-
-# 2. Commit & push rollback
-git add BuildConfig.kt
-git commit -m "Rollback Z3 integration"
-git push origin main
-
-# 3. Azure will redeploy with old config
-```
-
-**Done.** Cinema will redeploy without Z3 integration.
-
----
-
-## 📊 Revenue Impact
-
-Once integration is complete:
-
-**Before:** Cinema only offers $99/proof (Delivery Proof)
-**After:** Cinema offers $99/proof (Z3 Verified Exec)
-
-**Expected MRR increase:** +$1,980/month (20 proofs/month @ $99)
-
----
-
-## 💡 What's Actually Happening
-
-### Cinema's Job:
-1. ✅ Proof generation
-2. ✅ Proof formatting
-3. ✅ User API
-
-### Z3's Job:
-1. ✅ QUBO solving
-2. ✅ Formal verification
-3. ✅ Proof hashing
-
-### Integration:
-- Cinema calls Z3 `/solve` endpoint (via SERVICE_URL)
-- Authenticates with API_SECRET (Bearer token)
-- Z3 returns SAT result + proof hash
-- Cinema includes proof hash in delivery proof
-- Proof is now "Z3 Verified" ✅
-
----
-
-## 📞 Need Help?
-
-Check Azure status:
-```bash
-az app service show --name DSG-Cinema-Proof-Agent --resource-group rg-t.dealer01-0468 --query 'state'
-
-az deployment group list --resource-group rg-t.dealer01-0468 --query '[0].[name, properties.provisioningState]' -o table
-```
-
-Check Cinema logs:
-```bash
-az webapp log tail --name DSG-Cinema-Proof-Agent --resource-group rg-t.dealer01-0468
-```
-
-Check Z3 is responding:
-```bash
-curl -v http://<Z3_SERVICE_URL>/health
-curl -X POST http://<Z3_SERVICE_URL>/solve -H "Authorization: Bearer <SECRET>" ...
-```
-
----
-
-## 🎉 You're Done!
-
-After integration:
-- ✅ Cinema connects to Z3 automatically
-- ✅ All proofs are Z3 verified
-- ✅ Revenue path enabled
-- ✅ Ready for production
+Because this repository does not contain Cinema application source code, a failed
+Cinema `/solve` E2E check cannot be repaired here by guessing. The actual Cinema
+source or deployment must be inspected and fixed at its real source of truth.
