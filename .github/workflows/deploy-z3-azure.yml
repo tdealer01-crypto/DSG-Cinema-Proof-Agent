@@ -1,6 +1,13 @@
 name: Deploy Z3 Verifier to Azure
 
 on:
+  pull_request:
+    paths:
+      - 'z3_main.py'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - 'tests/**'
+      - '.github/workflows/deploy-z3-azure.yml'
   push:
     branches: [main]
     paths:
@@ -14,7 +21,7 @@ on:
       environment:
         description: Deployment environment
         required: true
-        default: production
+        default: staging
         type: choice
         options:
           - staging
@@ -27,8 +34,8 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+    timeout-minutes: 30
+    environment: ${{ github.event_name == 'pull_request' && 'staging' || (github.event_name == 'workflow_dispatch' && inputs.environment || 'production') }}
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
       LOCATION: westus3
@@ -44,7 +51,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            TARGET_ENV="staging"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TARGET_ENV="${{ inputs.environment }}"
           else
             TARGET_ENV="production"
@@ -52,13 +61,14 @@ jobs:
           echo "TARGET_ENV=$TARGET_ENV" >> "$GITHUB_ENV"
           echo "CONTAINER_ENV_NAME=dsg-z3-env-$TARGET_ENV" >> "$GITHUB_ENV"
           echo "CONTAINER_APP_NAME=dsg-z3-verifier-$TARGET_ENV" >> "$GITHUB_ENV"
+          echo "PULL_IDENTITY_NAME=dsg-z3-acr-pull-$TARGET_ENV" >> "$GITHUB_ENV"
 
       - name: Require server-side solver secret
         shell: bash
         run: |
           set -euo pipefail
           if [[ -z "${DSG_SOLVER_SHARED_SECRET:-}" ]]; then
-            echo "DSG_SOLVER_SHARED_SECRET is not configured in the selected GitHub Environment" >&2
+            echo "DSG_SOLVER_SHARED_SECRET is not configured for the selected GitHub Environment/repository" >&2
             exit 1
           fi
           if [[ ${#DSG_SOLVER_SHARED_SECRET} -lt 32 ]]; then
@@ -73,7 +83,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Prepare Azure resources
+      - name: Prepare Azure resources and ACR pull identity
         shell: bash
         run: |
           set -euo pipefail
@@ -101,6 +111,49 @@ jobs:
               --output none
           fi
 
+          if ! az identity show \
+            --name "$PULL_IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+            az identity create \
+              --name "$PULL_IDENTITY_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --location "$LOCATION" \
+              --output none
+          fi
+
+          IDENTITY_ID=$(az identity show \
+            --name "$PULL_IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query id --output tsv)
+          PRINCIPAL_ID=$(az identity show \
+            --name "$PULL_IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query principalId --output tsv)
+          ACR_ID=$(az acr show \
+            --name "$ACR_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query id --output tsv)
+
+          test -n "$IDENTITY_ID"
+          test -n "$PRINCIPAL_ID"
+          test -n "$ACR_ID"
+
+          if ! az role assignment list \
+            --assignee "$PRINCIPAL_ID" \
+            --scope "$ACR_ID" \
+            --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+            --output tsv | grep -qx '1'; then
+            az role assignment create \
+              --assignee-object-id "$PRINCIPAL_ID" \
+              --assignee-principal-type ServicePrincipal \
+              --role AcrPull \
+              --scope "$ACR_ID" \
+              --output none
+          fi
+
+          echo "IDENTITY_ID=$IDENTITY_ID" >> "$GITHUB_ENV"
+          echo "ACR_ID=$ACR_ID" >> "$GITHUB_ENV"
+
       - name: Build immutable image in ACR
         shell: bash
         run: |
@@ -122,6 +175,19 @@ jobs:
           if az containerapp show \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+            az containerapp identity assign \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --user-assigned "$IDENTITY_ID" \
+              --output none
+
+            az containerapp registry set \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --server "$ACR_NAME.azurecr.io" \
+              --identity "$IDENTITY_ID" \
+              --output none
+
             az containerapp secret set \
               --name "$CONTAINER_APP_NAME" \
               --resource-group "$RESOURCE_GROUP" \
@@ -147,9 +213,9 @@ jobs:
               --ingress external \
               --target-port 8080 \
               --transport http \
-              --system-assigned \
+              --user-assigned "$IDENTITY_ID" \
               --registry-server "$ACR_NAME.azurecr.io" \
-              --registry-identity system \
+              --registry-identity "$IDENTITY_ID" \
               --secrets "solver-secret=$DSG_SOLVER_SHARED_SECRET" \
               --env-vars \
                 DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
@@ -163,6 +229,15 @@ jobs:
               --output none
           fi
 
+          az containerapp ingress update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --type external \
+            --target-port 8080 \
+            --transport http \
+            --allow-insecure false \
+            --output none
+
           FQDN=$(az containerapp show \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
@@ -175,13 +250,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 36); do
             CODE=$(curl --silent --show-error \
               --output /tmp/ready.json \
               --write-out '%{http_code}' \
               "$SERVICE_URL/ready" || true)
-            if [[ "$CODE" == "200" ]]; then
-              jq -e '.status == "ready"' /tmp/ready.json >/dev/null
+            if [[ "$CODE" == "200" ]] && jq -e '.status == "ready"' /tmp/ready.json >/dev/null 2>&1; then
               exit 0
             fi
             sleep 5
