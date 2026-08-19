@@ -61,14 +61,22 @@ app = FastAPI(title="Z3 Solver Service", version="1.0.0")
 @app.get("/health")
 def health():
     """Liveness check for Cloud Run"""
-    return {"status": "alive", "z3_version": get_version()}
+    try:
+        z3_version = str(get_version())
+    except:
+        z3_version = "unknown"
+    return {"status": "alive", "z3_version": z3_version}
 
 @app.get("/metrics")
 def metrics():
     """Basic metrics endpoint"""
+    try:
+        z3_version = str(get_version())
+    except:
+        z3_version = "unknown"
     return {
         "service": "z3-solver",
-        "z3_version": get_version(),
+        "z3_version": z3_version,
         "deterministic": DETERMINISTIC,
         "seed": Z3_SEED,
         "timeout_ms": Z3_TIMEOUT_MS,
@@ -167,88 +175,106 @@ def solve(
 def solve_qubo(linear, quadratic, witness=None, timeout_ms=30000):
     """
     Solve QUBO: min (c^T x + x^T Q x) where x in {0,1}^n
-    
+
     Returns: (z3_status, witness, energy)
     """
-    set_option(sat.auto_config=True)
-    set_param("timeout", timeout_ms)
-    
-    if DETERMINISTIC:
-        set_param("sat.random_seed", Z3_SEED)
-    
-    n = len(linear)
-    ctx = Context()
-    ctx.set("timeout", timeout_ms)
-    
-    solver = Solver(ctx=ctx)
-    x = [Bool(f"x_{i}", ctx=ctx) for i in range(n)]
-    
-    # Objective: minimize linear + quadratic
-    obj = 0
-    for i, c in enumerate(linear):
-        obj += If(x[i], c, 0)
-    
-    for (i, j), q in zip([(i, j) for i in range(n) for j in range(i, n)], quadratic):
-        if i == j:
-            obj += If(x[i], q, 0)
+    try:
+        set_param("timeout", timeout_ms)
+
+        if DETERMINISTIC:
+            set_param("sat.random_seed", Z3_SEED)
+
+        n = len(linear)
+        solver = Solver()
+        solver.set("timeout", timeout_ms)
+        x = [Bool(f"x_{i}") for i in range(n)]
+
+        # Objective: minimize linear + quadratic
+        obj = 0
+        for i, c in enumerate(linear):
+            obj += If(x[i], c, 0)
+
+        quad_idx = 0
+        for i in range(n):
+            for j in range(i, n):
+                if quad_idx < len(quadratic):
+                    q = quadratic[quad_idx]
+                    if i == j:
+                        obj += If(x[i], q, 0)
+                    else:
+                        obj += If(And(x[i], x[j]), q, 0)
+                    quad_idx += 1
+
+        solver.add(obj >= 0)
+
+        status = solver.check()
+
+        if status == sat:
+            model = solver.model()
+            solution = [1 if model.eval(x[i]) else 0 for i in range(n)]
+
+            # Compute energy
+            energy = sum(linear[i] * solution[i] for i in range(n))
+            quad_idx = 0
+            for i in range(n):
+                for j in range(i, n):
+                    if quad_idx < len(quadratic):
+                        energy += quadratic[quad_idx] * solution[i] * solution[j]
+                        quad_idx += 1
+
+            return ("SAT", solution, energy)
+        elif status == unsat:
+            return ("UNSAT", None, None)
         else:
-            obj += If(And(x[i], x[j]), q, 0)
-    
-    solver.add(obj >= 0)  # Constraint (optional)
-    
-    status = solver.check()
-    
-    if status == sat:
-        model = solver.model()
-        solution = [1 if model.eval(x[i]) else 0 for i in range(n)]
-        
-        # Compute energy
-        energy = sum(linear[i] * solution[i] for i in range(n))
-        for idx, (i, j) in enumerate([(i, j) for i in range(n) for j in range(i, n)]):
-            energy += quadratic[idx] * solution[i] * solution[j]
-        
-        return ("SAT", solution, energy)
-    elif status == unsat:
-        return ("UNSAT", None, None)
-    else:
-        return ("TIMEOUT", None, None)
+            return ("TIMEOUT", None, None)
+    except Exception as e:
+        return ("ERROR", None, None)
 
 def solve_sat(clauses, timeout_ms=30000):
     """
     Solve SAT problem (list of clauses).
-    
+
     Returns: (z3_status, witness, None)
     """
-    set_param("timeout", timeout_ms)
-    
-    if DETERMINISTIC:
-        set_param("sat.random_seed", Z3_SEED)
-    
-    solver = Solver()
-    
-    # Parse clauses (list of lists of literals)
-    max_var = 0
-    for clause in clauses:
-        max_var = max(max_var, max(abs(lit) for lit in clause))
-    
-    # Create variables
-    vars_dict = {i: Bool(f"x_{i}") for i in range(1, max_var + 1)}
-    
-    # Add clauses
-    for clause in clauses:
-        clause_expr = Or([vars_dict[abs(lit)] if lit > 0 else Not(vars_dict[-lit]) for lit in clause])
-        solver.add(clause_expr)
-    
-    status = solver.check()
-    
-    if status == sat:
-        model = solver.model()
-        solution = [1 if model.eval(vars_dict[i]) else 0 for i in range(1, max_var + 1)]
-        return ("SAT", solution, None)
-    elif status == unsat:
-        return ("UNSAT", None, None)
-    else:
-        return ("TIMEOUT", None, None)
+    try:
+        set_param("timeout", timeout_ms)
+
+        if DETERMINISTIC:
+            set_param("sat.random_seed", Z3_SEED)
+
+        solver = Solver()
+        solver.set("timeout", timeout_ms)
+
+        # Parse clauses (list of lists of literals)
+        max_var = 0
+        for clause in clauses:
+            if clause:
+                max_var = max(max_var, max(abs(lit) for lit in clause))
+
+        if max_var == 0:
+            return ("SAT", [], None)
+
+        # Create variables
+        vars_dict = {i: Bool(f"x_{i}") for i in range(1, max_var + 1)}
+
+        # Add clauses
+        for clause in clauses:
+            if clause:
+                clause_expr = Or([vars_dict[abs(lit)] if lit > 0 else Not(vars_dict[-lit]) for lit in clause])
+                solver.add(clause_expr)
+
+        status = solver.check()
+
+        if status == sat:
+            model = solver.model()
+            solution = [1 if model.eval(vars_dict[i]) else 0 for i in range(1, max_var + 1)]
+            return ("SAT", solution, None)
+        elif status == unsat:
+            return ("UNSAT", None, None)
+        else:
+            return ("TIMEOUT", None, None)
+    except Exception as e:
+        return ("ERROR", None, None)
 
 # ============ MAIN ============
 if __name__ == "__main__":
