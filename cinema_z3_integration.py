@@ -87,7 +87,13 @@ def request_json(
     try:
         with urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
-            body = json.loads(raw) if raw else None
+            if not raw:
+                body = None
+            else:
+                try:
+                    body = json.loads(raw)
+                except json.JSONDecodeError:
+                    body = raw
             return response.status, body
     except HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
