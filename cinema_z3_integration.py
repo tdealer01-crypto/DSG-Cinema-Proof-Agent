@@ -1,429 +1,349 @@
 #!/usr/bin/env python3
+"""Fail-closed Cinema -> Z3 runtime integration helper.
 
-"""
-DSG ONE — Cinema + Z3 Integration Script (Python)
+This script never writes the Z3 secret into source code or Git history.
+It reads secrets from environment variables, verifies the Z3 service, writes
+server-side Azure App Service settings, restarts Cinema, and then performs an
+end-to-end verification request through Cinema.
 
-Purpose: Connect Cinema Proof Agent to Z3 Solver automatically
-No bash/git required — works cross-platform
+Required environment variables:
+  Z3_SERVICE_URL=https://...
+  Z3_API_SECRET=...
+
+Optional environment variables:
+  AZURE_RESOURCE_GROUP=rg-t.dealer01-0468
+  CINEMA_APP_NAME=dsg-cinema-proof-agent
+  CINEMA_BASE_URL=https://dsg-cinema-proof-agent.azurewebsites.net
+  CINEMA_VERIFY_PATH=/solve
 
 Usage:
-    python3 cinema_z3_integration.py <SERVICE_URL> <API_SECRET> <BUILDCONFIG_PATH>
-
-Example:
-    python3 cinema_z3_integration.py \
-        "http://z3-solver-service.westus3.azurecontainer.io:8080" \
-        "a1b2c3d4e5f6..." \
-        "app/src/main/java/com/example/BuildConfig.kt"
+  python3 cinema_z3_integration.py
+  python3 cinema_z3_integration.py --verify-only
 """
 
-import sys
-import os
+from __future__ import annotations
+
+import argparse
 import json
-import time
+import os
 import shutil
 import subprocess
-import re
-from datetime import datetime
-from pathlib import Path
-from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
+import sys
+import tempfile
+import time
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-# Color codes
-class Color:
-    BLUE = '\033[0;34m'
-    GREEN = '\033[0;32m'
-    YELLOW = '\033[1;33m'
-    RED = '\033[0;31m'
-    RESET = '\033[0m'
+DEFAULT_RESOURCE_GROUP = "rg-t.dealer01-0468"
+DEFAULT_CINEMA_APP = "dsg-cinema-proof-agent"
+DEFAULT_CINEMA_URL = "https://dsg-cinema-proof-agent.azurewebsites.net"
+TEST_PAYLOAD = {
+    "request_id": "cinema-z3-e2e",
+    "preset_name": "cinema-e2e",
+    "problem_type": "qubo",
+    "linear": [-4, -3, 1],
+    "quadratic": [[0, 1, 5], [1, 2, 2]],
+    "proveOptimality": True,
+    "z3TimeoutMs": 30000,
+}
 
-def print_header(title):
-    print(f"\n{Color.BLUE}╔════════════════════════════════════════════════════════════════╗{Color.RESET}")
-    print(f"{Color.BLUE}║ {title:<62} ║{Color.RESET}")
-    print(f"{Color.BLUE}╚════════════════════════════════════════════════════════════════╝{Color.RESET}\n")
 
-def print_step(step_num, title):
-    print(f"{Color.BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Color.RESET}")
-    print(f"{Color.YELLOW}✓ STEP {step_num}: {title}{Color.RESET}")
-    print(f"{Color.BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Color.RESET}\n")
+class IntegrationError(RuntimeError):
+    pass
 
-def print_success(msg):
-    print(f"{Color.GREEN}✅ {msg}{Color.RESET}")
 
-def print_error(msg):
-    print(f"{Color.RED}❌ {msg}{Color.RESET}")
+def require_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise IntegrationError(f"missing required environment variable: {name}")
+    return value
 
-def print_warning(msg):
-    print(f"{Color.YELLOW}⚠️  {msg}{Color.RESET}")
 
-def print_info(msg):
-    print(f"{Color.YELLOW}ℹ️  {msg}{Color.RESET}")
+def require_https(url: str, name: str) -> str:
+    normalized = url.rstrip("/")
+    if not normalized.startswith("https://"):
+        raise IntegrationError(f"{name} must use HTTPS")
+    return normalized
 
-# ============================================================================
-# STEP 0: VALIDATE INPUT
-# ============================================================================
 
-def validate_input():
-    if len(sys.argv) < 3:
-        print_error("Missing arguments")
-        print("\nUsage:")
-        print("  python3 cinema_z3_integration.py <SERVICE_URL> <API_SECRET> [BUILDCONFIG_PATH]")
-        print("\nExample:")
-        print("  python3 cinema_z3_integration.py \\")
-        print("    'http://z3-solver-service.westus3.azurecontainer.io:8080' \\")
-        print("    'a1b2c3d4...' \\")
-        print("    'app/src/main/java/com/example/BuildConfig.kt'")
-        sys.exit(1)
-    
-    service_url = sys.argv[1]
-    api_secret = sys.argv[2]
-    buildconfig_path = sys.argv[3] if len(sys.argv) > 3 else None
-    
-    return service_url, api_secret, buildconfig_path
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    bearer: str | None = None,
+    timeout: int = 15,
+) -> tuple[int, Any]:
+    headers = {"Accept": "application/json"}
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
 
-# ============================================================================
-# STEP 1: VERIFY Z3 IS RUNNING
-# ============================================================================
-
-def verify_z3_health(service_url):
-    print_step(1, "Verify Z3 is running")
-    
-    print("Testing Z3 health endpoint...")
-    health_url = f"{service_url}/health".rstrip('/')
-    
+    req = Request(url, data=data, headers=headers, method=method)
     try:
-        req = Request(health_url)
-        with urlopen(req, timeout=5) as response:
-            status_code = response.status
-            body = response.read().decode('utf-8')
-            
-            if status_code == 200:
-                print_success(f"Z3 health check PASSED")
-                print(f"   Response: {body}")
-                return True
-            else:
-                print_error(f"Z3 health check returned HTTP {status_code}")
-                return False
-    except HTTPError as e:
-        print_error(f"Z3 health check failed: HTTP {e.code}")
-        return False
-    except URLError as e:
-        print_error(f"Z3 health check failed: {e.reason}")
-        print(f"   SERVICE_URL: {service_url}")
-        print(f"   Make sure Z3 is deployed and running")
-        return False
-    except Exception as e:
-        print_error(f"Z3 health check failed: {e}")
-        return False
+        with urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            body = json.loads(raw) if raw else None
+            return response.status, body
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            body = raw
+        return exc.code, body
+    except URLError as exc:
+        raise IntegrationError(f"request failed for {url}: {exc.reason}") from exc
 
-# ============================================================================
-# STEP 2: LOCATE CINEMA BUILDCONFIG
-# ============================================================================
 
-def find_buildconfig(provided_path=None):
-    print_step(2, "Locate Cinema BuildConfig")
-    
-    if provided_path:
-        if os.path.isfile(provided_path):
-            print_success(f"Found BuildConfig at: {provided_path}")
-            return provided_path
-        else:
-            print_error(f"File not found at: {provided_path}")
-            sys.exit(1)
-    
-    search_paths = [
-        "app/src/main/java/com/example/BuildConfig.kt",
-        "src/main/java/com/example/BuildConfig.kt",
-        "BuildConfig.kt",
-        "app/BuildConfig.kt",
+def nested_values(value: Any, key: str) -> list[Any]:
+    found: list[Any] = []
+    if isinstance(value, dict):
+        for current_key, current_value in value.items():
+            if current_key == key:
+                found.append(current_value)
+            found.extend(nested_values(current_value, key))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(nested_values(item, key))
+    return found
+
+
+def verify_exact_proof(body: Any, source: str) -> None:
+    if not isinstance(body, dict):
+        raise IntegrationError(f"{source} returned non-object JSON")
+
+    verifications = nested_values(body, "verification")
+    verified_flags = nested_values(body, "verified")
+    proof_hashes = nested_values(body, "proof_hash")
+    energies = nested_values(body, "energy_exact")
+
+    if "VERIFIED_GLOBAL_OPTIMUM" not in verifications:
+        raise IntegrationError(f"{source} did not return VERIFIED_GLOBAL_OPTIMUM")
+    if True not in verified_flags:
+        raise IntegrationError(f"{source} did not return verified=true")
+    if not any(isinstance(item, str) and len(item) == 64 for item in proof_hashes):
+        raise IntegrationError(f"{source} did not return a SHA-256 proof_hash")
+    if "-4" not in [str(item) for item in energies]:
+        raise IntegrationError(f"{source} returned an unexpected energy")
+
+
+def verify_z3(service_url: str, secret: str) -> dict[str, Any]:
+    code, ready = request_json(f"{service_url}/ready")
+    if code != 200 or not isinstance(ready, dict) or ready.get("status") != "ready":
+        raise IntegrationError(f"Z3 readiness failed: HTTP {code}")
+
+    code, proof = request_json(
+        f"{service_url}/solve",
+        method="POST",
+        payload=TEST_PAYLOAD,
+        bearer=secret,
+        timeout=45,
+    )
+    if code != 200:
+        raise IntegrationError(f"Z3 solve failed: HTTP {code}")
+    verify_exact_proof(proof, "Z3")
+    return proof
+
+
+def run_az(args: list[str]) -> str:
+    if shutil.which("az") is None:
+        raise IntegrationError("Azure CLI (az) is not installed")
+    result = subprocess.run(
+        ["az", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "Azure CLI failed"
+        raise IntegrationError(message)
+    return result.stdout.strip()
+
+
+def configure_cinema(
+    resource_group: str,
+    cinema_app: str,
+    service_url: str,
+    secret: str,
+) -> None:
+    run_az(["account", "show", "--output", "none"])
+
+    settings = [
+        {
+            "name": "DSG_BACKEND_BASE_URL",
+            "value": service_url,
+            "slotSetting": False,
+        },
+        {
+            "name": "DSG_BACKEND_API_KEY",
+            "value": secret,
+            "slotSetting": False,
+        },
     ]
-    
-    for path in search_paths:
-        if os.path.isfile(path):
-            print_success(f"Found BuildConfig at: {path}")
-            return path
-    
-    print_error("BuildConfig.kt not found")
-    print("\nSearched paths:")
-    for path in search_paths:
-        print(f"  - {path}")
-    
-    print("\nPlease specify the path to BuildConfig.kt:")
-    user_path = input("> ").strip()
-    
-    if not os.path.isfile(user_path):
-        print_error(f"File not found at: {user_path}")
-        sys.exit(1)
-    
-    return user_path
 
-# ============================================================================
-# STEP 3: BACKUP BUILDCONFIG
-# ============================================================================
+    settings_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".json",
+            prefix="dsg-cinema-settings-",
+            delete=False,
+        ) as handle:
+            json.dump(settings, handle)
+            settings_path = handle.name
+        os.chmod(settings_path, 0o600)
 
-def backup_file(filepath):
-    print_step(3, "Backup BuildConfig")
-    
-    timestamp = int(time.time())
-    backup_path = f"{filepath}.backup.{timestamp}"
-    
-    shutil.copy2(filepath, backup_path)
-    print_success(f"Backup created: {backup_path}")
-    
-    return backup_path
-
-# ============================================================================
-# STEP 4: UPDATE BUILDCONFIG
-# ============================================================================
-
-def update_buildconfig(filepath, service_url, api_secret):
-    print_step(4, "Update BuildConfig with Z3 credentials")
-    
-    with open(filepath, 'r') as f:
-        content = f.read()
-    
-    original_content = content
-    
-    # Update or add DSG_BACKEND_BASE_URL
-    if 'DSG_BACKEND_BASE_URL' in content:
-        content = re.sub(
-            r'const val DSG_BACKEND_BASE_URL = ".*?"',
-            f'const val DSG_BACKEND_BASE_URL = "{service_url}"',
-            content
+        run_az(
+            [
+                "webapp",
+                "config",
+                "appsettings",
+                "set",
+                "--resource-group",
+                resource_group,
+                "--name",
+                cinema_app,
+                "--settings",
+                f"@{settings_path}",
+                "--output",
+                "none",
+            ]
         )
-    else:
-        # Add new line before closing brace
-        content = content.rstrip() + '\n    const val DSG_BACKEND_BASE_URL = "' + service_url + '"\n'
-    
-    # Update or add DSG_BACKEND_API_KEY
-    if 'DSG_BACKEND_API_KEY' in content:
-        content = re.sub(
-            r'const val DSG_BACKEND_API_KEY = ".*?"',
-            f'const val DSG_BACKEND_API_KEY = "{api_secret}"',
-            content
+    finally:
+        if settings_path and os.path.exists(settings_path):
+            os.remove(settings_path)
+
+    names_json = run_az(
+        [
+            "webapp",
+            "config",
+            "appsettings",
+            "list",
+            "--resource-group",
+            resource_group,
+            "--name",
+            cinema_app,
+            "--query",
+            "[?name=='DSG_BACKEND_BASE_URL' || name=='DSG_BACKEND_API_KEY'].name",
+            "--output",
+            "json",
+        ]
+    )
+    names = set(json.loads(names_json or "[]"))
+    required = {"DSG_BACKEND_BASE_URL", "DSG_BACKEND_API_KEY"}
+    if not required.issubset(names):
+        raise IntegrationError("Cinema runtime settings were not persisted")
+
+    run_az(
+        [
+            "webapp",
+            "restart",
+            "--resource-group",
+            resource_group,
+            "--name",
+            cinema_app,
+            "--output",
+            "none",
+        ]
+    )
+
+
+def wait_for_cinema(cinema_url: str) -> None:
+    last_code = 0
+    for _ in range(30):
+        try:
+            code, _ = request_json(f"{cinema_url}/health", timeout=10)
+            last_code = code
+            if code == 200:
+                return
+        except IntegrationError:
+            pass
+        time.sleep(5)
+    raise IntegrationError(f"Cinema health did not recover; last HTTP status={last_code}")
+
+
+def verify_through_cinema(
+    cinema_url: str,
+    verify_path: str,
+    secret: str,
+) -> dict[str, Any]:
+    path = verify_path if verify_path.startswith("/") else f"/{verify_path}"
+    code, body = request_json(
+        f"{cinema_url}{path}",
+        method="POST",
+        payload=TEST_PAYLOAD,
+        bearer=secret,
+        timeout=60,
+    )
+    if code != 200:
+        raise IntegrationError(f"Cinema verification failed: HTTP {code}")
+    verify_exact_proof(body, "Cinema")
+    return body
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="verify Z3 and Cinema without changing Azure App Service settings",
+    )
+    args = parser.parse_args()
+
+    try:
+        service_url = require_https(require_env("Z3_SERVICE_URL"), "Z3_SERVICE_URL")
+        secret = require_env("Z3_API_SECRET")
+        if len(secret) < 32:
+            raise IntegrationError("Z3_API_SECRET must be at least 32 characters")
+
+        resource_group = os.getenv(
+            "AZURE_RESOURCE_GROUP",
+            DEFAULT_RESOURCE_GROUP,
+        ).strip()
+        cinema_app = os.getenv("CINEMA_APP_NAME", DEFAULT_CINEMA_APP).strip()
+        cinema_url = require_https(
+            os.getenv("CINEMA_BASE_URL", DEFAULT_CINEMA_URL).strip(),
+            "CINEMA_BASE_URL",
         )
-    else:
-        content = content.rstrip() + '\n    const val DSG_BACKEND_API_KEY = "' + api_secret + '"\n'
-    
-    with open(filepath, 'w') as f:
-        f.write(content)
-    
-    print_success("BuildConfig updated")
+        verify_path = os.getenv("CINEMA_VERIFY_PATH", "/solve").strip() or "/solve"
 
-# ============================================================================
-# STEP 5: VERIFY CHANGES
-# ============================================================================
-
-def verify_changes(filepath):
-    print_step(5, "Verify changes in BuildConfig")
-    
-    with open(filepath, 'r') as f:
-        lines = f.readlines()
-    
-    print("Updated lines:")
-    found = False
-    for line in lines:
-        if 'DSG_BACKEND_BASE_URL' in line or 'DSG_BACKEND_API_KEY' in line:
-            print(f"   {line.strip()}")
-            found = True
-    
-    if not found:
-        print_warning("Lines not found in BuildConfig")
-    print()
-
-# ============================================================================
-# STEP 6: GIT COMMIT & PUSH
-# ============================================================================
-
-def git_commit_and_push(filepath):
-    print_step(6, "Commit and push changes")
-    
-    # Check if git is available
-    try:
-        subprocess.run(['git', '--version'], capture_output=True, check=True)
-    except Exception:
-        print_warning("git not found in PATH")
-        print("   Skipping git operations")
-        print("   You'll need to manually:")
-        print("   1. git add " + filepath)
-        print("   2. git commit -m 'feat: Connect Cinema to Z3 Solver'")
-        print("   3. git push origin main")
-        return False
-    
-    # Check if in git repo
-    try:
-        subprocess.run(['git', 'rev-parse', '--git-dir'], 
-                      capture_output=True, check=True, cwd=os.path.dirname(filepath) or '.')
-    except Exception:
-        print_error("Not in a git repository")
-        print("   Please navigate to the Cinema repo root")
-        print("   Then run this script again")
-        return False
-    
-    # Stage changes
-    try:
-        subprocess.run(['git', 'add', filepath], check=True)
-    except Exception as e:
-        print_error(f"Failed to stage changes: {e}")
-        return False
-    
-    # Commit
-    commit_msg = f"feat: Connect Cinema to Z3 Solver ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
-    try:
-        subprocess.run(['git', 'commit', '-m', commit_msg], check=True, capture_output=True)
-        print_success(f"Committed: {commit_msg}")
-    except subprocess.CalledProcessError:
-        print_info("Nothing new to commit")
-        return False
-    
-    # Push
-    try:
-        subprocess.run(['git', 'push', 'origin', 'main'], check=True, capture_output=True)
-        print_success("Pushed to origin/main")
-        return True
-    except subprocess.CalledProcessError:
-        print_warning("Push failed. Try manually: git push origin main")
-        return False
-    
-    print()
-
-# ============================================================================
-# STEP 7-9: DEPLOYMENT & TESTING
-# ============================================================================
-
-def print_next_steps(service_url):
-    print_step(7, "Azure App Service will auto-redeploy")
-    print("Cinema has GitHub Continuous Deployment enabled.")
-    print("When you pushed to main, Azure automatically triggered a redeploy.\n")
-    print("To check deployment status:")
-    print("  az deployment group list --resource-group rg-t.dealer01-0468 --query '[0].[name,properties.provisioningState]'\n")
-    
-    print_step(8, "Test Cinema + Z3 integration")
-    print("Waiting 30 seconds for redeployment to start...")
-    
-    cinema_url = "https://dsg-cinema-proof-agent.azurewebsites.net"
-    for i in range(30, 0, -1):
-        print(f"   {i}s remaining...", end='\r')
-        time.sleep(1)
-    print()
-    
-    print("Testing Cinema health endpoint...")
-    try:
-        req = Request(f"{cinema_url}/health")
-        with urlopen(req, timeout=5) as response:
-            if response.status == 200:
-                print_success("Cinema health check PASSED")
-            else:
-                print_warning(f"Cinema returned HTTP {response.status}")
-    except Exception:
-        print_warning("Cinema still redeploying (this is normal)")
-        print("   Redeploy can take 5-10 minutes")
-        print(f"   Check status: {cinema_url}/health\n")
-    
-    print_step(9, "Test Z3 solve endpoint")
-    print("Sending test QUBO to Z3...")
-    
-    qubo_test = {
-        "request_id": "cinema-integration-test",
-        "problem_type": "QUBO",
-        "linear": [-4, -3, 1],
-        "quadratic": [[0, 1, 5], [1, 2, 2]],
-        "variables": 3,
-        "seed": 42
-    }
-    
-    try:
-        req = Request(
-            f"{service_url}/solve",
-            data=json.dumps(qubo_test).encode('utf-8'),
-            headers={
-                "Authorization": f"Bearer {sys.argv[2]}",
-                "Content-Type": "application/json"
-            },
-            method="POST"
+        direct_proof = verify_z3(service_url, secret)
+        print(
+            "PASS Z3: exact optimum verified; proof_hash="
+            + str(direct_proof.get("proof_hash", ""))
         )
-        with urlopen(req, timeout=10) as response:
-            response_text = response.read().decode('utf-8')
-            response_data = json.loads(response_text)
-            print(f"Z3 Response:\n{json.dumps(response_data, indent=2)}")
-            
-            if 'sat' in response_text.lower() or 'satisfiable' in response_text.lower():
-                print_success("Z3 solver working correctly")
-            else:
-                print_warning("Check Z3 response above")
-    except Exception as e:
-        print_error(f"Z3 test failed: {e}")
 
-# ============================================================================
-# MAIN
-# ============================================================================
+        if not args.verify_only:
+            configure_cinema(
+                resource_group,
+                cinema_app,
+                service_url,
+                secret,
+            )
+            print("PASS Cinema config: server-side Azure App Service settings persisted")
+            wait_for_cinema(cinema_url)
+            print("PASS Cinema health: HTTP 200 after restart")
 
-def main():
-    print_header("DSG ONE — Cinema + Z3 Automatic Integration")
-    
-    service_url, api_secret, buildconfig_path = validate_input()
-    
-    print(f"{Color.YELLOW}📋 Configuration:{Color.RESET}")
-    print(f"   SERVICE_URL: {service_url}")
-    print(f"   API_SECRET: {api_secret[:8]}...{api_secret[-8:]}\n")
-    
-    # STEP 1: Verify Z3
-    if not verify_z3_health(service_url):
-        print_error("Cannot proceed without Z3 running")
-        sys.exit(1)
-    print()
-    
-    # STEP 2: Find BuildConfig
-    buildconfig_file = find_buildconfig(buildconfig_path)
-    print()
-    
-    # STEP 3: Backup
-    backup_path = backup_file(buildconfig_file)
-    print()
-    
-    # STEP 4: Update
-    update_buildconfig(buildconfig_file, service_url, api_secret)
-    print()
-    
-    # STEP 5: Verify
-    verify_changes(buildconfig_file)
-    
-    # STEP 6: Git commit
-    git_pushed = git_commit_and_push(buildconfig_file)
-    
-    # STEP 7-9: Deploy & Test
-    print_next_steps(service_url)
-    
-    # SUMMARY
-    print_header("✅ INTEGRATION COMPLETE")
-    print(f"{Color.YELLOW}Summary:{Color.RESET}")
-    print("   ✅ Z3 health verified")
-    print("   ✅ BuildConfig updated with Z3 credentials")
-    if git_pushed:
-        print("   ✅ Changes committed to GitHub")
-        print("   ✅ Redeployment triggered")
-    else:
-        print("   ⚠️  Git commit/push skipped (manual action needed)")
-    print("   ✅ Z3 /solve endpoint tested\n")
-    
-    print(f"{Color.YELLOW}Next steps:{Color.RESET}")
-    print("   1. Wait 5-10 minutes for Cinema to finish redeploying")
-    print("   2. Test Cinema health: curl https://dsg-cinema-proof-agent.azurewebsites.net/health")
-    print("   3. Test Cinema /solve: curl -X POST https://dsg-cinema-proof-agent.azurewebsites.net/solve")
-    print("   4. Check Azure deployment status:")
-    print("      az deployment group list --resource-group rg-t.dealer01-0468\n")
-    
-    print(f"{Color.YELLOW}Rollback (if needed):{Color.RESET}")
-    print(f"   cp {backup_path} {buildconfig_file}")
-    print("   git add <file> && git commit -m 'Rollback Z3 integration' && git push\n")
-    
-    print(f"{Color.GREEN}🎉 Cinema + Z3 integration initiated!{Color.RESET}\n")
+        cinema_proof = verify_through_cinema(
+            cinema_url,
+            verify_path,
+            secret,
+        )
+        print(
+            "PASS E2E: Cinema returned verified Z3 proof; proof_hash="
+            + str(nested_values(cinema_proof, "proof_hash")[0])
+        )
+        return 0
+    except IntegrationError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return 1
 
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print(f"\n{Color.YELLOW}Interrupted by user{Color.RESET}")
-        sys.exit(1)
-    except Exception as e:
-        print_error(f"Unexpected error: {e}")
-        sys.exit(1)
+
+if __name__ == "__main__":
+    raise SystemExit(main())
