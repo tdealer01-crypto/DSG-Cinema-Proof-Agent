@@ -41,7 +41,7 @@ jobs:
       LOCATION: westus3
       ACR_NAME: tdealer01acr
       IMAGE_NAME: z3-solver-service
-      DSG_SOLVER_SHARED_SECRET: ${{ secrets.DSG_SOLVER_SHARED_SECRET }}
+      CONFIGURED_SOLVER_SECRET: ${{ secrets.DSG_SOLVER_SHARED_SECRET }}
 
     steps:
       - name: Checkout repository
@@ -63,18 +63,28 @@ jobs:
           echo "CONTAINER_APP_NAME=dsg-z3-verifier-$TARGET_ENV" >> "$GITHUB_ENV"
           echo "PULL_IDENTITY_NAME=dsg-z3-acr-pull-$TARGET_ENV" >> "$GITHUB_ENV"
 
-      - name: Require server-side solver secret
+      - name: Resolve fail-closed solver secret
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${DSG_SOLVER_SHARED_SECRET:-}" ]]; then
-            echo "DSG_SOLVER_SHARED_SECRET is not configured for the selected GitHub Environment/repository" >&2
+          SECRET="${CONFIGURED_SOLVER_SECRET:-}"
+
+          if [[ "$TARGET_ENV" == "staging" && -z "$SECRET" ]]; then
+            SECRET=$(openssl rand -hex 32)
+            echo "Using an ephemeral masked staging solver secret"
+          fi
+
+          if [[ -z "$SECRET" ]]; then
+            echo "DSG_SOLVER_SHARED_SECRET is required for production" >&2
             exit 1
           fi
-          if [[ ${#DSG_SOLVER_SHARED_SECRET} -lt 32 ]]; then
+          if [[ ${#SECRET} -lt 32 ]]; then
             echo "DSG_SOLVER_SHARED_SECRET must be at least 32 characters" >&2
             exit 1
           fi
+
+          echo "::add-mask::$SECRET"
+          echo "DSG_SOLVER_SHARED_SECRET=$SECRET" >> "$GITHUB_ENV"
 
       - name: Azure login
         uses: azure/login@v2
@@ -138,11 +148,12 @@ jobs:
           test -n "$PRINCIPAL_ID"
           test -n "$ACR_ID"
 
-          if ! az role assignment list \
+          ROLE_COUNT=$(az role assignment list \
             --assignee "$PRINCIPAL_ID" \
             --scope "$ACR_ID" \
             --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
-            --output tsv | grep -qx '1'; then
+            --output tsv)
+          if [[ "$ROLE_COUNT" == "0" ]]; then
             az role assignment create \
               --assignee-object-id "$PRINCIPAL_ID" \
               --assignee-principal-type ServicePrincipal \
