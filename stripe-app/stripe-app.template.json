@@ -1,0 +1,64 @@
+{
+  "$schema": "https://stripe.com/stripe-app.schema.json",
+  "id": "pics.dsg.governance",
+  "name": "DSG Governance Gate",
+  "version": "2.7.0",
+  "icon": "./icon.png",
+  "description": "DSG Governance Gate shows ALLOW, REVIEW, or BLOCK decisions directly in Stripe payment detail views. The current transaction context is sent to the Cinema backend, which maps it to a bounded policy-decision QUBO and uses the server-side Z3 verifier to prove the global optimum. If the context or proof cannot be verified, the app falls back to REVIEW.",
+  "shortDescription": "Exact Z3-verified policy decisions inside Stripe payment views",
+  "documentationUrl": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/stripe-app/README.md",
+  "websiteUrl": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent",
+  "supportEmail": "support@dsg.pics",
+  "ui_extension": {
+    "views": [
+      {
+        "name": "payment.detail",
+        "title": "DSG Governance Gate",
+        "description": "A familiar Stripe-native decision summary with exact Z3 proof status"
+      }
+    ],
+    "content_security_policy": {
+      "connect-src": [
+        "__CINEMA_API_BASE__/"
+      ],
+      "purpose": "Send bounded Stripe transaction context to the Cinema verification backend. The app never sends a Z3 credential or accepts arbitrary solver programs."
+    }
+  },
+  "features": [
+    {
+      "id": "verified_decision",
+      "title": "Verified decision",
+      "description": "See ALLOW, REVIEW, or BLOCK with the reason and risk score at the top of the payment detail panel."
+    },
+    {
+      "id": "exact_z3_proof",
+      "title": "Exact Z3 proof",
+      "description": "Cinema derives a fixed-size decision QUBO and accepts the result only when Z3 proves VERIFIED_GLOBAL_OPTIMUM."
+    },
+    {
+      "id": "fail_closed",
+      "title": "Fail-closed review",
+      "description": "Missing transaction context, backend errors, or unverified proofs are shown as REVIEW rather than approval."
+    }
+  ],
+  "permissions": [
+    {
+      "id": "account_information",
+      "name": "Account and user information",
+      "access_level": "read_only"
+    },
+    {
+      "id": "charges_refunds",
+      "name": "Charges and Refunds",
+      "access_level": "read_only"
+    },
+    {
+      "id": "external_access",
+      "name": "External access",
+      "access_level": "data_sharing",
+      "description": "Send only the transaction fields required for deterministic policy verification to the Cinema backend."
+    }
+  ],
+  "distribution_type": "public",
+  "sandbox_install_compatible": true
+}
