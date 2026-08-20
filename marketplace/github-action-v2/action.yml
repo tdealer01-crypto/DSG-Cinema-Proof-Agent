@@ -29,23 +29,23 @@ inputs:
     required: false
     default: "github-actions"
   authorized:
-    required: false
-    default: "true"
+    description: "Explicit authorization result. Required; no permissive default."
+    required: true
   plan_aligned:
-    required: false
-    default: "true"
+    description: "Explicit approved-plan alignment result. Required; no permissive default."
+    required: true
   constraints_pass:
-    required: false
-    default: "true"
+    description: "Explicit deterministic constraint result. Required; no permissive default."
+    required: true
   execution_succeeded:
-    required: false
-    default: "true"
+    description: "Explicit observed execution result. Required; no permissive default."
+    required: true
   replay_match:
-    required: false
-    default: "true"
+    description: "Explicit replay comparison result. Required; no permissive default."
+    required: true
   evidence_complete:
-    required: false
-    default: "true"
+    description: "Explicit evidence completeness result. Required; no permissive default."
+    required: true
   cost_microunits:
     description: "Optional execution cost in application-defined microunits."
     required: false
