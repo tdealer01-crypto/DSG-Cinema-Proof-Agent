@@ -1,0 +1,150 @@
+name: Deploy Azure 3D Landing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'azure-landing/**'
+      - '.github/workflows/deploy-azure-3d-landing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dsg-azure-3d-landing
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      LOCATION: westus3
+      STORAGE_ACCOUNT: dsgoneverifiedweb
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate current-system landing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f azure-landing/index.html
+          grep -q 'AZURE • VERIFIED EXECUTION • CURRENT SYSTEM' azure-landing/index.html
+          grep -q 'Cinema → Exact Z3 → Proof Receipt' azure-landing/index.html
+          grep -q 'VERIFIED_GLOBAL_OPTIMUM' azure-landing/index.html
+          grep -q 'GitHub Marketplace' azure-landing/index.html
+          if grep -Eqi 'Trinity|tdealer01-crypto-dsg-control-plane|proofgate-github-action|dsg-stripe-app\.vercel\.app|planned paid control plane' azure-landing/index.html; then
+            echo 'Retired-system reference found in Azure landing page' >&2
+            exit 1
+          fi
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure dedicated Azure static website
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+
+          if ! az storage account show --resource-group "$RESOURCE_GROUP" --name "$STORAGE_ACCOUNT" >/dev/null 2>&1; then
+            az storage account create \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$STORAGE_ACCOUNT" \
+              --location "$LOCATION" \
+              --sku Standard_LRS \
+              --kind StorageV2 \
+              --https-only true \
+              --min-tls-version TLS1_2 \
+              --allow-blob-public-access true \
+              --output none
+          fi
+
+          ACCOUNT_KEY=$(az storage account keys list \
+            --resource-group "$RESOURCE_GROUP" \
+            --account-name "$STORAGE_ACCOUNT" \
+            --query '[0].value' --output tsv)
+          test -n "$ACCOUNT_KEY"
+          echo "::add-mask::$ACCOUNT_KEY"
+          echo "AZURE_STORAGE_KEY=$ACCOUNT_KEY" >> "$GITHUB_ENV"
+
+          az storage blob service-properties update \
+            --account-name "$STORAGE_ACCOUNT" \
+            --account-key "$ACCOUNT_KEY" \
+            --static-website \
+            --index-document index.html \
+            --404-document index.html \
+            --output none
+
+      - name: Publish immutable landing source
+        shell: bash
+        run: |
+          set -euo pipefail
+          az storage blob upload-batch \
+            --account-name "$STORAGE_ACCOUNT" \
+            --account-key "$AZURE_STORAGE_KEY" \
+            --destination '$web' \
+            --source azure-landing \
+            --overwrite \
+            --output none
+
+          SITE_URL=$(az storage account show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$STORAGE_ACCOUNT" \
+            --query 'primaryEndpoints.web' --output tsv)
+          test -n "$SITE_URL"
+          echo "SITE_URL=$SITE_URL" >> "$GITHUB_ENV"
+          echo "Azure landing URL: $SITE_URL"
+
+      - name: Verify public 3D landing
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 24); do
+            CODE=$(curl --silent --show-error --output /tmp/landing.html --write-out '%{http_code}' "$SITE_URL" || true)
+            if [[ "$CODE" == "200" ]] && grep -q 'AZURE • VERIFIED EXECUTION • CURRENT SYSTEM' /tmp/landing.html; then
+              break
+            fi
+            [[ "$attempt" == "24" ]] && { echo "Azure landing did not converge" >&2; exit 1; }
+            sleep 5
+          done
+
+          grep -q 'One action. One proof. No ambiguity.' /tmp/landing.html
+          grep -q 'Cinema → Exact Z3 → Proof Receipt' /tmp/landing.html
+          grep -q 'VERIFIED_GLOBAL_OPTIMUM' /tmp/landing.html
+          if grep -Eqi 'Trinity|tdealer01-crypto-dsg-control-plane|proofgate-github-action|planned paid control plane' /tmp/landing.html; then
+            echo 'Retired-system reference found on deployed Azure landing' >&2
+            exit 1
+          fi
+
+      - name: Write deployment evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg deployed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit "$GITHUB_SHA" \
+            --arg site_url "$SITE_URL" \
+            --arg storage_account "$STORAGE_ACCOUNT" \
+            '{status:"PASS",surface:"DSG ONE Azure 3D Landing",commit:$commit,site_url:$site_url,storage_account:$storage_account,current_system_only:true,legacy_runtime_references:false,deployed_at:$deployed_at}' \
+            > azure-landing-deployment-evidence.json
+          cat azure-landing-deployment-evidence.json
+
+      - name: Upload deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-3d-landing-evidence-${{ github.run_id }}
+          path: azure-landing-deployment-evidence.json
+          if-no-files-found: error
