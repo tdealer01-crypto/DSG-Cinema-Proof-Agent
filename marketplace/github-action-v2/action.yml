@@ -10,6 +10,12 @@ inputs:
   endpoint:
     description: "Cinema /verify/evaluate endpoint URL."
     required: true
+  api_key:
+    description: >-
+      Optional DSG API key. Supply it to meter and attribute this workflow's
+      proofs to your account. Obtain one with POST /billing/activate.
+    required: false
+    default: ""
   approved_plan_hash:
     description: "SHA-256 of the approved plan."
     required: true
@@ -70,6 +76,9 @@ outputs:
     value: ${{ steps.verify.outputs.context_hash }}
   receipt_file:
     value: ${{ steps.verify.outputs.receipt_file }}
+  remediation:
+    description: "When the call is refused, the single next action that resolves it."
+    value: ${{ steps.verify.outputs.remediation }}
 
 runs:
   using: "composite"
@@ -79,6 +88,7 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/scripts/verified-execution.sh"
       env:
         DSG_ENDPOINT: ${{ inputs.endpoint }}
+        DSG_API_KEY: ${{ inputs.api_key }}
         DSG_APPROVED_PLAN_HASH: ${{ inputs.approved_plan_hash }}
         DSG_PROPOSED_ACTION_HASH: ${{ inputs.proposed_action_hash }}
         DSG_EXECUTION_ID: ${{ inputs.execution_id }}

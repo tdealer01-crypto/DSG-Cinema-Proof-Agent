@@ -16,13 +16,24 @@ import json
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .accounts import Account
+from .activation import ActivationService, activation_ref
 from .engine import Authorization, RevenueEngine, idempotency_key
 from .ledger import ChainError, verify_chain
-from .pricing import catalog_snapshot, micros_to_usd_string
+from .pricing import catalog_snapshot, get_plan, micros_to_usd_string
+from .remediation import (
+    ACCOUNT_SUSPENDED,
+    BACKEND_UNAVAILABLE,
+    CONFIGURATION_INCOMPLETE,
+    PAYMENT_NOT_LINKED,
+    QUOTA_EXCEEDED,
+    UNKNOWN_KEY,
+    VERIFICATION_NOT_PROVED,
+    remediation_for,
+)
 from .stripe_sync import (
     SignatureError,
     apply_webhook_event,
@@ -36,6 +47,7 @@ CHECKOUT_STATUS_LINKED = "LINKED"
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 _engine: Optional[RevenueEngine] = None
+_activation: Optional[ActivationService] = None
 
 
 def get_engine() -> RevenueEngine:
@@ -45,10 +57,19 @@ def get_engine() -> RevenueEngine:
     return _engine
 
 
+def get_activation() -> ActivationService:
+    global _activation
+    engine = get_engine()
+    if _activation is None or _activation.accounts is not engine.accounts:
+        _activation = ActivationService.from_env(engine.accounts)
+    return _activation
+
+
 def reset_engine(engine: Optional[RevenueEngine] = None) -> RevenueEngine:
     """Replace the process engine. Used by tests and by explicit reconfiguration."""
-    global _engine
+    global _engine, _activation
     _engine = engine if engine is not None else RevenueEngine.from_env()
+    _activation = None
     return _engine
 
 
@@ -100,6 +121,7 @@ def authorize_request(api_key: Optional[str], sku: str) -> Optional[Authorizatio
             detail={
                 "error": authorization.decision,
                 "message": authorization.detail,
+                "remediation": authorization.remediation.to_dict(),
                 "billing": authorization.summary(),
             },
         )
@@ -164,6 +186,122 @@ async def meter(
     }
 
 
+def diagnose_entitlement(api_key: Optional[str], sku: str) -> dict:
+    """Report a caller's identity and entitlement as support checks.
+
+    Returns the checks, the blocking code if any, and a non-secret billing
+    summary. A missing key is not an error here: when enforcement is off, an
+    anonymous caller is genuinely entitled to unmetered public evaluation.
+    """
+    engine = get_engine()
+    presented = (api_key or "").strip()
+    checks: list[dict] = []
+
+    if not presented:
+        if engine.enforce:
+            checks.append(
+                {
+                    "check": "api_key",
+                    "status": "fail",
+                    "detail": "This deployment requires an API key and none was presented",
+                }
+            )
+            return {"checks": checks, "blocking": UNKNOWN_KEY, "billing": None}
+        checks.append(
+            {
+                "check": "api_key",
+                "status": "skip",
+                "detail": "No key presented; public evaluation is unmetered on this deployment",
+            }
+        )
+        checks.append(
+            {
+                "check": "entitlement",
+                "status": "pass",
+                "detail": "Anonymous public evaluation is currently allowed",
+            }
+        )
+        return {"checks": checks, "blocking": None, "billing": None}
+
+    authorization = engine.authorize(presented, sku)
+    if authorization.decision == UNKNOWN_KEY:
+        checks.append(
+            {
+                "check": "api_key",
+                "status": "fail",
+                "detail": "The presented key is malformed or does not match an account",
+            }
+        )
+        return {"checks": checks, "blocking": UNKNOWN_KEY, "billing": None}
+
+    checks.append(
+        {"check": "api_key", "status": "pass", "detail": "Key matches an account"}
+    )
+
+    account = authorization.account
+    assert account is not None
+    summary = authorization.summary()
+
+    if authorization.decision == ACCOUNT_SUSPENDED:
+        checks.append(
+            {"check": "account_status", "status": "fail", "detail": "Account is not active"}
+        )
+        return {"checks": checks, "blocking": ACCOUNT_SUSPENDED, "billing": summary}
+
+    checks.append(
+        {"check": "account_status", "status": "pass", "detail": f"Account is {account.status}"}
+    )
+
+    if authorization.decision == QUOTA_EXCEEDED:
+        checks.append(
+            {
+                "check": "quota",
+                "status": "fail",
+                "detail": (
+                    f"{authorization.units_used} units used in {authorization.period}; "
+                    "the plan cap is reached"
+                ),
+            }
+        )
+        return {"checks": checks, "blocking": QUOTA_EXCEEDED, "billing": summary}
+
+    remaining = (
+        "uncapped"
+        if authorization.units_remaining is None
+        else f"{authorization.units_remaining} remaining"
+    )
+    checks.append(
+        {
+            "check": "quota",
+            "status": "pass",
+            "detail": f"{authorization.units_used} used in {authorization.period}, {remaining}",
+        }
+    )
+
+    if authorization.decision == PAYMENT_NOT_LINKED:
+        checks.append(
+            {
+                "check": "payment_method",
+                "status": "fail",
+                "detail": "The plan bills per proof but no payment method is linked",
+            }
+        )
+        return {"checks": checks, "blocking": PAYMENT_NOT_LINKED, "billing": summary}
+
+    checks.append(
+        {
+            "check": "payment_method",
+            "status": "pass" if account.payment_linked else "skip",
+            "detail": (
+                "Payment method is linked"
+                if account.payment_linked
+                else "No payment method needed while included units remain"
+            ),
+        }
+    )
+    return {"checks": checks, "blocking": None, "billing": summary}
+
+
 # -------------------------------------------------------------------- schemas
 class IssueAccountRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
@@ -173,6 +311,14 @@ class IssueAccountRequest(BaseModel):
     stripe_customer_id: Optional[str] = Field(default=None, max_length=255)
     unit_price_micros: Optional[int] = Field(default=None, ge=0, le=10**12)
     hard_cap_units: Optional[int] = Field(default=None, ge=0, le=10**9)
+
+
+class ActivateRequest(BaseModel):
+    """Self-serve activation: the only way to get a key without an operator."""
+
+    channel: str = Field(min_length=2, max_length=32, pattern=r"^[a-z][a-z0-9_]*$")
+    activation_id: str = Field(min_length=3, max_length=200)
+    display_name: str = Field(min_length=1, max_length=255)
 
 
 class UpdateAccountRequest(BaseModel):
@@ -243,6 +389,51 @@ def billing_ledger_verify(authorization: Optional[str] = Header(default=None)) -
         return verify_chain(get_engine().ledger.entries())
     except ChainError as exc:
         raise HTTPException(status_code=500, detail=f"ledger chain is broken: {exc}") from exc
+
+
+@router.post("/activate")
+def activate(request: ActivateRequest, response: Response) -> dict:
+    """Issue a free-tier API key for a channel, with no operator in the loop.
+
+    Activation is idempotent per (channel, activation_id) and rate limited, and
+    it can only ever grant the free plan — a paid entitlement still requires
+    Stripe, so this route cannot hand out billable capacity.
+    """
+    result = get_activation().activate(
+        channel=request.channel,
+        activation_id=request.activation_id,
+        display_name=request.display_name,
+    )
+    response.status_code = result.http_status
+
+    body: dict[str, Any] = {
+        "decision": result.decision,
+        "activated": result.activated,
+        "remediation": result.remediation.to_dict(),
+    }
+    if result.retry_after_seconds is not None:
+        body["retry_after_seconds"] = result.retry_after_seconds
+        response.headers["Retry-After"] = str(result.retry_after_seconds)
+    if result.account is not None:
+        body["account"] = result.account.public_view()
+        plan = get_plan(result.account.plan)
+        body["plan"] = {
+            "plan": plan.plan,
+            "included_units": plan.included_units,
+            "hard_cap_units": plan.hard_cap_units,
+            "base_price_micros": plan.base_price_micros,
+        }
+    if result.api_key is not None:
+        body["api_key"] = result.api_key
+        body["notice"] = (
+            "This key is shown once. Store it now; only its hash is retained."
+        )
+        body["next_call"] = {
+            "method": "POST",
+            "path": "/verify/evaluate",
+            "header": "X-DSG-API-Key",
+        }
+    return body
 
 
 @router.post("/accounts", status_code=201)
@@ -321,7 +512,14 @@ __all__ = [
     "router",
     "authorize_request",
     "meter",
+    "diagnose_entitlement",
     "get_engine",
+    "get_activation",
     "reset_engine",
     "idempotency_key",
+    "activation_ref",
+    "remediation_for",
+    "BACKEND_UNAVAILABLE",
+    "CONFIGURATION_INCOMPLETE",
+    "VERIFICATION_NOT_PROVED",
 ]

@@ -98,20 +98,32 @@ def _authorize(authorization: str | None) -> None:
         raise HTTPException(status_code=403, detail="invalid bearer token")
 
 
+def _proof_failure(message: str, code: str = billing.VERIFICATION_NOT_PROVED) -> HTTPException:
+    """A 502 that tells the caller what to do, not just that something failed."""
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error": code,
+            "message": message,
+            "remediation": billing.remediation_for(code).to_dict(),
+        },
+    )
+
+
 def _validate_exact_proof(body: Any) -> dict[str, Any]:
     if not isinstance(body, dict):
-        raise HTTPException(status_code=502, detail="Z3 returned non-object JSON")
+        raise _proof_failure("Z3 returned non-object JSON")
     if body.get("verified") is not True:
-        raise HTTPException(status_code=502, detail="Z3 proof is not verified")
+        raise _proof_failure("Z3 proof is not verified")
     if body.get("verification") != "VERIFIED_GLOBAL_OPTIMUM":
-        raise HTTPException(status_code=502, detail="Z3 did not prove global optimality")
+        raise _proof_failure("Z3 did not prove global optimality")
 
     proof_hash = body.get("proof_hash")
     request_hash = body.get("request_hash")
     if not isinstance(proof_hash, str) or len(proof_hash) != 64:
-        raise HTTPException(status_code=502, detail="Z3 proof_hash is invalid")
+        raise _proof_failure("Z3 proof_hash is invalid")
     if not isinstance(request_hash, str) or len(request_hash) != 64:
-        raise HTTPException(status_code=502, detail="Z3 request_hash is invalid")
+        raise _proof_failure("Z3 request_hash is invalid")
     return body
 
 
@@ -142,7 +154,10 @@ async def z3_request(
                 json=payload,
             )
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="Z3 backend request failed") from exc
+        raise _proof_failure(
+            "Z3 backend request failed",
+            billing.BACKEND_UNAVAILABLE,
+        ) from exc
 
     try:
         body: Any = response.json()
@@ -309,7 +324,10 @@ async def solve(
 
     status_code, proof = await z3_request("POST", "/solve", payload)
     if status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Z3 solve failed with HTTP {status_code}")
+        raise _proof_failure(
+            f"Z3 solve failed with HTTP {status_code}",
+            billing.BACKEND_UNAVAILABLE,
+        )
 
     verified_proof = _validate_exact_proof(proof)
     return {
@@ -319,6 +337,75 @@ async def solve(
         "proof_hash": verified_proof["proof_hash"],
         "request_hash": verified_proof["request_hash"],
         "z3_proof": verified_proof,
+    }
+
+
+def _check(name: str, status: str, detail: str) -> dict[str, str]:
+    return {"check": name, "status": status, "detail": detail}
+
+
+@app.get("/support/diagnose")
+async def support_diagnose(
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
+    """Tell a caller exactly why verification is not working for them right now.
+
+    The route answers the support question directly instead of leaving a user to
+    infer it from an HTTP status: it reports which checks pass, which one blocks,
+    and the single next action that resolves it. It requires no credential, and
+    it never reveals whether a specific unknown key exists beyond pass or fail.
+    """
+    checks: list[dict[str, str]] = []
+    blocking: str | None = None
+
+    # 1. Deployment configuration.
+    try:
+        _backend_url()
+        _required_secret("DSG_BACKEND_API_KEY")
+        checks.append(
+            _check("service_configuration", "pass", "Backend URL and credential are configured")
+        )
+    except ConfigurationError as exc:
+        checks.append(_check("service_configuration", "fail", str(exc)))
+        blocking = billing.CONFIGURATION_INCOMPLETE
+
+    # 2. Verification backend reachability.
+    if blocking is None:
+        try:
+            status_code, body = await z3_request("GET", "/ready")
+            ready = status_code == 200 and isinstance(body, dict) and body.get("status") == "ready"
+        except HTTPException as exc:
+            ready = False
+            body = exc.detail
+        if ready:
+            checks.append(_check("verification_backend", "pass", "Exact Z3 verifier is ready"))
+        else:
+            checks.append(_check("verification_backend", "fail", "Z3 verifier is not ready"))
+            blocking = billing.BACKEND_UNAVAILABLE
+    else:
+        checks.append(
+            _check("verification_backend", "skip", "Not checked while configuration is incomplete")
+        )
+
+    # 3. Caller identity and entitlement.
+    entitlement = billing.diagnose_entitlement(x_dsg_api_key, VERIFIED_EXECUTION_SKU)
+    checks.extend(entitlement["checks"])
+    if blocking is None and entitlement["blocking"] is not None:
+        blocking = entitlement["blocking"]
+
+    if blocking is None:
+        status = "READY"
+    elif blocking in {billing.CONFIGURATION_INCOMPLETE, billing.BACKEND_UNAVAILABLE}:
+        status = "SERVICE_UNAVAILABLE"
+    else:
+        status = "ACTION_REQUIRED"
+
+    return {
+        "status": status,
+        "checks": checks,
+        "remediation": billing.remediation_for(blocking or "OK").to_dict(),
+        "billing": entitlement["billing"],
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -353,7 +440,10 @@ async def verify_evaluate(
 
     status_code, proof = await z3_request("POST", "/solve", solver_payload)
     if status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Z3 solve failed with HTTP {status_code}")
+        raise _proof_failure(
+            f"Z3 solve failed with HTTP {status_code}",
+            billing.BACKEND_UNAVAILABLE,
+        )
 
     verified_proof = _validate_exact_proof(proof)
     decision = _decision_from_witness(verified_proof.get("witness"))
@@ -434,7 +524,10 @@ async def stripe_evaluate(
 
     status_code, proof = await z3_request("POST", "/solve", solver_payload)
     if status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Z3 solve failed with HTTP {status_code}")
+        raise _proof_failure(
+            f"Z3 solve failed with HTTP {status_code}",
+            billing.BACKEND_UNAVAILABLE,
+        )
 
     verified_proof = _validate_exact_proof(proof)
     decision = _decision_from_witness(verified_proof.get("witness"))

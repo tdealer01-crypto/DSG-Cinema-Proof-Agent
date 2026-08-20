@@ -51,6 +51,7 @@ class Account:
     stripe_customer_id: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
     payment_linked: bool = False
+    activation_ref: Optional[str] = None
     unit_price_micros: Optional[int] = None
     hard_cap_units: Optional[int] = None
     created_at: str = field(default_factory=utc_now)
@@ -69,6 +70,7 @@ class Account:
             "channel": self.channel,
             "mode": self.mode,
             "payment_linked": self.payment_linked,
+            "self_activated": self.activation_ref is not None,
             "unit_price_micros": self.unit_price_micros,
             "hard_cap_units": self.hard_cap_units,
             "created_at": self.created_at,
@@ -156,6 +158,7 @@ class AccountStore:
         stripe_customer_id: Optional[str] = None,
         unit_price_micros: Optional[int] = None,
         hard_cap_units: Optional[int] = None,
+        activation_ref: Optional[str] = None,
     ) -> tuple[Account, str]:
         """Create an account and return it with its one-time plaintext key."""
         get_plan(plan)
@@ -176,6 +179,7 @@ class AccountStore:
             stripe_customer_id=stripe_customer_id,
             unit_price_micros=unit_price_micros,
             hard_cap_units=hard_cap_units,
+            activation_ref=activation_ref,
         )
 
         with self._lock:

@@ -108,5 +108,46 @@
       "attach a durable ledger store before enabling DSG_REVENUE_ENFORCE",
       "create the Stripe meter and price that match the published catalog"
     ]
+  },
+  "channel_delivery": {
+    "system": "dsg-channel-delivery-1.0.0",
+    "activation_endpoint": "/billing/activate",
+    "diagnose_endpoint": "/support/diagnose",
+    "activation_plan": "free",
+    "supported": [
+      "self-serve activation with no operator in the loop",
+      "idempotent activation per (channel, activation_id)",
+      "rate-limited activation with a retry hint",
+      "channel attribution separating acquisition from delivery",
+      "an actionable next step on every denial code",
+      "a diagnosis endpoint that names the blocking problem"
+    ],
+    "not_claimed": [
+      "an active Stripe checkout link",
+      "durable storage for activation records",
+      "any change to a marketplace listing's real approval state"
+    ],
+    "wired_channels": [
+      {
+        "channel": "GitHub Marketplace Action",
+        "carries_api_key": true,
+        "shows_remediation": "GITHUB_STEP_SUMMARY"
+      },
+      {
+        "channel": "OpenAI Skills",
+        "carries_api_key": true,
+        "shows_remediation": "stderr for the agent to relay"
+      },
+      {
+        "channel": "Stripe Apps Marketplace",
+        "carries_api_key": false,
+        "shows_remediation": "decision panel"
+      },
+      {
+        "channel": "Direct API",
+        "carries_api_key": true,
+        "shows_remediation": "landing result panel"
+      }
+    ]
   }
 }

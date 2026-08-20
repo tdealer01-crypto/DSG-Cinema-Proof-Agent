@@ -31,6 +31,12 @@
 - `scripts/revenue_report.py` (reconciliation report; UNAVAILABLE, never estimates)
 - `tests/test_revenue.py` (50 tests)
 
+### Channel Delivery (4 files)
+- `revenue/activation.py` (self-serve, idempotent, rate-limited activation)
+- `revenue/remediation.py` (an actionable next step for every denial code)
+- `tests/test_channel_delivery.py` (28 tests)
+- `CHANNEL_DELIVERY.md` (funnel, attribution, diagnosis, truth boundary)
+
 ### Documentation (7 files)
 - `README.md` (Quick start + overview)
 - `ROUND_1_DEPLOYMENT_GUIDE.md` (Complete deployment guide, 40+ pages)

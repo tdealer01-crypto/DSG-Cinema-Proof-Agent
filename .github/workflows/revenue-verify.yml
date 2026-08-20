@@ -10,7 +10,13 @@ on:
       - 'requirements-cinema.txt'
       - 'Dockerfile.cinema'
       - 'tests/test_revenue.py'
+      - 'tests/test_channel_delivery.py'
       - 'tests/test_cinema_main.py'
+      - 'marketplace/github-action-v2/**'
+      - 'marketplace/openai-plugin/**'
+      - 'stripe-app/src/**'
+      - 'landing/**'
+      - 'azure-landing/**'
       - '.github/workflows/revenue-verify.yml'
   push:
     branches: [main]
@@ -19,6 +25,8 @@ on:
       - 'cinema_main.py'
       - 'scripts/revenue_report.py'
       - 'tests/test_revenue.py'
+      - 'tests/test_channel_delivery.py'
+      - 'marketplace/**'
       - '.github/workflows/revenue-verify.yml'
   workflow_dispatch:
 
@@ -60,10 +68,57 @@ jobs:
             revenue/engine.py \
             revenue/ledger.py \
             revenue/pricing.py \
+            revenue/remediation.py \
+            revenue/activation.py \
             revenue/stripe_sync.py
 
-      - name: Run revenue and Cinema contract tests
-        run: python -m pytest -q tests/test_revenue.py tests/test_cinema_main.py
+      - name: Run revenue, channel, and Cinema contract tests
+        run: |
+          python -m pytest -q \
+            tests/test_revenue.py \
+            tests/test_channel_delivery.py \
+            tests/test_cinema_main.py
+
+      - name: Assert every channel package can reach the live contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Each channel must carry the key header and surface the remediation,
+          # or a refused user is left with a bare status code again.
+          grep -q 'X-DSG-API-Key' marketplace/github-action-v2/scripts/verified-execution.sh
+          grep -q 'GITHUB_STEP_SUMMARY' marketplace/github-action-v2/scripts/verified-execution.sh
+          grep -q 'X-DSG-API-Key' marketplace/openai-plugin/skills/verify-execution/scripts/verify.sh
+          grep -q 'next_step' marketplace/openai-plugin/skills/verify-execution/scripts/verify.sh
+          grep -q '/billing/activate' marketplace/openai-plugin/skills/verify-execution/SKILL.md
+          grep -q 'readRemediation' stripe-app/src/views/ChargeGate.tsx
+          grep -q 'billing/activate' landing/index.html
+
+          # The landing pages stay one artifact.
+          cmp landing/index.html azure-landing/index.html
+
+          # Activation must never be able to hand out a paid plan.
+          python - <<'PY'
+          from revenue.activation import ACTIVATION_PLAN
+          from revenue.pricing import get_plan
+
+          plan = get_plan(ACTIVATION_PLAN)
+          assert plan.base_price_micros == 0, 'activation must not grant a paid plan'
+          assert plan.hard_cap_units is not None, 'activation plan must be capped'
+          assert plan.requires_linked_payment is False
+          print(f'activation grants {plan.plan}, capped at {plan.hard_cap_units} units')
+          PY
+
+          # Every denial code must carry an actionable next step.
+          python - <<'PY'
+          from revenue.remediation import all_codes, remediation_for
+
+          for code in all_codes():
+              fix = remediation_for(code)
+              assert fix.next_step.strip(), f'{code} has no next step'
+              assert fix.problem.strip(), f'{code} has no problem statement'
+          print(f'{len(all_codes())} denial codes all carry a next step')
+          PY
 
       - name: Assert no credential material is committed
         shell: bash

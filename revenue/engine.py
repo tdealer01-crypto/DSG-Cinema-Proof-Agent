@@ -35,6 +35,7 @@ from .pricing import (
     resolve_unit_price_micros,
     unit_amount_micros,
 )
+from .remediation import Remediation, remediation_for
 
 VERIFIED_STATE = "VERIFIED_GLOBAL_OPTIMUM"
 
@@ -79,6 +80,11 @@ class Authorization:
     def http_status(self) -> int:
         return _HTTP_STATUS.get(self.decision, 403)
 
+    @property
+    def remediation(self) -> Remediation:
+        """The one action that resolves this decision."""
+        return remediation_for("OK" if self.authorized else self.decision)
+
     def summary(self) -> dict:
         body = {
             "decision": self.decision,
@@ -91,6 +97,7 @@ class Authorization:
         if self.account is not None:
             body["account_id"] = self.account.account_id
             body["plan"] = self.account.plan
+            body["channel"] = self.account.channel
         if self.detail:
             body["detail"] = self.detail
         return body
@@ -284,6 +291,57 @@ class RevenueEngine:
             "ledger_head_hash": self.ledger.head_hash(),
         }
 
+    def channel_report(self, period: Optional[str] = None) -> list[dict]:
+        """Attribute units and amount to the sales channel that delivered them.
+
+        Ledger entries carry the channel the request arrived on, and accounts
+        carry the channel that acquired them. Both are reported: a customer
+        acquired through GitHub may verify through the direct API.
+        """
+        current_period = period or billing_period()
+        entries = [
+            entry for entry in self.ledger.entries() if entry.period == current_period
+        ]
+
+        buckets: dict[str, dict] = {}
+        for entry in entries:
+            bucket = buckets.setdefault(
+                entry.channel,
+                {
+                    "channel": entry.channel,
+                    "units": 0,
+                    "amount_micros": 0,
+                    "accounts": set(),
+                },
+            )
+            bucket["units"] += entry.quantity
+            bucket["amount_micros"] += entry.amount_micros
+            bucket["accounts"].add(entry.account_id)
+
+        acquired: dict[str, int] = {}
+        for account in self.accounts.all():
+            acquired[account.channel] = acquired.get(account.channel, 0) + 1
+
+        for channel, count in acquired.items():
+            buckets.setdefault(
+                channel,
+                {"channel": channel, "units": 0, "amount_micros": 0, "accounts": set()},
+            )
+
+        report = []
+        for channel, bucket in buckets.items():
+            report.append(
+                {
+                    "channel": channel,
+                    "units": bucket["units"],
+                    "amount_micros": bucket["amount_micros"],
+                    "amount_usd": micros_to_usd_string(bucket["amount_micros"]),
+                    "active_accounts": len(bucket["accounts"]),
+                    "accounts_acquired": acquired.get(channel, 0),
+                }
+            )
+        return sorted(report, key=lambda item: item["channel"])
+
     def period_report(self, period: Optional[str] = None) -> dict:
         """Aggregate every account for one billing period."""
         current_period = period or billing_period()
@@ -308,5 +366,6 @@ class RevenueEngine:
             "recognized_amount_micros": recognized_micros,
             "recognized_amount_usd": micros_to_usd_string(recognized_micros),
             "ledger": chain,
+            "by_channel": self.channel_report(current_period),
             "accounts": summaries,
         }

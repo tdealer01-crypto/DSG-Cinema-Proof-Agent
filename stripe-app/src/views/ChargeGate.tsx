@@ -15,6 +15,16 @@ type Decision = 'ALLOW' | 'REVIEW' | 'BLOCK';
 type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 type StripeObjectType = 'charge' | 'payment_intent' | 'payout' | 'refund';
 
+interface Remediation {
+  code: string;
+  problem: string;
+  cause: string;
+  next_step: string;
+  self_service: boolean;
+  endpoint?: string;
+  docs: string;
+}
+
 interface VerificationResult {
   decision: Decision;
   reason: string;
@@ -54,6 +64,23 @@ function inferObjectType(id: string): StripeObjectType | null {
 function shortHash(value: string): string {
   if (!value) return 'Unavailable';
   return `${value.slice(0, 12)}…${value.slice(-8)}`;
+}
+
+function readRemediation(body: unknown): Remediation | null {
+  if (!body || typeof body !== 'object') return null;
+  const envelope = body as Record<string, unknown>;
+  const detail =
+    envelope.detail && typeof envelope.detail === 'object'
+      ? (envelope.detail as Record<string, unknown>)
+      : envelope;
+  const remediation = detail.remediation;
+  if (!remediation || typeof remediation !== 'object') return null;
+
+  const candidate = remediation as Record<string, unknown>;
+  if (typeof candidate.next_step !== 'string' || typeof candidate.problem !== 'string') {
+    return null;
+  }
+  return candidate as unknown as Remediation;
 }
 
 function normalizeRiskLevel(value: unknown): RiskLevel | undefined {
@@ -115,6 +142,7 @@ export default function ChargeGate({
   const [result, setResult] = useState<VerificationResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [remediation, setRemediation] = useState<Remediation | null>(null);
   const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
@@ -123,6 +151,7 @@ export default function ChargeGate({
     const verify = async () => {
       if (!transaction.accountId || !transaction.objectId || !transaction.objectType) {
         setResult(null);
+        setRemediation(null);
         setError('Open a supported Stripe payment, payout, or refund detail view.');
         setLoading(false);
         return;
@@ -130,6 +159,7 @@ export default function ChargeGate({
 
       setLoading(true);
       setError(null);
+      setRemediation(null);
 
       try {
         const response = await fetch(`${CINEMA_API_BASE}/stripe/evaluate`, {
@@ -150,7 +180,16 @@ export default function ChargeGate({
         });
 
         if (!response.ok) {
-          throw new Error(`Verification unavailable (HTTP ${response.status})`);
+          // A refusal carries the action that resolves it. Show that instead of
+          // leaving the user with a status code they cannot act on.
+          const refusal = await response.json().catch(() => null);
+          const fix = readRemediation(refusal);
+          if (fix && !cancelled) {
+            setRemediation(fix);
+          }
+          throw new Error(
+            fix?.problem ?? `Verification unavailable (HTTP ${response.status})`,
+          );
         }
 
         const body = (await response.json()) as VerificationResult;
@@ -213,6 +252,19 @@ export default function ChargeGate({
             title="Verification needs attention"
             description={error ?? 'No verified result is available. The safe state is REVIEW.'}
           />
+
+          {remediation ? (
+            <Box css={{ stack: 'y', gapY: 'small' }}>
+              <Box css={{ font: 'caption', color: 'secondary' }}>What to do next</Box>
+              <Box css={{ font: 'caption' }}>{remediation.next_step}</Box>
+              <Box css={{ font: 'caption', color: 'secondary' }}>
+                {remediation.self_service
+                  ? 'You can resolve this yourself.'
+                  : 'This needs an operator on the DSG side.'}
+              </Box>
+            </Box>
+          ) : null}
+
           <Box css={{ font: 'caption', color: 'secondary' }}>
             No transaction is treated as approved when the exact proof is unavailable.
           </Box>

@@ -300,6 +300,31 @@ surface authenticates and leaks no credentials.
 
 ---
 
+## 🔌 Channel → Value → Resolution
+
+`CHANNEL_DELIVERY.md` documents the automated path from a marketplace listing to
+a working proof, with no human in the loop.
+
+```bash
+# 1. Activate a free key from any channel (no operator, no card)
+curl -X POST "$CINEMA_URL/billing/activate" -H 'Content-Type: application/json' \
+  -d '{"channel":"github","activation_id":"acme/pipeline","display_name":"Acme"}'
+
+# 2. Verify with it — metered and attributed to that channel
+curl -X POST "$CINEMA_URL/verify/evaluate" -H "X-DSG-API-Key: $KEY" ...
+
+# 3. Stuck? Ask the service what is wrong and what to do
+curl -H "X-DSG-API-Key: $KEY" "$CINEMA_URL/support/diagnose"
+```
+
+Every refusal — bad key, exhausted quota, unlinked payment, backend down —
+returns a `remediation` object with the problem, the cause, the single next
+step, and whether the user can fix it alone. The GitHub Action writes it to the
+run summary, the OpenAI skill prints it for the agent to relay, the Stripe app
+shows it in the decision panel, and the landing page shows it in the result.
+
+---
+
 ## 📈 Revenue Impact
 
 After Z3 deployment:

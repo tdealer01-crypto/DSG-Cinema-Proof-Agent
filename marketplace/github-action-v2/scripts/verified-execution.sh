@@ -68,16 +68,53 @@ jq -n \
     cost_microunits: $cost_microunits
   }' > /tmp/dsg-verify-request.json
 
-HTTP_CODE=$(curl --silent --show-error \
-  --output "$DSG_RECEIPT_FILE" \
-  --write-out '%{http_code}' \
-  --request POST "$DSG_ENDPOINT" \
-  --header 'Content-Type: application/json' \
-  --data @/tmp/dsg-verify-request.json || true)
+CURL_ARGS=(
+  --silent --show-error
+  --output "$DSG_RECEIPT_FILE"
+  --write-out '%{http_code}'
+  --request POST "$DSG_ENDPOINT"
+  --header 'Content-Type: application/json'
+  --data @/tmp/dsg-verify-request.json
+)
+if [[ -n "${DSG_API_KEY:-}" ]]; then
+  CURL_ARGS+=(--header "X-DSG-API-Key: ${DSG_API_KEY}")
+fi
+
+HTTP_CODE=$(curl "${CURL_ARGS[@]}" || true)
+
+# A refusal should tell the maintainer how to fix it, in the run summary where
+# they are already looking, rather than leaving them an HTTP status to decode.
+report_remediation() {
+  local file="$1"
+  local next_step problem code
+
+  code=$(jq -r '.detail.error // .error // empty' "$file" 2>/dev/null || true)
+  problem=$(jq -r '.detail.remediation.problem // .remediation.problem // empty' "$file" 2>/dev/null || true)
+  next_step=$(jq -r '.detail.remediation.next_step // .remediation.next_step // empty' "$file" 2>/dev/null || true)
+
+  if [[ -z "$next_step" ]]; then
+    return 1
+  fi
+
+  echo "remediation=$next_step" >> "$GITHUB_OUTPUT"
+  {
+    echo "### DSG Verified Execution — action required"
+    echo
+    echo "- **Problem:** ${problem:-The verification request was refused.}"
+    [[ -n "$code" ]] && echo "- **Code:** \`$code\`"
+    echo "- **Next step:** $next_step"
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+  echo "DSG verification refused: ${problem:-HTTP $HTTP_CODE}" >&2
+  echo "Next step: $next_step" >&2
+  return 0
+}
 
 if [[ "$HTTP_CODE" != "200" ]]; then
-  echo "DSG verification endpoint returned HTTP $HTTP_CODE" >&2
-  cat "$DSG_RECEIPT_FILE" 2>/dev/null || true
+  if ! report_remediation "$DSG_RECEIPT_FILE"; then
+    echo "DSG verification endpoint returned HTTP $HTTP_CODE" >&2
+    cat "$DSG_RECEIPT_FILE" 2>/dev/null || true
+  fi
   exit 1
 fi
 
@@ -101,6 +138,20 @@ echo "receipt_file=$DSG_RECEIPT_FILE" >> "$GITHUB_OUTPUT"
 
 echo "DSG Verified Execution: $DECISION"
 echo "proof_hash=$PROOF_HASH"
+
+BILLED_UNITS=$(jq -r '.billing.quantity // empty' "$DSG_RECEIPT_FILE")
+{
+  echo "### DSG Verified Execution — $DECISION"
+  echo
+  echo "- **Proof hash:** \`$PROOF_HASH\`"
+  echo "- **Context hash:** \`$CONTEXT_HASH\`"
+  if [[ -n "$BILLED_UNITS" ]]; then
+    ACCOUNT=$(jq -r '.billing.account_id // "unknown"' "$DSG_RECEIPT_FILE")
+    echo "- **Metered:** $BILLED_UNITS unit(s) to \`$ACCOUNT\`"
+  else
+    echo "- **Metered:** no (unattributed public evaluation)"
+  fi
+} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 if [[ "$DECISION" == "BLOCK" ]]; then
   exit 1
