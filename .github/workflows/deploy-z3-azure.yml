@@ -179,14 +179,14 @@ jobs:
           set -euo pipefail
           deploy_with_retry() {
             local max_attempts=5
-            local wait_seconds=2
+            local wait_seconds=15
             local attempt=1
 
             while (( attempt <= max_attempts )); do
               if [[ "$attempt" -gt 1 ]]; then
                 echo "Attempt $attempt/$max_attempts after ${wait_seconds}s..."
                 sleep "$wait_seconds"
-                wait_seconds=$((wait_seconds * 2))
+                wait_seconds=$((wait_seconds + 15))
               fi
 
               if az containerapp show \
