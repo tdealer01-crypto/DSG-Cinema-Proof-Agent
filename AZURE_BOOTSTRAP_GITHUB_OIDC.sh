@@ -9,15 +9,13 @@ set -euo pipefail
 # - GitHub deploy uses a dedicated user-assigned managed identity + OIDC
 # - Cinema's existing managed identity is not granted broader permissions
 # - Container Apps use separate AcrPull-only identities
+# - subscription resource providers are registered only during this owner-run bootstrap
 
 SUBSCRIPTION_ID="dcf13c0d-0d9f-4f81-aa89-c6b50aaef839"
 TENANT_ID="cbc618d5-9aa3-46b5-ae64-d07794603a7a"
 RESOURCE_GROUP="rg-t.dealer01-0468"
 LOCATION="westus3"
 ACR_NAME="tdealer01acr"
-REPO="tdealer01-crypto/DSG-Cinema-Proof-Agent"
-# GitHub's OIDC token for this repository includes stable owner/repository IDs.
-# This exact form was observed from azure/login on PR #30.
 GITHUB_SUBJECT_BASE="repo:tdealer01-crypto@260597462/DSG-Cinema-Proof-Agent@1326742567"
 GITHUB_IDENTITY="dsg-cinema-proof-agent-github-deployer"
 STAGING_PULL_IDENTITY="dsg-z3-acr-pull-staging"
@@ -40,10 +38,31 @@ ACTIVE_SUB=$(az account show --query id -o tsv)
 
 RG_SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP"
 
-echo "[1/8] Ensure resource group"
+ensure_provider() {
+  local namespace="$1"
+  local state
+  state=$(az provider show --namespace "$namespace" --query registrationState -o tsv 2>/dev/null || true)
+  if [[ "$state" != "Registered" ]]; then
+    echo "  - registering $namespace"
+    az provider register --namespace "$namespace" --wait --output none
+  else
+    echo "  - $namespace already registered"
+  fi
+
+  state=$(az provider show --namespace "$namespace" --query registrationState -o tsv)
+  [[ "$state" == "Registered" ]] || fail "$namespace provider registration did not reach Registered"
+}
+
+echo "[1/9] Ensure Azure resource providers"
+ensure_provider "Microsoft.App"
+ensure_provider "Microsoft.OperationalInsights"
+ensure_provider "Microsoft.ContainerRegistry"
+ensure_provider "Microsoft.ManagedIdentity"
+
+echo "[2/9] Ensure resource group"
 az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
 
-echo "[2/8] Ensure Azure Container Registry"
+echo "[3/9] Ensure Azure Container Registry"
 if ! az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
   az acr create \
     --name "$ACR_NAME" \
@@ -101,11 +120,11 @@ ensure_pull_identity() {
   fi
 }
 
-echo "[3/8] Ensure runtime ACR pull identities"
+echo "[4/9] Ensure runtime ACR pull identities"
 ensure_pull_identity "$STAGING_PULL_IDENTITY"
 ensure_pull_identity "$PRODUCTION_PULL_IDENTITY"
 
-echo "[4/8] Ensure dedicated GitHub deployment identity"
+echo "[5/9] Ensure dedicated GitHub deployment identity"
 if ! az identity show --name "$GITHUB_IDENTITY" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
   az identity create \
     --name "$GITHUB_IDENTITY" \
@@ -126,7 +145,7 @@ DEPLOY_PRINCIPAL_ID=$(az identity show \
 [[ -n "$CLIENT_ID" ]] || fail "Could not resolve GitHub deployment identity clientId"
 [[ -n "$DEPLOY_PRINCIPAL_ID" ]] || fail "Could not resolve GitHub deployment identity principalId"
 
-echo "[5/8] Ensure Contributor role on DSG resource group"
+echo "[6/9] Ensure Contributor role on DSG resource group"
 CONTRIB_COUNT=$(az role assignment list \
   --assignee-object-id "$DEPLOY_PRINCIPAL_ID" \
   --scope "$RG_SCOPE" \
@@ -180,11 +199,14 @@ ensure_federated_credential() {
   fi
 }
 
-echo "[6/8] Ensure GitHub OIDC federated credentials"
+echo "[7/9] Ensure GitHub OIDC federated credentials"
 ensure_federated_credential "github-staging" "staging"
 ensure_federated_credential "github-production" "production"
 
-echo "[7/8] Verify role and federation state"
+echo "[8/9] Verify provider, role, and federation state"
+[[ "$(az provider show --namespace Microsoft.App --query registrationState -o tsv)" == "Registered" ]] || fail "Microsoft.App is not registered"
+[[ "$(az provider show --namespace Microsoft.OperationalInsights --query registrationState -o tsv)" == "Registered" ]] || fail "Microsoft.OperationalInsights is not registered"
+
 CONTRIB_COUNT=$(az role assignment list \
   --assignee-object-id "$DEPLOY_PRINCIPAL_ID" \
   --scope "$RG_SCOPE" \
@@ -206,12 +228,13 @@ PRODUCTION_SUBJECT=$(az identity federated-credential show \
 [[ "$STAGING_SUBJECT" == "$GITHUB_SUBJECT_BASE:environment:staging" ]] || fail "staging federated subject mismatch"
 [[ "$PRODUCTION_SUBJECT" == "$GITHUB_SUBJECT_BASE:environment:production" ]] || fail "production federated subject mismatch"
 
-echo "[8/8] Bootstrap complete"
+echo "[9/9] Bootstrap complete"
 cat <<EOF
 
 BOOTSTRAP PASS
 
 Dedicated GitHub OIDC managed identity is ready.
+Required Azure resource providers are registered.
 No password or client secret was created.
 Cinema's existing managed identity was not broadened.
 
