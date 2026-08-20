@@ -272,3 +272,132 @@ def test_stripe_context_hash_is_deterministic(monkeypatch):
     assert second.status_code == 200
     assert first.json()["context_hash"] == second.json()["context_hash"]
     assert seen_request_ids[0] == seen_request_ids[1]
+
+
+def _verification_payload(**overrides):
+    payload = {
+        "execution_id": "exec-marketplace-001",
+        "trace_id": "trace-marketplace-001",
+        "channel": "github",
+        "agent_identity": "github-actions",
+        "approved_plan_hash": "1" * 64,
+        "proposed_action_hash": "2" * 64,
+        "authorized": True,
+        "plan_aligned": True,
+        "constraints_pass": True,
+        "execution_succeeded": True,
+        "replay_match": True,
+        "evidence_complete": True,
+        "cost_microunits": 125000,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_marketplace_verified_execution_allow(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        assert method == "POST"
+        assert path == "/solve"
+        assert payload["preset_name"] == "verified-execution-v1"
+        assert payload["linear"] == [-100, -70, -40]
+        assert payload["quadratic"] == [[0, 1, 200], [0, 2, 200], [1, 2, 200]]
+        return 200, {
+            **VALID_PROOF,
+            "witness": [1, 0, 0],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post("/verify/evaluate", json=_verification_payload())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "ALLOW"
+    assert body["verified"] is True
+    assert body["verification"] == "VERIFIED_GLOBAL_OPTIMUM"
+    assert body["receipt_version"] == "dsg-proof-receipt-1.0.0"
+    assert body["policy_version"] == "dsg-verified-execution-1.0.0"
+    assert body["authorized_action_completion"] is True
+    assert body["out_of_plan_rejection"] is False
+    assert body["replay_match"] is True
+    assert body["evidence_completeness"] == 1.0
+    assert body["cost_microunits"] == 125000
+    assert len(body["context_hash"]) == 64
+
+
+def test_marketplace_out_of_plan_is_block(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        assert payload["linear"] == [-40, -70, -100]
+        return 200, {
+            **VALID_PROOF,
+            "witness": [0, 0, 1],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post(
+        "/verify/evaluate",
+        json=_verification_payload(plan_aligned=False),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "BLOCK"
+    assert body["out_of_plan_rejection"] is True
+    assert "outside the approved plan" in body["reason"]
+
+
+def test_marketplace_incomplete_evidence_is_review(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        assert payload["linear"] == [-60, -100, -60]
+        return 200, {
+            **VALID_PROOF,
+            "witness": [0, 1, 0],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post(
+        "/verify/evaluate",
+        json=_verification_payload(evidence_complete=False),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "REVIEW"
+    assert body["evidence_completeness"] == 0.0
+    assert "evidence is incomplete" in body["reason"]
+
+
+def test_marketplace_context_hash_is_deterministic(monkeypatch):
+    configure(monkeypatch)
+    request_ids: list[str] = []
+
+    async def fake_z3_request(method, path, payload=None):
+        request_ids.append(payload["request_id"])
+        return 200, {
+            **VALID_PROOF,
+            "witness": [1, 0, 0],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    payload = _verification_payload()
+    first = client.post("/verify/evaluate", json=payload)
+    second = client.post("/verify/evaluate", json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["context_hash"] == second.json()["context_hash"]
+    assert request_ids[0] == request_ids[1]
+
+
+def test_marketplace_rejects_non_sha256_plan_hash(monkeypatch):
+    configure(monkeypatch)
+    response = client.post(
+        "/verify/evaluate",
+        json=_verification_payload(approved_plan_hash="not-a-sha256"),
+    )
+    assert response.status_code == 422

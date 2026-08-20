@@ -1,0 +1,41 @@
+{
+  "name": "dsg-verified-execution",
+  "version": "1.0.0",
+  "description": "Verify approved-plan execution with deterministic evidence and exact Z3 proof receipts.",
+  "author": {
+    "name": "tdealer01-crypto",
+    "url": "https://github.com/tdealer01-crypto"
+  },
+  "homepage": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/tree/main/marketplace/openai-plugin",
+  "repository": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent",
+  "license": "LicenseRef-DSG-Commercial-1.0",
+  "keywords": [
+    "verification",
+    "z3",
+    "evidence",
+    "replay",
+    "governance"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "DSG Verified Execution",
+    "shortDescription": "Verify actions against approved plans with Z3 proof.",
+    "longDescription": "Create a bounded Verified Execution request from an approved plan and observed execution facts, send it to the DSG Cinema verification backend, and return an ALLOW, REVIEW, or BLOCK Proof Receipt only when the backend reports VERIFIED_GLOBAL_OPTIMUM from the exact Z3 verifier. The skill does not fabricate proof and fails closed when the verification service is unavailable.",
+    "developerName": "tdealer01-crypto",
+    "websiteURL": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent",
+    "privacyPolicyURL": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/openai-plugin/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/openai-plugin/TERMS.md",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Verify this execution against its approved plan.",
+      "Create a DSG Proof Receipt for this completed action.",
+      "Check whether this action is out of plan and explain the result."
+    ],
+    "brandColor": "#1F2937",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
+  }
+}

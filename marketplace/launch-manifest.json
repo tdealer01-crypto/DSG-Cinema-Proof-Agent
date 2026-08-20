@@ -1,0 +1,60 @@
+{
+  "product": {
+    "name": "DSG Verified Execution",
+    "tagline": "Deterministic proof receipts for AI and automated actions.",
+    "runtime": "Cinema + exact Z3",
+    "verification_endpoint": "/verify/evaluate",
+    "receipt_version": "dsg-proof-receipt-1.0.0",
+    "policy_version": "dsg-verified-execution-1.0.0"
+  },
+  "truth_boundary": {
+    "supported": [
+      "deterministic ALLOW/REVIEW/BLOCK policy mapping",
+      "exact Z3 global-optimum verification",
+      "SHA-256 context, request, and proof hashes",
+      "replay/evidence/cost fields in the proof receipt"
+    ],
+    "not_claimed": [
+      "SOC 2 certification",
+      "ISO certification",
+      "third-party audit certification",
+      "regulatory compliance certification"
+    ]
+  },
+  "channels": [
+    {
+      "channel": "GitHub Marketplace Action",
+      "status": "LIVE_V1",
+      "listing": "DSG Secure Deploy Gate",
+      "next": "package backward-compatible Verified Execution v2 against Cinema /verify/evaluate",
+      "commercial_role": "free acquisition channel; paid verification service sold separately"
+    },
+    {
+      "channel": "Stripe Apps Marketplace",
+      "status": "PACKAGE_V2_7_PREPARED",
+      "app_id": "pics.dsg.governance",
+      "next": "bind to production Cinema URL, upload with Stripe CLI, external test, submit review",
+      "commercial_role": "native Stripe distribution"
+    },
+    {
+      "channel": "Microsoft Marketplace",
+      "status": "SUBMISSION_PACK_PREPARED",
+      "recommended_listing": "Contact me",
+      "next": "create SaaS offer in Partner Center and submit listing",
+      "commercial_role": "enterprise lead generation first; transactable SaaS later"
+    },
+    {
+      "channel": "AWS Marketplace",
+      "status": "SUBMISSION_PACK_PREPARED",
+      "recommended_listing": "SaaS",
+      "next": "complete seller onboarding and marketplace billing/entitlement integration before public paid launch",
+      "commercial_role": "enterprise procurement channel"
+    },
+    {
+      "channel": "JetBrains Marketplace",
+      "status": "PLUGIN_SPEC_PREPARED",
+      "next": "build signed IDE plugin artifact, verify compatibility, upload for review",
+      "commercial_role": "developer acquisition and paid plugin option"
+    }
+  ]
+}
