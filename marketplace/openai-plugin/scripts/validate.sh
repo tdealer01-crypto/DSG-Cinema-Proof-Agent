@@ -17,8 +17,8 @@ for f in \
   test -s "$f"
 done
 test -s "$ROOT/assets/logo.png"
-if grep -RniE 'control[- ]?plane.*runtime|SOC 2 certified|ISO 27001 certified' "$ROOT" --exclude=validate.sh; then
-  echo "forbidden retired-runtime or certification claim found" >&2
+if grep -RniE 'https?://[^[:space:])]*(control[-]?plane|dsg-control)|SOC 2 certified|ISO 27001 certified' "$ROOT" --exclude=validate.sh; then
+  echo "forbidden retired-runtime URL or certification claim found" >&2
   exit 1
 fi
 echo "OpenAI plugin package validation: PASS"

@@ -50,6 +50,52 @@ def test_health_passes_only_when_backend_ready(monkeypatch):
     assert response.json() == {"status": "ready", "backend": "ready"}
 
 
+def test_azure_landing_origin_can_call_public_verification_api(monkeypatch):
+    configure(monkeypatch)
+    response = client.options(
+        "/verify/evaluate",
+        headers={
+            "Origin": "https://dsgone3dc2d94861e332.z23.web.core.windows.net",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "https://dsgone3dc2d94861e332.z23.web.core.windows.net"
+    )
+
+
+def test_any_azure_storage_static_site_origin_matches_cors_policy(monkeypatch):
+    configure(monkeypatch)
+    origin = "https://dsgoneverifiedweb.z99.web.core.windows.net"
+    response = client.options(
+        "/verify/evaluate",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_render_landing_origin_can_call_public_verification_api(monkeypatch):
+    configure(monkeypatch)
+    origin = "https://dsg-one-verified-execution.onrender.com"
+    response = client.options(
+        "/verify/evaluate",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
 def test_solve_rejects_missing_token(monkeypatch):
     configure(monkeypatch)
     response = client.post("/solve", json={"problem_type": "qubo"})
@@ -401,3 +447,22 @@ def test_marketplace_rejects_non_sha256_plan_hash(monkeypatch):
         json=_verification_payload(approved_plan_hash="not-a-sha256"),
     )
     assert response.status_code == 422
+
+
+def test_openai_plugin_channel_is_supported(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        return 200, {
+            **VALID_PROOF,
+            "witness": [1, 0, 0],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post(
+        "/verify/evaluate",
+        json=_verification_payload(channel="openai_plugin"),
+    )
+    assert response.status_code == 200
+    assert response.json()["channel"] == "openai_plugin"

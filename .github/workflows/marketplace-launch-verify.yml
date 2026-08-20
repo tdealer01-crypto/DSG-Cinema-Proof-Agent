@@ -9,7 +9,11 @@ on:
       - 'requirements-cinema.txt'
       - 'tests/test_cinema_main.py'
       - 'marketplace/**'
+      - 'stripe-app/**'
       - 'landing/**'
+      - 'azure-landing/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'tests/test_marketplace_surfaces.py'
       - '.github/workflows/marketplace-launch-verify.yml'
   push:
     branches: [main]
@@ -19,7 +23,11 @@ on:
       - 'requirements-cinema.txt'
       - 'tests/test_cinema_main.py'
       - 'marketplace/**'
+      - 'stripe-app/**'
       - 'landing/**'
+      - 'azure-landing/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'tests/test_marketplace_surfaces.py'
       - '.github/workflows/marketplace-launch-verify.yml'
   workflow_dispatch:
 
@@ -37,6 +45,10 @@ jobs:
         with:
           python-version: '3.11'
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install backend test dependencies
         run: |
           python -m pip install --upgrade pip
@@ -46,12 +58,14 @@ jobs:
         run: python -m py_compile cinema_main.py marketplace_verification.py
 
       - name: Run Cinema verification tests
-        run: python -m pytest -q tests/test_cinema_main.py
+        run: python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py
 
       - name: Validate launch manifest
         run: |
           jq -e '.product.receipt_version == "dsg-proof-receipt-1.0.0"' marketplace/launch-manifest.json >/dev/null
           jq -e '.product.policy_version == "dsg-verified-execution-1.0.0"' marketplace/launch-manifest.json >/dev/null
+          jq -e '.product.checkout_status == "NOT_VERIFIED_NOT_LINKED"' marketplace/launch-manifest.json >/dev/null
+          jq -e '[.channels[].channel] | length == 7' marketplace/launch-manifest.json >/dev/null
 
       - name: Validate GitHub Action v2 package
         run: |
@@ -71,6 +85,15 @@ jobs:
               assert spec.get('required') is True, f'{key} must be required'
               assert 'default' not in spec, f'{key} must not have a permissive default'
           PY
+
+      - name: Validate OpenAI Skills package
+        run: bash marketplace/openai-plugin/scripts/validate.sh
+
+      - name: Type-check Stripe App package
+        working-directory: stripe-app
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run typecheck
 
       - name: Validate Pydantic runtime contract
         run: |

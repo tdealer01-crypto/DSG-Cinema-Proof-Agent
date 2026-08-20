@@ -19,7 +19,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
       LOCATION: westus3
@@ -37,14 +37,51 @@ jobs:
         run: |
           set -euo pipefail
           test -f azure-landing/index.html
-          grep -q 'AZURE • VERIFIED EXECUTION • CURRENT SYSTEM' azure-landing/index.html
-          grep -q 'Cinema → Exact Z3 → Proof Receipt' azure-landing/index.html
+          grep -q 'AZURE UI → CINEMA → EXACT Z3 → PROOF RECEIPT' azure-landing/index.html
+          grep -q 'Run live verification' azure-landing/index.html
+          grep -q 'Download receipt JSON' azure-landing/index.html
           grep -q 'VERIFIED_GLOBAL_OPTIMUM' azure-landing/index.html
           grep -q 'GitHub Marketplace' azure-landing/index.html
+          grep -q 'OpenAI Skills' azure-landing/index.html
+          grep -q 'Microsoft Marketplace' azure-landing/index.html
+          grep -q 'AWS Marketplace' azure-landing/index.html
+          grep -q 'JetBrains Marketplace' azure-landing/index.html
+          grep -q 'Checkout status: NOT VERIFIED / NOT LINKED' azure-landing/index.html
+          cmp --silent azure-landing/index.html landing/index.html
           if grep -Eqi 'Trinity|tdealer01-crypto-dsg-control-plane|proofgate-github-action|dsg-stripe-app\.vercel\.app|planned paid control plane' azure-landing/index.html; then
             echo 'Retired-system reference found in Azure landing page' >&2
             exit 1
           fi
+
+      - name: Wait for the production browser contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORIGIN='https://dsgone3dc2d94861e332.z23.web.core.windows.net'
+          VERIFY_URL='https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate'
+          jq -n '{channel:"openai_plugin",approved_plan_hash:("1"*64),proposed_action_hash:("2"*64),execution_id:"azure-release-gate",trace_id:"azure-release-gate",agent_identity:"github-actions-azure-release-gate",authorized:true,plan_aligned:true,constraints_pass:true,execution_succeeded:true,replay_match:true,evidence_complete:true,cost_microunits:0}' > /tmp/browser-contract-request.json
+
+          for attempt in $(seq 1 180); do
+            CORS_CODE=$(curl --silent --show-error --output /dev/null --dump-header /tmp/browser-contract-cors.txt --write-out '%{http_code}' \
+              --request OPTIONS "$VERIFY_URL" \
+              --header "Origin: $ORIGIN" \
+              --header 'Access-Control-Request-Method: POST' \
+              --header 'Access-Control-Request-Headers: content-type' || true)
+            VERIFY_CODE='000'
+            if [[ "$CORS_CODE" == '200' ]] && tr -d '\r' < /tmp/browser-contract-cors.txt | grep -Fxiq "access-control-allow-origin: $ORIGIN"; then
+              VERIFY_CODE=$(curl --silent --show-error --output /tmp/browser-contract-response.json --write-out '%{http_code}' \
+                --request POST "$VERIFY_URL" \
+                --header "Origin: $ORIGIN" \
+                --header 'Content-Type: application/json' \
+                --data @/tmp/browser-contract-request.json || true)
+            fi
+
+            if [[ "$VERIFY_CODE" == '200' ]] && jq -e '.channel == "openai_plugin" and .decision == "ALLOW" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM"' /tmp/browser-contract-response.json >/dev/null 2>&1; then
+              break
+            fi
+            [[ "$attempt" == '180' ]] && { echo 'Production browser contract did not become ready' >&2; exit 1; }
+            sleep 10
+          done
 
       - name: Azure login with OIDC
         uses: azure/login@v2
@@ -114,16 +151,21 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 24); do
             CODE=$(curl --silent --show-error --output /tmp/landing.html --write-out '%{http_code}' "$SITE_URL" || true)
-            if [[ "$CODE" == "200" ]] && grep -q 'AZURE • VERIFIED EXECUTION • CURRENT SYSTEM' /tmp/landing.html; then
+            if [[ "$CODE" == "200" ]] && grep -q 'AZURE UI → CINEMA → EXACT Z3 → PROOF RECEIPT' /tmp/landing.html; then
               break
             fi
             [[ "$attempt" == "24" ]] && { echo "Azure landing did not converge" >&2; exit 1; }
             sleep 5
           done
 
-          grep -q 'One action. One proof. No ambiguity.' /tmp/landing.html
-          grep -q 'Cinema → Exact Z3 → Proof Receipt' /tmp/landing.html
+          grep -q 'Know what passed, why, and prove it.' /tmp/landing.html
+          grep -q 'Run live verification' /tmp/landing.html
+          grep -q 'Download receipt JSON' /tmp/landing.html
           grep -q 'VERIFIED_GLOBAL_OPTIMUM' /tmp/landing.html
+          grep -q 'Checkout status: NOT VERIFIED / NOT LINKED' /tmp/landing.html
+          grep -q 'OpenAI Skills' /tmp/landing.html
+          grep -q 'AWS Marketplace' /tmp/landing.html
+          grep -q 'JetBrains Marketplace' /tmp/landing.html
           if grep -Eqi 'Trinity|tdealer01-crypto-dsg-control-plane|proofgate-github-action|planned paid control plane' /tmp/landing.html; then
             echo 'Retired-system reference found on deployed Azure landing' >&2
             exit 1

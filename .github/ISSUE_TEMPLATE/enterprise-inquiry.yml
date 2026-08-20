@@ -1,0 +1,44 @@
+name: Enterprise DSG inquiry
+description: Start an enterprise or marketplace procurement conversation.
+title: "[Enterprise] "
+labels:
+  - enterprise-inquiry
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us which procurement or integration path you need. Do not include credentials, private keys, regulated data, or confidential customer records.
+  - type: dropdown
+    id: route
+    attributes:
+      label: Preferred route
+      options:
+        - Microsoft Marketplace / Azure
+        - AWS Marketplace
+        - Stripe Apps
+        - GitHub
+        - Direct API integration
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      placeholder: We need proof receipts for approved production actions across our CI pipelines.
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Required evidence or integration
+      placeholder: Proof receipt export, plan alignment, replay matching, and marketplace procurement.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safe-content
+    attributes:
+      label: Confirmation
+      options:
+        - label: This inquiry contains no secrets or sensitive customer data.
+          required: true
