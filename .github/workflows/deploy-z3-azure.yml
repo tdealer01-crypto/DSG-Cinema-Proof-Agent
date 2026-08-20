@@ -41,7 +41,12 @@ jobs:
       LOCATION: westus3
       ACR_NAME: tdealer01acr
       IMAGE_NAME: z3-solver-service
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       CONFIGURED_SOLVER_SECRET: ${{ secrets.DSG_SOLVER_SHARED_SECRET }}
+      HAS_AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS != '' }}
+      HAS_AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      HAS_AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
 
     steps:
       - name: Checkout repository
@@ -86,18 +91,54 @@ jobs:
           echo "::add-mask::$SECRET"
           echo "DSG_SOLVER_SHARED_SECRET=$SECRET" >> "$GITHUB_ENV"
 
-      - name: Azure login
+      - name: Report Azure credential mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$HAS_AZURE_CREDENTIALS" == "true" ]]; then
+            echo "Azure auth mode: AZURE_CREDENTIALS JSON"
+          elif [[ "$HAS_AZURE_CLIENT_ID" == "true" && "$HAS_AZURE_CLIENT_SECRET" == "true" ]]; then
+            echo "Azure auth mode: service principal client secret"
+          elif [[ "$HAS_AZURE_CLIENT_ID" == "true" ]]; then
+            echo "Azure auth mode: OIDC federated identity"
+          else
+            echo "Azure auth mode: none"
+          fi
+
+      - name: Azure login with credentials JSON
+        if: env.HAS_AZURE_CREDENTIALS == 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Azure login with service principal secret
+        if: env.HAS_AZURE_CREDENTIALS != 'true' && env.HAS_AZURE_CLIENT_ID == 'true' && env.HAS_AZURE_CLIENT_SECRET == 'true'
+        uses: azure/login@v2
+        with:
+          creds: >-
+            {"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"dcf13c0d-0d9f-4f81-aa89-c6b50aaef839","tenantId":"cbc618d5-9aa3-46b5-ae64-d07794603a7a"}
+
+      - name: Azure login with OIDC
+        if: env.HAS_AZURE_CREDENTIALS != 'true' && env.HAS_AZURE_CLIENT_ID == 'true' && env.HAS_AZURE_CLIENT_SECRET != 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          tenant-id: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+          subscription-id: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+
+      - name: Block when Azure deployment identity is absent
+        if: env.HAS_AZURE_CREDENTIALS != 'true' && env.HAS_AZURE_CLIENT_ID != 'true'
+        shell: bash
+        run: |
+          echo "No reusable Azure deployment credential exists in GitHub Actions." >&2
+          echo "Need either AZURE_CREDENTIALS or AZURE_CLIENT_ID (OIDC), optionally AZURE_CLIENT_SECRET." >&2
+          exit 1
 
       - name: Prepare Azure resources and ACR pull identity
         shell: bash
         run: |
           set -euo pipefail
-          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
           az extension add --name containerapp --upgrade --only-show-errors
           az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
 
