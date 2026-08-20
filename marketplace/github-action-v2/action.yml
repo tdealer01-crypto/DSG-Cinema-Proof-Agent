@@ -1,0 +1,95 @@
+name: "DSG Verified Execution Gate"
+description: "Verify authorized execution, replay, evidence, and deterministic constraints with Cinema + exact Z3 proof receipts."
+author: "tdealer01-crypto"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  endpoint:
+    description: "Cinema /verify/evaluate endpoint URL."
+    required: true
+  approved_plan_hash:
+    description: "SHA-256 of the approved plan."
+    required: true
+  proposed_action_hash:
+    description: "SHA-256 of the proposed/executed action."
+    required: true
+  execution_id:
+    description: "Stable execution identifier. Defaults to the GitHub run identity."
+    required: false
+    default: ""
+  trace_id:
+    description: "Optional cross-system trace identifier."
+    required: false
+    default: ""
+  agent_identity:
+    description: "Agent/runtime identity recorded in the receipt."
+    required: false
+    default: "github-actions"
+  authorized:
+    required: false
+    default: "true"
+  plan_aligned:
+    required: false
+    default: "true"
+  constraints_pass:
+    required: false
+    default: "true"
+  execution_succeeded:
+    required: false
+    default: "true"
+  replay_match:
+    required: false
+    default: "true"
+  evidence_complete:
+    required: false
+    default: "true"
+  cost_microunits:
+    description: "Optional execution cost in application-defined microunits."
+    required: false
+    default: "0"
+  receipt_file:
+    required: false
+    default: "dsg-proof-receipt.json"
+  fail_on_review:
+    description: "Fail the job on REVIEW as well as BLOCK."
+    required: false
+    default: "false"
+
+outputs:
+  decision:
+    description: "ALLOW, REVIEW, or BLOCK."
+    value: ${{ steps.verify.outputs.decision }}
+  proof_hash:
+    description: "Exact Z3 proof hash."
+    value: ${{ steps.verify.outputs.proof_hash }}
+  context_hash:
+    description: "Deterministic verification context hash."
+    value: ${{ steps.verify.outputs.context_hash }}
+  receipt_file:
+    value: ${{ steps.verify.outputs.receipt_file }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: verify
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/scripts/verified-execution.sh"
+      env:
+        DSG_ENDPOINT: ${{ inputs.endpoint }}
+        DSG_APPROVED_PLAN_HASH: ${{ inputs.approved_plan_hash }}
+        DSG_PROPOSED_ACTION_HASH: ${{ inputs.proposed_action_hash }}
+        DSG_EXECUTION_ID: ${{ inputs.execution_id }}
+        DSG_TRACE_ID: ${{ inputs.trace_id }}
+        DSG_AGENT_IDENTITY: ${{ inputs.agent_identity }}
+        DSG_AUTHORIZED: ${{ inputs.authorized }}
+        DSG_PLAN_ALIGNED: ${{ inputs.plan_aligned }}
+        DSG_CONSTRAINTS_PASS: ${{ inputs.constraints_pass }}
+        DSG_EXECUTION_SUCCEEDED: ${{ inputs.execution_succeeded }}
+        DSG_REPLAY_MATCH: ${{ inputs.replay_match }}
+        DSG_EVIDENCE_COMPLETE: ${{ inputs.evidence_complete }}
+        DSG_COST_MICROUNITS: ${{ inputs.cost_microunits }}
+        DSG_RECEIPT_FILE: ${{ inputs.receipt_file }}
+        DSG_FAIL_ON_REVIEW: ${{ inputs.fail_on_review }}
