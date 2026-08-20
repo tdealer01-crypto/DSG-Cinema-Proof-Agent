@@ -80,33 +80,56 @@ jobs:
               E2E_REVISION="$GITHUB_SHA" \
             --output none
 
+      - name: Wait for Z3 container restart and secret reload
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Waiting for Z3 container to reload secret..."
+          sleep 8
+
       - name: Verify direct Z3 exact proof
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 36); do
+          PAYLOAD='{"request_id":"cinema-azure-e2e","preset_name":"cinema-e2e","problem_type":"qubo","linear":[-4,-3,1],"quadratic":[[0,1,5],[1,2,2]],"proveOptimality":true,"z3TimeoutMs":30000}'
+          echo "$PAYLOAD" > /tmp/e2e-payload.json
+
+          for attempt in $(seq 1 72); do
+            echo "Attempt $attempt: waiting for Z3 service and new secret to be active..."
+
             CODE=$(curl --silent --show-error \
               --output /tmp/z3-ready.json \
               --write-out '%{http_code}' \
               "$Z3_SERVICE_URL/ready" || true)
-            if [[ "$CODE" == "200" ]] && jq -e '.status == "ready"' /tmp/z3-ready.json >/dev/null 2>&1; then
+            if [[ "$CODE" != "200" ]] || ! jq -e '.status == "ready"' /tmp/z3-ready.json >/dev/null 2>&1; then
+              if [[ "$attempt" == "72" ]]; then
+                cat /tmp/z3-ready.json 2>/dev/null || true
+                exit 1
+              fi
+              sleep 5
+              continue
+            fi
+
+            SOLVE_CODE=$(curl --silent --show-error \
+              --output /tmp/z3-proof.json \
+              --write-out '%{http_code}' \
+              --request POST "$Z3_SERVICE_URL/solve" \
+              --header "Authorization: Bearer $Z3_SECRET" \
+              --header 'Content-Type: application/json' \
+              --data @/tmp/e2e-payload.json || true)
+
+            if [[ "$SOLVE_CODE" == "200" ]]; then
               break
             fi
-            if [[ "$attempt" == "36" ]]; then
-              cat /tmp/z3-ready.json 2>/dev/null || true
+
+            if [[ "$attempt" == "72" ]]; then
+              echo "Failed after $attempt attempts. Last response code: $SOLVE_CODE" >&2
+              cat /tmp/z3-proof.json 2>/dev/null || true
               exit 1
             fi
+
             sleep 5
           done
-
-          PAYLOAD='{"request_id":"cinema-azure-e2e","preset_name":"cinema-e2e","problem_type":"qubo","linear":[-4,-3,1],"quadratic":[[0,1,5],[1,2,2]],"proveOptimality":true,"z3TimeoutMs":30000}'
-          echo "$PAYLOAD" > /tmp/e2e-payload.json
-
-          curl --fail-with-body --silent --show-error \
-            --request POST "$Z3_SERVICE_URL/solve" \
-            --header "Authorization: Bearer $Z3_SECRET" \
-            --header 'Content-Type: application/json' \
-            --data @/tmp/e2e-payload.json > /tmp/z3-proof.json
 
           jq -e '
             .verified == true and
