@@ -40,11 +40,14 @@ def test_landing_contains_live_proof_flow_and_fail_closed_contract():
         "VERIFIED_GLOBAL_OPTIMUM",
         "validReceipt",
         "Download receipt JSON",
+        "const button=event.currentTarget",
+        "button.textContent='Proof hash copied'",
         "Verification unavailable — no decision issued.",
         "Checkout status: NOT VERIFIED / NOT LINKED",
     ]
     for value in required:
         assert value in html
+    assert "event.currentTarget.textContent" not in html
 
 
 def test_landing_exposes_every_supported_marketplace_status_truthfully():
