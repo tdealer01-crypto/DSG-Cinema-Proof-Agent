@@ -128,3 +128,15 @@ def test_retired_runtime_links_are_absent_from_current_surfaces():
         content = path.read_text(encoding="utf-8")
         for value in retired:
             assert value not in content, (path, value)
+
+
+def test_production_deployments_have_one_coordinated_owner():
+    azure = (ROOT / ".github" / "workflows" / "deploy-azure-3d-landing.yml").read_text(
+        encoding="utf-8"
+    )
+    z3 = (ROOT / ".github" / "workflows" / "deploy-z3-azure.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "    environment: production" in azure
+    assert "  push:\n    branches: [main]" not in z3
+    assert "deploy-cinema-production.yml" in z3
