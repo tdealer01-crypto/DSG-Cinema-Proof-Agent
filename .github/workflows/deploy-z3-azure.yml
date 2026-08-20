@@ -9,15 +9,8 @@ on:
       - 'tests/**'
       - '.github/workflows/deploy-z3-azure.yml'
       - 'AZURE_BOOTSTRAP_GITHUB_OIDC.sh'
-  push:
-    branches: [main]
-    paths:
-      - 'z3_main.py'
-      - 'requirements.txt'
-      - 'Dockerfile'
-      - 'tests/**'
-      - '.github/workflows/deploy-z3-azure.yml'
-      - 'AZURE_BOOTSTRAP_GITHUB_OIDC.sh'
+  # Coordinated production pushes are owned by deploy-cinema-production.yml so
+  # Z3 and Cinema rotate their shared credential in the same deployment.
   workflow_dispatch:
     inputs:
       environment:

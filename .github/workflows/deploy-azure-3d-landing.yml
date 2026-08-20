@@ -20,6 +20,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: production
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
       LOCATION: westus3
