@@ -16,6 +16,9 @@ RESOURCE_GROUP="rg-t.dealer01-0468"
 LOCATION="westus3"
 ACR_NAME="tdealer01acr"
 REPO="tdealer01-crypto/DSG-Cinema-Proof-Agent"
+# GitHub's OIDC token for this repository includes stable owner/repository IDs.
+# This exact form was observed from azure/login on PR #30.
+GITHUB_SUBJECT_BASE="repo:tdealer01-crypto@260597462/DSG-Cinema-Proof-Agent@1326742567"
 GITHUB_IDENTITY="dsg-cinema-proof-agent-github-deployer"
 STAGING_PULL_IDENTITY="dsg-z3-acr-pull-staging"
 PRODUCTION_PULL_IDENTITY="dsg-z3-acr-pull-production"
@@ -80,7 +83,6 @@ ensure_pull_identity() {
     -o tsv)
 
   if [[ "$count" == "0" ]]; then
-    # A freshly created managed identity may need a brief propagation delay.
     for attempt in 1 2 3 4 5; do
       if az role assignment create \
         --assignee-object-id "$principal_id" \
@@ -152,7 +154,7 @@ fi
 ensure_federated_credential() {
   local name="$1"
   local environment="$2"
-  local subject="repo:$REPO:environment:$environment"
+  local subject="$GITHUB_SUBJECT_BASE:environment:$environment"
 
   if az identity federated-credential show \
       --name "$name" \
@@ -201,8 +203,8 @@ PRODUCTION_SUBJECT=$(az identity federated-credential show \
   --resource-group "$RESOURCE_GROUP" \
   --query subject -o tsv)
 
-[[ "$STAGING_SUBJECT" == "repo:$REPO:environment:staging" ]] || fail "staging federated subject mismatch"
-[[ "$PRODUCTION_SUBJECT" == "repo:$REPO:environment:production" ]] || fail "production federated subject mismatch"
+[[ "$STAGING_SUBJECT" == "$GITHUB_SUBJECT_BASE:environment:staging" ]] || fail "staging federated subject mismatch"
+[[ "$PRODUCTION_SUBJECT" == "$GITHUB_SUBJECT_BASE:environment:production" ]] || fail "production federated subject mismatch"
 
 echo "[8/8] Bootstrap complete"
 cat <<EOF
@@ -218,10 +220,9 @@ AZURE_TENANT_ID=$TENANT_ID
 AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID
 
 GitHub OIDC subjects:
-  repo:$REPO:environment:staging
-  repo:$REPO:environment:production
+  $GITHUB_SUBJECT_BASE:environment:staging
+  $GITHUB_SUBJECT_BASE:environment:production
 
 NEXT:
-Send only the AZURE_CLIENT_ID line back to ChatGPT.
-AZURE_CLIENT_ID is an identifier, not a password or client secret.
+Return to ChatGPT. No secret needs to be copied.
 EOF
