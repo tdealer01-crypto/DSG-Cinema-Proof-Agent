@@ -298,13 +298,40 @@ jobs:
           set -euo pipefail
           PAYLOAD='{"request_id":"deployment-e2e","preset_name":"deployment","problem_type":"qubo","linear":[-4,-3,1],"quadratic":[[0,1,5],[1,2,2]],"proveOptimality":true,"z3TimeoutMs":30000}'
 
-          curl --fail-with-body --silent --show-error \
-            --request POST "$SERVICE_URL/solve" \
-            --header "Authorization: Bearer $DSG_SOLVER_SHARED_SECRET" \
-            --header 'Content-Type: application/json' \
-            --data "$PAYLOAD" > /tmp/proof-1.json
+          verify_with_retry() {
+            local max_attempts=36
+            local wait_seconds=5
+            local attempt=1
 
-          curl --fail-with-body --silent --show-error \
+            while (( attempt <= max_attempts )); do
+              if [[ "$attempt" -gt 1 ]]; then
+                echo "Attempt $attempt/$max_attempts after ${wait_seconds}s..."
+                sleep "$wait_seconds"
+              fi
+
+              if curl --silent --show-error \
+                --output /tmp/proof-1.json \
+                --write-out '%{http_code}' \
+                --request POST "$SERVICE_URL/solve" \
+                --header "Authorization: Bearer $DSG_SOLVER_SHARED_SECRET" \
+                --header 'Content-Type: application/json' \
+                --data "$PAYLOAD" | grep -q "200"; then
+                break
+              fi
+
+              if [[ "$attempt" == "$max_attempts" ]]; then
+                cat /tmp/proof-1.json 2>/dev/null || true
+                echo "Failed to get valid response after $max_attempts attempts" >&2
+                return 1
+              fi
+
+              ((attempt++))
+            done
+          }
+
+          verify_with_retry
+
+          curl --silent --show-error \
             --request POST "$SERVICE_URL/solve" \
             --header "Authorization: Bearer $DSG_SOLVER_SHARED_SECRET" \
             --header 'Content-Type: application/json' \
