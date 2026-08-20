@@ -67,6 +67,29 @@ jobs:
           jq -e '.product.checkout_status == "NOT_VERIFIED_NOT_LINKED"' marketplace/launch-manifest.json >/dev/null
           jq -e '[.channels[].channel] | length == 7' marketplace/launch-manifest.json >/dev/null
 
+      - name: Validate the revenue automation claims
+        run: |
+          jq -e '.revenue_automation.system == "dsg-revenue-1.0.0"' marketplace/launch-manifest.json >/dev/null
+          jq -e '.revenue_automation.billable_unit | test("VERIFIED_GLOBAL_OPTIMUM")' marketplace/launch-manifest.json >/dev/null
+          # The manifest must not claim a payment link the product does not have.
+          jq -e '.revenue_automation.not_claimed | index("an active Stripe checkout link")' marketplace/launch-manifest.json >/dev/null
+          jq -e '(.revenue_automation.supported // []) | length > 0' marketplace/launch-manifest.json >/dev/null
+          # Each declared endpoint must exist in the Cinema backend.
+          python - <<'PY'
+          import json
+
+          with open('marketplace/launch-manifest.json', encoding='utf-8') as handle:
+              revenue = json.load(handle)['revenue_automation']
+
+          source = open('cinema_main.py', encoding='utf-8').read()
+          source += open('revenue/api.py', encoding='utf-8').read()
+
+          for key in ('status_endpoint', 'usage_endpoint', 'webhook_endpoint'):
+              path = revenue[key].removeprefix('/billing')
+              assert f'"{path}"' in source, f'{revenue[key]} is declared but not routed'
+          print('revenue endpoints verified against the backend')
+          PY
+
       - name: Validate GitHub Action v2 package
         run: |
           test -f marketplace/github-action-v2/action.yml

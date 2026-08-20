@@ -40,6 +40,10 @@ jobs:
       AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      CONFIGURED_REVENUE_ADMIN_SECRET: ${{ secrets.DSG_REVENUE_ADMIN_SECRET }}
+      # Metering always records usage. Enforcement (paid gating) stays opt-in
+      # until a durable ledger store is attached; see REVENUE_AUTOMATION.md.
+      REVENUE_ENFORCE: ${{ vars.DSG_REVENUE_ENFORCE || '0' }}
 
     steps:
       - name: Checkout
@@ -51,8 +55,8 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r requirements-cinema.txt pytest
-          python -m py_compile cinema_main.py marketplace_verification.py
-          python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py
+          python -m py_compile cinema_main.py marketplace_verification.py revenue/*.py
+          python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py tests/test_revenue.py
 
       - name: Azure login with OIDC
         uses: azure/login@v2
@@ -78,9 +82,22 @@ jobs:
           CINEMA_SECRET=$(openssl rand -hex 32)
           echo "::add-mask::$Z3_SECRET"
           echo "::add-mask::$CINEMA_SECRET"
+
+          # The revenue admin credential is long-lived on purpose: rotating it
+          # on every deployment would break the reconciliation credential the
+          # autopilot uses. A per-revision value is generated only when none is
+          # configured, which leaves admin billing routes reachable but unshared.
+          REVENUE_ADMIN_SECRET="${CONFIGURED_REVENUE_ADMIN_SECRET:-}"
+          if [[ -z "$REVENUE_ADMIN_SECRET" ]]; then
+            REVENUE_ADMIN_SECRET=$(openssl rand -hex 32)
+            echo 'DSG_REVENUE_ADMIN_SECRET is not configured; using an ephemeral value for this revision.'
+          fi
+          echo "::add-mask::$REVENUE_ADMIN_SECRET"
+
           echo "PULL_IDENTITY_ID=$PULL_IDENTITY_ID" >> "$GITHUB_ENV"
           echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
           echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
+          echo "REVENUE_ADMIN_SECRET=$REVENUE_ADMIN_SECRET" >> "$GITHUB_ENV"
 
       - name: Ensure production Container Apps environment
         shell: bash
@@ -193,19 +210,19 @@ jobs:
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
-            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" --output none
+            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" --output none
             retry az containerapp update \
               --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
               --image "$CINEMA_IMAGE_REF" \
-              --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret PORT=8000 \
+              --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
               --output none
           else
             retry az containerapp create \
               --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
               --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
               --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
-              --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" \
-              --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret PORT=8000 \
+              --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" \
+              --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
               --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
           fi
 
@@ -308,6 +325,57 @@ jobs:
           jq -s '.' /tmp/marketplace-e2e.jsonl > /tmp/marketplace-e2e.json
           jq -n --slurpfile low /tmp/stripe-low-response.json --slurpfile critical /tmp/stripe-critical-response.json '{low:{decision:$low[0].decision,risk_score:$low[0].risk_score,verification:$low[0].verification},critical:{decision:$critical[0].decision,risk_score:$critical[0].risk_score,verification:$critical[0].verification}}' > /tmp/stripe-e2e.json
 
+      - name: Verify the revenue system reports its state truthfully
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/billing/status" > /tmp/billing-status.json
+
+          # The public status route must never leak credential material.
+          if jq -e 'tostring | test("sk_live_|sk_test_|whsec_|dsg_(live|test)_")' /tmp/billing-status.json >/dev/null; then
+            echo 'Public billing status exposed credential material' >&2
+            exit 1
+          fi
+
+          # Checkout state must match whether Stripe is actually linked, and
+          # enforcement must match what this deployment configured.
+          jq -e --arg enforce "$REVENUE_ENFORCE" '
+            .billing_version == "dsg-revenue-1.0.0" and
+            .metering_enabled == true and
+            .metering_enforced == ($enforce == "1") and
+            (.checkout_status == (if .stripe.charges_enabled then "LINKED" else "NOT_VERIFIED_NOT_LINKED" end)) and
+            ([.catalog.plans[].plan] | sort == ["enterprise","free","metered","team"])
+          ' /tmp/billing-status.json >/dev/null
+
+          # Admin billing routes must reject an unauthenticated caller.
+          REPORT_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/report")
+          test "$REPORT_CODE" = '401'
+          USAGE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/usage")
+          test "$USAGE_CODE" = '401'
+
+          # A bad API key must be rejected rather than served for free.
+          KEY_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/verify/evaluate" \
+            --header 'Content-Type: application/json' \
+            --header "X-DSG-API-Key: dsg_live_00000000000000000000000000000000_$(printf '0%.0s' $(seq 1 48))" \
+            --data @/tmp/marketplace-request.json)
+          test "$KEY_CODE" = '401'
+
+          # The admin credential this deployment provisioned must work, and the
+          # usage ledger must verify.
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
+            "$CINEMA_URL/billing/ledger/verify" > /tmp/billing-ledger.json
+          jq -e '.verified == true' /tmp/billing-ledger.json >/dev/null
+
+          jq -n \
+            --slurpfile status /tmp/billing-status.json \
+            --slurpfile ledger /tmp/billing-ledger.json \
+            '{checkout_status:$status[0].checkout_status,metering_enforced:$status[0].metering_enforced,charges_enabled:$status[0].stripe.charges_enabled,ledger_verified:$ledger[0].verified,ledger_entries:$ledger[0].entries,admin_routes_authenticated:true,invalid_api_key_rejected:true}' \
+            > /tmp/revenue-e2e.json
+          cat /tmp/revenue-e2e.json
+
       - name: Write non-secret production evidence
         shell: bash
         run: |
@@ -322,7 +390,8 @@ jobs:
             --slurpfile cinema /tmp/cinema-proof-1.json \
             --slurpfile marketplace /tmp/marketplace-e2e.json \
             --slurpfile stripe /tmp/stripe-e2e.json \
-            '{commit:$commit,environment:"production",transport:"https",z3_url:$z3_url,cinema_url:$cinema_url,z3_image:$z3_image,cinema_image:$cinema_image,direct_verification:$direct[0].verification,cinema_status:$cinema[0].cinema_status,verification:$cinema[0].verification,witness:$cinema[0].z3_proof.witness,energy_exact:$cinema[0].z3_proof.energy_exact,proof_hash:$cinema[0].proof_hash,request_hash:$cinema[0].request_hash,replay_match:true,direct_proof_match:true,azure_browser_cors:true,render_browser_cors:true,marketplace_adapters:$marketplace[0],stripe_adapter:$stripe[0]}' \
+            --slurpfile revenue /tmp/revenue-e2e.json \
+            '{commit:$commit,environment:"production",transport:"https",z3_url:$z3_url,cinema_url:$cinema_url,z3_image:$z3_image,cinema_image:$cinema_image,direct_verification:$direct[0].verification,cinema_status:$cinema[0].cinema_status,verification:$cinema[0].verification,witness:$cinema[0].z3_proof.witness,energy_exact:$cinema[0].z3_proof.energy_exact,proof_hash:$cinema[0].proof_hash,request_hash:$cinema[0].request_hash,replay_match:true,direct_proof_match:true,azure_browser_cors:true,render_browser_cors:true,marketplace_adapters:$marketplace[0],stripe_adapter:$stripe[0],revenue_system:$revenue[0]}' \
             > production_evidence.json
           cat production_evidence.json
 

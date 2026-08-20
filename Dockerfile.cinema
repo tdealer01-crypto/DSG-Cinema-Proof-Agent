@@ -6,6 +6,7 @@ COPY requirements-cinema.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY cinema_main.py marketplace_verification.py ./
+COPY revenue ./revenue
 
 ENV PORT=8000
 EXPOSE 8000

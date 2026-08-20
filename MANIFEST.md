@@ -21,6 +21,16 @@
 ### GitHub Actions (1 file)
 - `.github/workflows/deploy-z3-azure.yml` (Automated CI/CD workflow)
 
+### Automated Revenue System (8 files)
+- `revenue/pricing.py` (integer micro-USD plan and SKU catalog)
+- `revenue/ledger.py` (append-only, hash-chained usage ledger)
+- `revenue/accounts.py` (API keys with hash-only secret storage)
+- `revenue/engine.py` (fail-closed entitlement + proof-bound metering)
+- `revenue/stripe_sync.py` (signed webhooks + meter events, fail-closed)
+- `revenue/api.py` (billing HTTP surface and the Cinema metering gate)
+- `scripts/revenue_report.py` (reconciliation report; UNAVAILABLE, never estimates)
+- `tests/test_revenue.py` (50 tests)
+
 ### Documentation (7 files)
 - `README.md` (Quick start + overview)
 - `ROUND_1_DEPLOYMENT_GUIDE.md` (Complete deployment guide, 40+ pages)

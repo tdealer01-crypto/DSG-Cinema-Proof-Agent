@@ -32,8 +32,9 @@ from marketplace_verification import (
     context_hash as verification_context_hash,
     target_decision as verification_target_decision,
 )
+from revenue import api as billing
 
-app = FastAPI(title="DSG Cinema Proof Agent", version="1.2.0")
+app = FastAPI(title="DSG Cinema Proof Agent", version="1.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,8 +47,13 @@ app.add_middleware(
     allow_origin_regex=r"https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept"],
+    allow_headers=["Content-Type", "Accept", "X-DSG-API-Key"],
 )
+
+app.include_router(billing.router)
+
+VERIFIED_EXECUTION_SKU = "verified_execution"
+STRIPE_DECISION_SKU = "stripe_policy_decision"
 
 
 class ConfigurationError(RuntimeError):
@@ -317,13 +323,20 @@ async def solve(
 
 
 @app.post("/verify/evaluate")
-async def verify_evaluate(request: VerificationRequest) -> dict[str, Any]:
+async def verify_evaluate(
+    request: VerificationRequest,
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
     """Create a deterministic Verified Execution receipt for any marketplace.
 
     The endpoint accepts only bounded verification facts, never an arbitrary
     QUBO. Cinema derives the fixed 3-variable ALLOW/REVIEW/BLOCK problem and
     requires an exact Z3 global-optimum proof before returning a receipt.
+
+    Entitlement is checked before any solver work, and the receipt is metered
+    only after Z3 has proved the global optimum.
     """
+    authorization = billing.authorize_request(x_dsg_api_key, VERIFIED_EXECUTION_SKU)
     target, factors = verification_target_decision(request)
     linear, quadratic = _decision_qubo(target)
     context_hash = verification_context_hash(request)
@@ -347,7 +360,7 @@ async def verify_evaluate(request: VerificationRequest) -> dict[str, Any]:
     if decision != target:
         raise HTTPException(status_code=502, detail="Z3 decision does not match deterministic policy target")
 
-    return {
+    receipt = {
         "receipt_version": RECEIPT_VERSION,
         "policy_version": POLICY_VERSION,
         "execution_id": request.execution_id,
@@ -376,15 +389,29 @@ async def verify_evaluate(request: VerificationRequest) -> dict[str, Any]:
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    billing_block = await billing.meter(
+        authorization,
+        sku=VERIFIED_EXECUTION_SKU,
+        receipt=receipt,
+        channel=request.channel,
+    )
+    if billing_block is not None:
+        receipt["billing"] = billing_block
+    return receipt
+
 
 @app.post("/stripe/evaluate")
-async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
+async def stripe_evaluate(
+    request: StripeVerifyRequest,
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
     """Verify a Stripe-context policy decision with an exact Z3 proof.
 
     This route intentionally accepts no arbitrary QUBO or solver program. The
     backend derives a fixed-size decision QUBO itself, keeping public compute
     bounded and the Z3 credential server-side.
     """
+    authorization = billing.authorize_request(x_dsg_api_key, STRIPE_DECISION_SKU)
     if not request.stripe_account_id.startswith("acct_"):
         raise HTTPException(status_code=400, detail="invalid stripe_account_id")
     if not request.object_id.startswith(_stripe_prefix(request.object_type)):
@@ -419,7 +446,7 @@ async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
     else:
         reason = "No elevated risk factors detected"
 
-    return {
+    receipt = {
         "receipt_version": RECEIPT_VERSION,
         "decision": decision,
         "reason": reason,
@@ -435,3 +462,13 @@ async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
         "energy_exact": verified_proof.get("energy_exact"),
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    billing_block = await billing.meter(
+        authorization,
+        sku=STRIPE_DECISION_SKU,
+        receipt=receipt,
+        channel="stripe",
+    )
+    if billing_block is not None:
+        receipt["billing"] = billing_block
+    return receipt

@@ -1,0 +1,180 @@
+name: Verify Revenue System
+
+on:
+  pull_request:
+    paths:
+      - 'revenue/**'
+      - 'cinema_main.py'
+      - 'marketplace_verification.py'
+      - 'scripts/revenue_report.py'
+      - 'requirements-cinema.txt'
+      - 'Dockerfile.cinema'
+      - 'tests/test_revenue.py'
+      - 'tests/test_cinema_main.py'
+      - '.github/workflows/revenue-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'revenue/**'
+      - 'cinema_main.py'
+      - 'scripts/revenue_report.py'
+      - 'tests/test_revenue.py'
+      - '.github/workflows/revenue-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revenue-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+
+      - name: Compile revenue system
+        run: |
+          python -m py_compile \
+            cinema_main.py \
+            marketplace_verification.py \
+            scripts/revenue_report.py \
+            revenue/__init__.py \
+            revenue/accounts.py \
+            revenue/api.py \
+            revenue/engine.py \
+            revenue/ledger.py \
+            revenue/pricing.py \
+            revenue/stripe_sync.py
+
+      - name: Run revenue and Cinema contract tests
+        run: python -m pytest -q tests/test_revenue.py tests/test_cinema_main.py
+
+      - name: Assert no credential material is committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Live Stripe keys and DSG API keys must never reach the repository.
+          if grep -rInE '\b(sk_live_|rk_live_|whsec_[A-Za-z0-9]{16,})' \
+            revenue scripts cinema_main.py tests/test_revenue.py; then
+            echo 'Live secret material found in the revenue system' >&2
+            exit 1
+          fi
+          if grep -rInE 'dsg_(live|test)_[0-9a-f]{16}_[0-9a-f]{48}' \
+            revenue scripts cinema_main.py; then
+            echo 'A concrete DSG API key is present in source' >&2
+            exit 1
+          fi
+
+      - name: Assert the metering gate is fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A billable receipt must require a proved global optimum.
+          grep -q 'refusing to meter an unverified receipt' revenue/engine.py
+          grep -q 'refusing to meter a receipt without a global optimum proof' revenue/engine.py
+          # Entitlement must be resolved before Cinema asks Z3 to do any work.
+          python - <<'PY'
+          import ast
+
+          source = open('cinema_main.py', encoding='utf-8').read()
+          tree = ast.parse(source)
+
+          for name in ('verify_evaluate', 'stripe_evaluate'):
+              function = next(
+                  node
+                  for node in ast.walk(tree)
+                  if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+              )
+              calls = [
+                  ast.unparse(node.func)
+                  for node in ast.walk(function)
+                  if isinstance(node, ast.Call)
+              ]
+              assert 'billing.authorize_request' in calls, f'{name} does not authorize'
+              assert 'billing.meter' in calls, f'{name} does not meter'
+              assert calls.index('billing.authorize_request') < calls.index('z3_request'), (
+                  f'{name} calls the solver before checking entitlement'
+              )
+          print('metering gate order verified')
+          PY
+
+      - name: Verify ledger determinism and report rendering
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          import tempfile
+
+          from revenue.engine import RevenueEngine
+          from revenue.ledger import verify_chain
+
+
+          def build_ledger():
+              engine = RevenueEngine()
+              account, key = engine.accounts.issue(display_name='CI', plan='metered')
+              engine.accounts.update(account.account_id, payment_linked=True)
+              for index in range(5):
+                  authorization = engine.authorize(key, 'verified_execution')
+                  engine.record_usage(
+                      authorization,
+                      sku='verified_execution',
+                      receipt={
+                          'verified': True,
+                          'verification': 'VERIFIED_GLOBAL_OPTIMUM',
+                          'proof_hash': 'a' * 64,
+                          'context_hash': f'{index:064d}',
+                      },
+                  )
+              return engine
+
+
+          first = build_ledger()
+          second = build_ledger()
+
+          # Entry hashes must depend only on the billed facts, never on account
+          # identity or wall-clock time, so two identical runs chain identically.
+          def commitments(engine):
+              return [
+                  {
+                      k: v
+                      for k, v in entry.commitment().items()
+                      if k not in {'account_id', 'recorded_at', 'idempotency_key', 'prev_hash'}
+                  }
+                  for entry in engine.ledger.entries()
+              ]
+
+          assert commitments(first) == commitments(second), 'ledger is not deterministic'
+          assert verify_chain(first.ledger.entries())['verified'] is True
+          assert first.period_report()['recognized_amount_micros'] == 500_000
+
+          with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as handle:
+              json.dump(first.period_report(), handle)
+              path = handle.name
+
+          output = subprocess.run(
+              ['python', 'scripts/revenue_report.py', '--local-report', path],
+              capture_output=True,
+              text=True,
+              check=True,
+          ).stdout
+          assert 'Chain verified: **True**' in output
+          assert '$0.500000' in output
+          assert 'Truth boundary' in output
+          print('ledger determinism and report rendering verified')
+          PY

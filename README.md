@@ -272,6 +272,34 @@ az container restart --resource-group rg-t.dealer01-0468 --name z3-solver-servic
 
 ---
 
+## 💰 Automated Revenue System
+
+The metering, entitlement, and billing layer lives in `revenue/` and is
+documented in `REVENUE_AUTOMATION.md`.
+
+- **Billable unit:** one Z3 `VERIFIED_GLOBAL_OPTIMUM` proof receipt. An
+  unverified receipt cannot be billed — this is enforced in code.
+- **Entitlement:** fail-closed and resolved before any solver work runs.
+- **Ledger:** append-only and SHA-256 hash-chained, so usage is replayable the
+  same way proofs are.
+- **Billing:** optional Stripe link. With no `STRIPE_SECRET_KEY`, usage is
+  still metered but `checkout_status` truthfully reports
+  `NOT_VERIFIED_NOT_LINKED` and nothing is charged.
+
+```bash
+# What this deployment can charge for, and whether it can charge at all
+curl "$CINEMA_URL/billing/status"
+
+# One account's current-period usage
+curl -H "X-DSG-API-Key: $DSG_API_KEY" "$CINEMA_URL/billing/usage"
+```
+
+Automation: `revenue-verify.yml` gates every change, `revenue-autopilot.yml`
+reconciles production daily, and the production deploy proves the live billing
+surface authenticates and leaks no credentials.
+
+---
+
 ## 📈 Revenue Impact
 
 After Z3 deployment:

@@ -79,5 +79,34 @@
       "next": "add customer authentication and metering before a paid self-serve API plan",
       "commercial_role": "live verification integration and technical evaluation"
     }
-  ]
+  ],
+  "revenue_automation": {
+    "system": "dsg-revenue-1.0.0",
+    "status": "IMPLEMENTED_METERING_LIVE_CHARGES_NOT_LINKED",
+    "billable_unit": "one Z3 VERIFIED_GLOBAL_OPTIMUM proof receipt",
+    "status_endpoint": "/billing/status",
+    "usage_endpoint": "/billing/usage",
+    "webhook_endpoint": "/billing/webhook/stripe",
+    "ledger": "SHA-256 hash-chained, append-only, replayable",
+    "enforcement_default": "record-only; DSG_REVENUE_ENFORCE=1 turns on paid gating",
+    "supported": [
+      "API-key customer identity with hash-only secret storage",
+      "fail-closed entitlement checks before any solver work",
+      "proof-bound metering that cannot bill an unverified receipt",
+      "idempotent billing per verification context",
+      "signature-verified Stripe webhooks driving entitlement state",
+      "scheduled reconciliation with UNAVAILABLE reporting instead of estimates"
+    ],
+    "not_claimed": [
+      "an active Stripe checkout link",
+      "durable multi-replica billing storage",
+      "settled or invoiced revenue",
+      "independent financial audit"
+    ],
+    "external_action_required": [
+      "set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET to enable charges",
+      "attach a durable ledger store before enabling DSG_REVENUE_ENFORCE",
+      "create the Stripe meter and price that match the published catalog"
+    ]
+  }
 }
