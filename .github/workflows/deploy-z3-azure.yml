@@ -192,6 +192,7 @@ jobs:
               if az containerapp show \
                 --name "$CONTAINER_APP_NAME" \
                 --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+                # Update path: suppress OperationInProgress errors to retry
                 az containerapp identity assign \
                   --name "$CONTAINER_APP_NAME" \
                   --resource-group "$RESOURCE_GROUP" \
@@ -203,15 +204,15 @@ jobs:
                   --resource-group "$RESOURCE_GROUP" \
                   --server "$ACR_NAME.azurecr.io" \
                   --identity "$IDENTITY_ID" \
-                  --output none
+                  --output none || true
 
                 az containerapp secret set \
                   --name "$CONTAINER_APP_NAME" \
                   --resource-group "$RESOURCE_GROUP" \
                   --secrets "solver-secret=$DSG_SOLVER_SHARED_SECRET" \
-                  --output none
+                  --output none || true
 
-                az containerapp update \
+                if az containerapp update \
                   --name "$CONTAINER_APP_NAME" \
                   --resource-group "$RESOURCE_GROUP" \
                   --image "$IMAGE_REF" \
@@ -220,9 +221,14 @@ jobs:
                     Z3_DETERMINISTIC_SEED=42 \
                     Z3_TIMEOUT_MS=30000 \
                     PORT=8080 \
-                  --output none && break
+                  --output none 2>&1; then
+                  break
+                else
+                  # Update failed, retry
+                  :
+                fi
               else
-                az containerapp create \
+                if az containerapp create \
                   --name "$CONTAINER_APP_NAME" \
                   --resource-group "$RESOURCE_GROUP" \
                   --environment "$CONTAINER_ENV_NAME" \
@@ -243,7 +249,12 @@ jobs:
                   --max-replicas 2 \
                   --cpu 0.5 \
                   --memory 1.0Gi \
-                  --output none && break
+                  --output none 2>&1; then
+                  break
+                else
+                  # Create failed, retry
+                  :
+                fi
               fi
 
               ((attempt++))
