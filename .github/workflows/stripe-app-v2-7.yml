@@ -1,0 +1,185 @@
+name: Stripe App v2.7 Verify and Package
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cinema_main.py'
+      - 'tests/test_cinema_main.py'
+      - 'stripe-app/**'
+      - '.github/workflows/stripe-app-v2-7.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cinema_main.py'
+      - 'tests/test_cinema_main.py'
+      - 'stripe-app/**'
+      - '.github/workflows/stripe-app-v2-7.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  verify:
+    name: Verify Stripe UI and Cinema policy proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Cinema test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+
+      - name: Compile Cinema backend
+        run: python -m py_compile cinema_main.py
+
+      - name: Run Cinema and Stripe proof tests
+        run: python -m pytest -q tests/test_cinema_main.py
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Stripe App dependencies
+        working-directory: stripe-app
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck Stripe-native UI
+        working-directory: stripe-app
+        run: npm run typecheck
+
+      - name: Reject retired Control Plane runtime URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
+            stripe-app/src stripe-app/stripe-app.template.json cinema_main.py; then
+            echo 'Retired Control Plane runtime URL detected'
+            exit 1
+          fi
+
+      - name: Validate marketplace icon
+        run: |
+          python - <<'PY'
+          import struct
+          from pathlib import Path
+          data = Path('stripe-app/icon.png').read_bytes()
+          assert data[:8] == b'\x89PNG\r\n\x1a\n', 'icon must be PNG'
+          width, height = struct.unpack('>II', data[16:24])
+          assert (width, height) == (300, 300), (width, height)
+          print(f'icon={width}x{height}')
+          PY
+
+  package-production:
+    name: Bind to live Cinema production and package
+    needs: verify
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve current Cinema production URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+          FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$FQDN"
+          echo "CINEMA_API_BASE=https://$FQDN" >> "$GITHUB_ENV"
+
+      - name: Wait for current Cinema Stripe proof endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          PAYLOAD='{"stripe_account_id":"acct_marketplace_smoke","object_type":"charge","object_id":"ch_marketplace_smoke","amount_cents":5000,"currency":"usd","stripe_status":"succeeded","risk_level":"low"}'
+          for attempt in $(seq 1 120); do
+            CODE=$(curl --silent --show-error --output /tmp/stripe-proof.json --write-out '%{http_code}' \
+              --request POST "$CINEMA_API_BASE/stripe/evaluate" \
+              --header 'Content-Type: application/json' \
+              --data "$PAYLOAD" || true)
+            if [[ "$CODE" == "200" ]] && jq -e '.decision == "ALLOW" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and (.proof_hash | length) == 64 and (.context_hash | length) == 64' /tmp/stripe-proof.json >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == "120" ]]; then
+              echo "Cinema production Stripe proof endpoint did not become ready"
+              cat /tmp/stripe-proof.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Generate production manifest and runtime binding
+        working-directory: stripe-app
+        run: node scripts/generate-manifest.mjs
+
+      - name: Install and typecheck generated package
+        working-directory: stripe-app
+        run: |
+          npm install --no-audit --no-fund
+          npm run typecheck
+
+      - name: Verify generated package truth boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f stripe-app/stripe-app.json
+          ! grep -R -n '__CINEMA_API_BASE__' stripe-app/stripe-app.json stripe-app/src/runtime.ts
+          ! grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
+            stripe-app/src stripe-app/stripe-app.json
+          jq -e '.id == "pics.dsg.governance" and .version == "2.7.0" and .distribution_type == "public" and .sandbox_install_compatible == true' stripe-app/stripe-app.json >/dev/null
+          jq -e --arg base "$CINEMA_API_BASE/" '.ui_extension.content_security_policy["connect-src"] == [$base]' stripe-app/stripe-app.json >/dev/null
+
+      - name: Build submission archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/stripe-app-v2.7.0
+          mkdir -p /tmp/stripe-app-v2.7.0
+          cp -R stripe-app/. /tmp/stripe-app-v2.7.0/
+          rm -rf /tmp/stripe-app-v2.7.0/node_modules
+          (cd /tmp && zip -qr stripe-app-v2.7.0.zip stripe-app-v2.7.0)
+
+      - name: Upload submission-ready artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripe-app-v2.7.0-submission
+          path: /tmp/stripe-app-v2.7.0.zip
+          if-no-files-found: error
+          retention-days: 30

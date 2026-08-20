@@ -107,3 +107,168 @@ def test_solve_blocks_non_verified_backend_result(monkeypatch):
         json={"problem_type": "qubo"},
     )
     assert response.status_code == 502
+
+
+def test_stripe_low_risk_is_allow_with_exact_z3_proof(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        assert method == "POST"
+        assert path == "/solve"
+        assert payload["problem_type"] == "qubo"
+        assert payload["linear"] == [-100, -70, -40]
+        assert payload["quadratic"] == [[0, 1, 200], [0, 2, 200], [1, 2, 200]]
+        return 200, {
+            **VALID_PROOF,
+            "witness": [1, 0, 0],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post(
+        "/stripe/evaluate",
+        json={
+            "stripe_account_id": "acct_test123",
+            "object_type": "charge",
+            "object_id": "ch_test123",
+            "amount_cents": 5000,
+            "currency": "usd",
+            "stripe_status": "succeeded",
+            "risk_level": "low",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "ALLOW"
+    assert body["verified"] is True
+    assert body["verification"] == "VERIFIED_GLOBAL_OPTIMUM"
+    assert body["risk_score"] == 0
+    assert body["policy_version"] == "cinema-stripe-z3-1.0.0"
+    assert len(body["context_hash"]) == 64
+
+
+def test_stripe_missing_amount_is_fail_closed_review(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        assert payload["linear"] == [-60, -100, -60]
+        return 200, {
+            **VALID_PROOF,
+            "witness": [0, 1, 0],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post(
+        "/stripe/evaluate",
+        json={
+            "stripe_account_id": "acct_test123",
+            "object_type": "payment_intent",
+            "object_id": "pi_test123",
+            "currency": "usd",
+            "stripe_status": "processing",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "REVIEW"
+    assert body["risk_score"] == 35
+    assert "amount unavailable" in body["reason"]
+
+
+def test_stripe_critical_risk_is_block(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        assert payload["linear"] == [-40, -70, -100]
+        return 200, {
+            **VALID_PROOF,
+            "witness": [0, 0, 1],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post(
+        "/stripe/evaluate",
+        json={
+            "stripe_account_id": "acct_test123",
+            "object_type": "payout",
+            "object_id": "po_test123",
+            "amount_cents": 6_000_000,
+            "currency": "thb",
+            "stripe_status": "pending",
+            "risk_level": "critical",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "BLOCK"
+    assert body["risk_score"] == 100
+    assert body["risk_level"] == "critical"
+
+
+def test_stripe_endpoint_rejects_object_type_prefix_mismatch(monkeypatch):
+    configure(monkeypatch)
+    response = client.post(
+        "/stripe/evaluate",
+        json={
+            "stripe_account_id": "acct_test123",
+            "object_type": "charge",
+            "object_id": "pi_wrong",
+            "amount_cents": 1000,
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_stripe_endpoint_blocks_unverified_z3_result(monkeypatch):
+    configure(monkeypatch)
+
+    async def fake_z3_request(method, path, payload=None):
+        return 200, {
+            **VALID_PROOF,
+            "verified": False,
+            "verification": "COUNTEREXAMPLE_FOUND",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    response = client.post(
+        "/stripe/evaluate",
+        json={
+            "stripe_account_id": "acct_test123",
+            "object_type": "charge",
+            "object_id": "ch_test123",
+            "amount_cents": 1000,
+        },
+    )
+    assert response.status_code == 502
+
+
+def test_stripe_context_hash_is_deterministic(monkeypatch):
+    configure(monkeypatch)
+    seen_request_ids: list[str] = []
+
+    async def fake_z3_request(method, path, payload=None):
+        seen_request_ids.append(payload["request_id"])
+        return 200, {
+            **VALID_PROOF,
+            "witness": [1, 0, 0],
+            "energy_exact": "-100",
+        }
+
+    monkeypatch.setattr(cinema_main, "z3_request", fake_z3_request)
+    payload = {
+        "stripe_account_id": "acct_test123",
+        "object_type": "charge",
+        "object_id": "ch_test123",
+        "amount_cents": 5000,
+        "currency": "USD",
+        "stripe_status": "SUCCEEDED",
+        "risk_level": "low",
+    }
+    first = client.post("/stripe/evaluate", json=payload)
+    second = client.post("/stripe/evaluate", json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["context_hash"] == second.json()["context_hash"]
+    assert seen_request_ids[0] == seen_request_ids[1]
