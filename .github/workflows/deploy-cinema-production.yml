@@ -557,17 +557,24 @@ jobs:
           # still works, so a failed revocation cannot pass silently.
           for attempt in $(seq 1 60); do
             METRICS=$(curl --silent --show-error "$Z3_URL/metrics" || true)
-            ROTATING=$(jq -r '.rotation_in_progress // empty' <<<"$METRICS" 2>/dev/null || true)
+            # Read the field itself. jq's `//` yields its right side when the
+            # left is false as well as when it is absent, so
+            # `.rotation_in_progress // empty` returns empty for exactly the
+            # value this waits for: with it, the loop could never succeed.
+            ROTATING=$(jq -r '
+              if has("rotation_in_progress")
+              then (.rotation_in_progress | tostring)
+              else "absent" end' <<<"$METRICS" 2>/dev/null || echo unreadable)
             [[ "$ROTATING" == "false" ]] && break
             if [[ "$attempt" == "60" ]]; then
-              # An absent field and a still-open window are different failures:
-              # the first means the running image predates rotation support, so
-              # say which one happened instead of reporting a generic timeout.
-              if [[ -z "$ROTATING" ]]; then
-                echo 'Z3 /metrics does not report rotation_in_progress: the running image predates credential rotation support.' >&2
-              else
-                echo 'Rotation window did not close: the previous credential is still accepted.' >&2
-              fi
+              case "$ROTATING" in
+                absent)
+                  echo 'Z3 /metrics does not report rotation_in_progress: the running image predates credential rotation support.' >&2 ;;
+                true)
+                  echo 'Rotation window did not close: the previous credential is still accepted.' >&2 ;;
+                *)
+                  echo 'Z3 /metrics could not be read.' >&2 ;;
+              esac
               echo "$METRICS" >&2
               exit 1
             fi
