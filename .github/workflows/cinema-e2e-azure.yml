@@ -20,7 +20,11 @@ jobs:
     environment: staging
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
-      Z3_CONTAINER_APP: dsg-z3-verifier-staging
+      ACR_NAME: tdealer01acr
+      Z3_IMAGE_NAME: z3-solver-service
+      Z3_CONTAINER_ENV: dsg-z3-env-staging
+      Z3_CONTAINER_APP: dsg-z3-verifier-cinema-e2e
+      Z3_PULL_IDENTITY: dsg-z3-acr-pull-staging
       CINEMA_STAGING_APP: dsg-cinema-proof-agent-stg-1888
       CINEMA_PLAN: plan-DSG-Cinema-Proof-Agent
       AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
@@ -38,11 +42,107 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Resolve staging secrets and Z3 URL
+      - name: Resolve isolated E2E secrets
         shell: bash
         run: |
           set -euo pipefail
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          Z3_SECRET=$(openssl rand -hex 32)
+          CINEMA_SECRET=$(openssl rand -hex 32)
+          echo "::add-mask::$Z3_SECRET"
+          echo "::add-mask::$CINEMA_SECRET"
+          echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
+          echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
+
+      - name: Build isolated Z3 E2E image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="cinema-e2e-${GITHUB_SHA}"
+          IMAGE_REF="$ACR_NAME.azurecr.io/$Z3_IMAGE_NAME:$IMAGE_TAG"
+          echo "Z3_IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$Z3_IMAGE_NAME:$IMAGE_TAG" \
+            --file Dockerfile \
+            .
+
+      - name: Create or update isolated Z3 E2E Container App
+        shell: bash
+        run: |
+          set -euo pipefail
+          az extension add --name containerapp --upgrade --only-show-errors
+          IDENTITY_ID=$(az identity show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_PULL_IDENTITY" \
+            --query id \
+            --output tsv)
+          test -n "$IDENTITY_ID"
+
+          if az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" >/dev/null 2>&1; then
+            az containerapp identity assign \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --user-assigned "$IDENTITY_ID" \
+              --output none
+            az containerapp registry set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --server "$ACR_NAME.azurecr.io" \
+              --identity "$IDENTITY_ID" \
+              --output none
+            az containerapp secret set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --secrets "solver-secret=$Z3_SECRET" \
+              --output none
+            az containerapp update \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --image "$Z3_IMAGE_REF" \
+              --set-env-vars \
+                DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
+                Z3_DETERMINISTIC_SEED=42 \
+                Z3_TIMEOUT_MS=30000 \
+                E2E_REVISION="$GITHUB_SHA" \
+                PORT=8080 \
+              --output none
+          else
+            az containerapp create \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --environment "$Z3_CONTAINER_ENV" \
+              --image "$Z3_IMAGE_REF" \
+              --ingress external \
+              --target-port 8080 \
+              --transport http \
+              --user-assigned "$IDENTITY_ID" \
+              --registry-server "$ACR_NAME.azurecr.io" \
+              --registry-identity "$IDENTITY_ID" \
+              --secrets "solver-secret=$Z3_SECRET" \
+              --env-vars \
+                DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
+                Z3_DETERMINISTIC_SEED=42 \
+                Z3_TIMEOUT_MS=30000 \
+                E2E_REVISION="$GITHUB_SHA" \
+                PORT=8080 \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --output none
+          fi
+
+          az containerapp ingress update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" \
+            --type external \
+            --target-port 8080 \
+            --transport http \
+            --allow-insecure false \
+            --output none
 
           Z3_FQDN=$(az containerapp show \
             --resource-group "$RESOURCE_GROUP" \
@@ -50,42 +150,7 @@ jobs:
             --query properties.configuration.ingress.fqdn \
             --output tsv)
           test -n "$Z3_FQDN"
-
-          Z3_SECRET=$(openssl rand -hex 32)
-          CINEMA_SECRET=$(openssl rand -hex 32)
-          echo "::add-mask::$Z3_SECRET"
-          echo "::add-mask::$CINEMA_SECRET"
-
           echo "Z3_SERVICE_URL=https://$Z3_FQDN" >> "$GITHUB_ENV"
-          echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
-          echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
-
-      - name: Rotate Z3 staging secret fail-closed
-        shell: bash
-        run: |
-          set -euo pipefail
-          az containerapp secret set \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$Z3_CONTAINER_APP" \
-            --secrets "solver-secret=$Z3_SECRET" \
-            --output none
-
-          az containerapp update \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$Z3_CONTAINER_APP" \
-            --set-env-vars \
-              DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
-              Z3_DETERMINISTIC_SEED=42 \
-              Z3_TIMEOUT_MS=30000 \
-              E2E_REVISION="$GITHUB_SHA" \
-            --output none
-
-      - name: Wait for Z3 container restart and secret reload
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Waiting for Z3 container to reload secret..."
-          sleep 8
 
       - name: Verify direct Z3 exact proof
         shell: bash
@@ -95,39 +160,27 @@ jobs:
           echo "$PAYLOAD" > /tmp/e2e-payload.json
 
           for attempt in $(seq 1 72); do
-            echo "Attempt $attempt: waiting for Z3 service and new secret to be active..."
-
             CODE=$(curl --silent --show-error \
               --output /tmp/z3-ready.json \
               --write-out '%{http_code}' \
               "$Z3_SERVICE_URL/ready" || true)
-            if [[ "$CODE" != "200" ]] || ! jq -e '.status == "ready"' /tmp/z3-ready.json >/dev/null 2>&1; then
-              if [[ "$attempt" == "72" ]]; then
-                cat /tmp/z3-ready.json 2>/dev/null || true
-                exit 1
+            if [[ "$CODE" == "200" ]] && jq -e '.status == "ready"' /tmp/z3-ready.json >/dev/null 2>&1; then
+              SOLVE_CODE=$(curl --silent --show-error \
+                --output /tmp/z3-proof.json \
+                --write-out '%{http_code}' \
+                --request POST "$Z3_SERVICE_URL/solve" \
+                --header "Authorization: Bearer $Z3_SECRET" \
+                --header 'Content-Type: application/json' \
+                --data @/tmp/e2e-payload.json || true)
+              if [[ "$SOLVE_CODE" == "200" ]]; then
+                break
               fi
-              sleep 5
-              continue
             fi
-
-            SOLVE_CODE=$(curl --silent --show-error \
-              --output /tmp/z3-proof.json \
-              --write-out '%{http_code}' \
-              --request POST "$Z3_SERVICE_URL/solve" \
-              --header "Authorization: Bearer $Z3_SECRET" \
-              --header 'Content-Type: application/json' \
-              --data @/tmp/e2e-payload.json || true)
-
-            if [[ "$SOLVE_CODE" == "200" ]]; then
-              break
-            fi
-
             if [[ "$attempt" == "72" ]]; then
-              echo "Failed after $attempt attempts. Last response code: $SOLVE_CODE" >&2
+              cat /tmp/z3-ready.json 2>/dev/null || true
               cat /tmp/z3-proof.json 2>/dev/null || true
               exit 1
             fi
-
             sleep 5
           done
 
@@ -154,13 +207,11 @@ jobs:
               --runtime 'PYTHON:3.11' \
               --output none
           fi
-
           az webapp update \
             --resource-group "$RESOURCE_GROUP" \
             --name "$CINEMA_STAGING_APP" \
             --https-only true \
             --output none
-
           CINEMA_HOST=$(az webapp show \
             --resource-group "$RESOURCE_GROUP" \
             --name "$CINEMA_STAGING_APP" \
@@ -182,7 +233,6 @@ jobs:
               DSG_BACKEND_API_KEY="$Z3_SECRET" \
               CINEMA_API_SECRET="$CINEMA_SECRET" \
             --output none
-
           az webapp config set \
             --resource-group "$RESOURCE_GROUP" \
             --name "$CINEMA_STAGING_APP" \
@@ -201,7 +251,6 @@ jobs:
             cd /tmp/cinema-package
             zip -q -r /tmp/cinema-app.zip .
           )
-
           az webapp deploy \
             --resource-group "$RESOURCE_GROUP" \
             --name "$CINEMA_STAGING_APP" \
@@ -274,13 +323,16 @@ jobs:
           jq -n \
             --arg commit "$GITHUB_SHA" \
             --arg z3_url "$Z3_SERVICE_URL" \
+            --arg z3_image "$Z3_IMAGE_REF" \
             --arg cinema_url "$CINEMA_URL" \
             --slurpfile direct /tmp/z3-proof.json \
             --slurpfile cinema /tmp/cinema-proof-1.json \
             '{
               commit: $commit,
               environment: "staging",
+              isolation: "dedicated-z3-and-cinema-staging",
               z3_service_url: $z3_url,
+              z3_image_ref: $z3_image,
               cinema_service_url: $cinema_url,
               transport: "https",
               direct_z3: {
