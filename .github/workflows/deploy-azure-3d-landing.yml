@@ -58,7 +58,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ORIGIN='https://dsgone3dc2d94861e332.z23.web.core.windows.net'
+          RECEIPT='.deployment/azure-3d-landing.json'
+          test -f "$RECEIPT"
+          ORIGIN=$(jq -er '.site_url | rtrimstr("/")' "$RECEIPT")
+          [[ "$ORIGIN" =~ ^https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net$ ]]
           VERIFY_URL='https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate'
           jq -n '{channel:"openai_plugin",approved_plan_hash:("1"*64),proposed_action_hash:("2"*64),execution_id:"azure-release-gate",trace_id:"azure-release-gate",agent_identity:"github-actions-azure-release-gate",authorized:true,plan_aligned:true,constraints_pass:true,execution_succeeded:true,replay_match:true,evidence_complete:true,cost_microunits:0}' > /tmp/browser-contract-request.json
 

@@ -5,7 +5,7 @@
     "runtime": "Cinema + exact Z3",
     "verification_endpoint": "/verify/evaluate",
     "production_api_base": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io",
-    "public_landing": "https://dsgone3dc2d94861e332.z23.web.core.windows.net/",
+    "public_landing": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
     "receipt_version": "dsg-proof-receipt-1.0.0",
     "policy_version": "dsg-verified-execution-1.0.0",
     "checkout_status": "NOT_VERIFIED_NOT_LINKED"
