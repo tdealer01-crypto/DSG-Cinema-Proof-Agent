@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements-cinema.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY cinema_main.py .
+COPY cinema_main.py marketplace_verification.py ./
 
 ENV PORT=8000
 EXPOSE 8000
