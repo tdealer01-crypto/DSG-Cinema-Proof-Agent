@@ -8,6 +8,7 @@ on:
       - 'z3_main.py'
       - 'requirements.txt'
       - 'tests/**'
+      - 'AZURE_BOOTSTRAP_GITHUB_OIDC.sh'
       - '.github/workflows/verify-z3.yml'
   workflow_dispatch:
 
@@ -36,8 +37,10 @@ jobs:
       - name: Compile Python
         run: python -m py_compile z3_main.py tests/test_z3_main.py cinema_z3_integration.py
 
-      - name: Check Bash wrapper syntax
-        run: bash -n CINEMA_Z3_AUTO_INTEGRATION.sh
+      - name: Check Bash syntax
+        run: |
+          bash -n CINEMA_Z3_AUTO_INTEGRATION.sh
+          bash -n AZURE_BOOTSTRAP_GITHUB_OIDC.sh
 
       - name: Run deterministic verification tests
         env:
