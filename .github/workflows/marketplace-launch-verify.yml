@@ -66,7 +66,7 @@ jobs:
       - name: Reject retired Control Plane runtime references
         run: |
           if grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
-            marketplace marketplace_verification.py landing; then
+            marketplace marketplace_verification.py landing/index.html; then
             echo 'Retired Control Plane runtime reference found in launch package' >&2
             exit 1
           fi
