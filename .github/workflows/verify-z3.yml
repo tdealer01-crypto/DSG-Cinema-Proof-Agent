@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - 'z3_main.py'
+      - 'cinema_main.py'
+      - 'cinema_z3_integration.py'
       - 'requirements.txt'
       - 'tests/**'
       - 'AZURE_BOOTSTRAP_GITHUB_OIDC.sh'
@@ -35,7 +37,7 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
       - name: Compile Python
-        run: python -m py_compile z3_main.py tests/test_z3_main.py cinema_z3_integration.py
+        run: python -m py_compile z3_main.py cinema_main.py cinema_z3_integration.py tests/test_z3_main.py tests/test_cinema_main.py
 
       - name: Check Bash syntax
         run: |
@@ -46,4 +48,4 @@ jobs:
         env:
           DSG_SOLVER_SHARED_SECRET: ci-test-secret
           Z3_DETERMINISTIC_SEED: '42'
-        run: python -m pytest -q tests/test_z3_main.py
+        run: python -m pytest -q tests/test_z3_main.py tests/test_cinema_main.py
