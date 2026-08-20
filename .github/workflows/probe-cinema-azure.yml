@@ -1,0 +1,132 @@
+name: Probe Cinema Azure Runtime
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP_NAME: DSG-Cinema-Proof-Agent
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Read Cinema runtime metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+
+          APP_JSON=$(az webapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP_NAME" \
+            --output json)
+
+          HOST=$(jq -r '.defaultHostName // empty' <<<"$APP_JSON")
+          STATE=$(jq -r '.state // empty' <<<"$APP_JSON")
+          KIND=$(jq -r '.kind // empty' <<<"$APP_JSON")
+          PLAN_ID=$(jq -r '.serverFarmId // empty' <<<"$APP_JSON")
+          test -n "$HOST"
+          test -n "$PLAN_ID"
+
+          PLAN_NAME=${PLAN_ID##*/}
+          PLAN_JSON=$(az appservice plan show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$PLAN_NAME" \
+            --output json)
+
+          SKU_NAME=$(jq -r '.sku.name // empty' <<<"$PLAN_JSON")
+          SKU_TIER=$(jq -r '.sku.tier // empty' <<<"$PLAN_JSON")
+
+          SLOT_JSON=$(az webapp deployment slot list \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP_NAME" \
+            --query '[].{name:name,defaultHostName:defaultHostName,state:state}' \
+            --output json)
+
+          SETTINGS_JSON=$(az webapp config appsettings list \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP_NAME" \
+            --query '[].name' \
+            --output json)
+
+          SOURCE_JSON='{}'
+          if SOURCE_RAW=$(az webapp deployment source show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP_NAME" \
+            --query '{repoUrl:repoUrl,branch:branch,isManualIntegration:isManualIntegration}' \
+            --output json 2>/dev/null); then
+            SOURCE_JSON="$SOURCE_RAW"
+          fi
+
+          HEALTH_CODE=$(curl --silent --show-error \
+            --output /tmp/cinema-health-body \
+            --write-out '%{http_code}' \
+            --max-time 20 \
+            "https://$HOST/health" || true)
+
+          HEALTH_BODY_TYPE="text"
+          if jq -e . /tmp/cinema-health-body >/dev/null 2>&1; then
+            HEALTH_BODY_TYPE="json"
+          fi
+
+          jq -n \
+            --arg app_name "$CINEMA_APP_NAME" \
+            --arg host "$HOST" \
+            --arg state "$STATE" \
+            --arg kind "$KIND" \
+            --arg plan_name "$PLAN_NAME" \
+            --arg sku_name "$SKU_NAME" \
+            --arg sku_tier "$SKU_TIER" \
+            --arg health_code "$HEALTH_CODE" \
+            --arg health_body_type "$HEALTH_BODY_TYPE" \
+            --argjson slots "$SLOT_JSON" \
+            --argjson setting_names "$SETTINGS_JSON" \
+            --argjson source "$SOURCE_JSON" \
+            '{
+              app_name: $app_name,
+              default_host: $host,
+              state: $state,
+              kind: $kind,
+              app_service_plan: {
+                name: $plan_name,
+                sku_name: $sku_name,
+                sku_tier: $sku_tier
+              },
+              slots: $slots,
+              app_setting_names: $setting_names,
+              deployment_source: $source,
+              health: {
+                http_status: ($health_code | tonumber? // 0),
+                body_type: $health_body_type
+              }
+            }' > cinema_runtime_probe.json
+
+          cat cinema_runtime_probe.json
+
+      - name: Upload Cinema probe evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-runtime-probe-${{ github.sha }}
+          path: cinema_runtime_probe.json
+          retention-days: 30
