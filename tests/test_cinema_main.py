@@ -55,14 +55,14 @@ def test_azure_landing_origin_can_call_public_verification_api(monkeypatch):
     response = client.options(
         "/verify/evaluate",
         headers={
-            "Origin": "https://dsgone3dc2d94861e332.z23.web.core.windows.net",
+            "Origin": "https://dsgoneverifiedweb.z1.web.core.windows.net",
             "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "content-type",
         },
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == (
-        "https://dsgone3dc2d94861e332.z23.web.core.windows.net"
+        "https://dsgoneverifiedweb.z1.web.core.windows.net"
     )
 
 

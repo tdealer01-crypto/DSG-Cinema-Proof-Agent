@@ -256,7 +256,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          AZURE_ORIGIN='https://dsgone3dc2d94861e332.z23.web.core.windows.net'
+          AZURE_ORIGIN=$(jq -er '.product.public_landing | rtrimstr("/")' marketplace/launch-manifest.json)
           RENDER_ORIGIN='https://dsg-one-verified-execution.onrender.com'
           VERIFY_URL="$CINEMA_URL/verify/evaluate"
 

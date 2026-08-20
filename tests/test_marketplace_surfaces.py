@@ -83,6 +83,9 @@ def test_launch_manifest_matches_repository_artifacts():
     manifest = json.loads(
         (ROOT / "marketplace" / "launch-manifest.json").read_text(encoding="utf-8")
     )
+    deployment = json.loads(
+        (ROOT / ".deployment" / "azure-3d-landing.json").read_text(encoding="utf-8")
+    )
     statuses = {item["channel"]: item["status"] for item in manifest["channels"]}
     assert statuses == {
         "GitHub Marketplace Action": "LIVE_V1",
@@ -94,6 +97,8 @@ def test_launch_manifest_matches_repository_artifacts():
         "Direct API": "LIVE",
     }
     assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
+    assert manifest["product"]["public_landing"] == deployment["site_url"]
+    assert deployment["status"] == "PASS"
 
     for item in manifest["channels"]:
         package = item.get("package") or item.get("v2_package")
