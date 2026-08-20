@@ -4,10 +4,10 @@
 The Cinema client credential and the Z3 backend credential are intentionally
 separate. Neither credential is returned to clients or written to logs.
 
-Stripe Marketplace requests use a constrained endpoint (/stripe/evaluate).
-That endpoint never accepts arbitrary solver input. It deterministically maps
-transaction context to a 3-variable ALLOW/REVIEW/BLOCK QUBO and asks the
-server-side Z3 verifier to prove the global optimum.
+Marketplace requests use constrained endpoints that never accept arbitrary
+solver programs. Cinema deterministically maps bounded business context to a
+3-variable ALLOW/REVIEW/BLOCK QUBO and asks the server-side Z3 verifier to
+prove the global optimum.
 """
 
 from __future__ import annotations
@@ -25,7 +25,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="DSG Cinema Proof Agent", version="1.1.0")
+from marketplace_verification import (
+    POLICY_VERSION,
+    RECEIPT_VERSION,
+    VerificationRequest,
+    context_hash as verification_context_hash,
+    target_decision as verification_target_decision,
+)
+
+app = FastAPI(title="DSG Cinema Proof Agent", version="1.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -302,6 +310,67 @@ async def solve(
         "proof_hash": verified_proof["proof_hash"],
         "request_hash": verified_proof["request_hash"],
         "z3_proof": verified_proof,
+    }
+
+
+@app.post("/verify/evaluate")
+async def verify_evaluate(request: VerificationRequest) -> dict[str, Any]:
+    """Create a deterministic Verified Execution receipt for any marketplace.
+
+    The endpoint accepts only bounded verification facts, never an arbitrary
+    QUBO. Cinema derives the fixed 3-variable ALLOW/REVIEW/BLOCK problem and
+    requires an exact Z3 global-optimum proof before returning a receipt.
+    """
+    target, factors = verification_target_decision(request)
+    linear, quadratic = _decision_qubo(target)
+    context_hash = verification_context_hash(request)
+
+    solver_payload = {
+        "request_id": f"verify-{context_hash[:24]}",
+        "preset_name": "verified-execution-v1",
+        "problem_type": "qubo",
+        "linear": linear,
+        "quadratic": quadratic,
+        "proveOptimality": True,
+        "z3TimeoutMs": 30000,
+    }
+
+    status_code, proof = await z3_request("POST", "/solve", solver_payload)
+    if status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Z3 solve failed with HTTP {status_code}")
+
+    verified_proof = _validate_exact_proof(proof)
+    decision = _decision_from_witness(verified_proof.get("witness"))
+    if decision != target:
+        raise HTTPException(status_code=502, detail="Z3 decision does not match deterministic policy target")
+
+    return {
+        "receipt_version": RECEIPT_VERSION,
+        "policy_version": POLICY_VERSION,
+        "execution_id": request.execution_id,
+        "trace_id": request.trace_id,
+        "channel": request.channel,
+        "decision": decision,
+        "reason": "; ".join(factors),
+        "authorized_action_completion": bool(
+            request.authorized
+            and request.plan_aligned
+            and request.constraints_pass
+            and request.execution_succeeded
+        ),
+        "out_of_plan_rejection": bool(not request.authorized or not request.plan_aligned),
+        "z3_constraint_correctness": bool(request.constraints_pass and verified_proof.get("verified") is True),
+        "replay_match": request.replay_match,
+        "evidence_completeness": 1.0 if request.evidence_complete else 0.0,
+        "cost_microunits": request.cost_microunits,
+        "verified": True,
+        "verification": "VERIFIED_GLOBAL_OPTIMUM",
+        "proof_hash": verified_proof["proof_hash"],
+        "request_hash": verified_proof["request_hash"],
+        "context_hash": context_hash,
+        "witness": verified_proof["witness"],
+        "energy_exact": verified_proof.get("energy_exact"),
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
