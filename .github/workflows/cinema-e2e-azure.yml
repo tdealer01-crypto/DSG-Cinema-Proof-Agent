@@ -320,11 +320,28 @@ jobs:
         run: |
           set -euo pipefail
           for output in /tmp/cinema-proof-1.json /tmp/cinema-proof-2.json; do
-            curl --fail-with-body --silent --show-error \
-              --request POST "$CINEMA_URL/solve" \
-              --header "Authorization: Bearer $CINEMA_SECRET" \
-              --header 'Content-Type: application/json' \
-              --data @/tmp/e2e-payload.json > "$output"
+            for attempt in $(seq 1 72); do
+              CODE=$(curl --silent --show-error \
+                --output "$output" \
+                --write-out '%{http_code}' \
+                --request POST "$CINEMA_URL/solve" \
+                --header "Authorization: Bearer $CINEMA_SECRET" \
+                --header 'Content-Type: application/json' \
+                --data @/tmp/e2e-payload.json || true)
+              if [[ "$CODE" == "200" ]] && jq -e '
+                .cinema_status == "VERIFIED" and
+                .verified == true and
+                .verification == "VERIFIED_GLOBAL_OPTIMUM"
+              ' "$output" >/dev/null 2>&1; then
+                break
+              fi
+              if [[ "$attempt" == "72" ]]; then
+                cat "$output" 2>/dev/null || true
+                echo "Cinema exact-proof endpoint did not converge to the current secret/revision" >&2
+                exit 1
+              fi
+              sleep 5
+            done
           done
 
           jq -e '
