@@ -122,3 +122,71 @@ def test_empty_sat_clause_is_unsat(monkeypatch):
     assert body["z3_status"] == "UNSAT"
     assert body["verification"] == "UNSATISFIABLE"
     assert body["verified"] is True
+
+
+def test_previous_secret_is_accepted_during_a_rotation(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "new-secret")
+    monkeypatch.setattr(z3_main, "PREVIOUS_SECRET", "old-secret")
+
+    for token in ("new-secret", "old-secret"):
+        response = client.post(
+            "/solve",
+            json=qubo_payload(),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200, token
+
+
+def test_previous_secret_is_refused_once_the_rotation_closes(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "new-secret")
+    monkeypatch.setattr(z3_main, "PREVIOUS_SECRET", None)
+
+    assert (
+        client.post(
+            "/solve",
+            json=qubo_payload(),
+            headers={"Authorization": "Bearer old-secret"},
+        ).status_code
+        == 403
+    )
+
+
+def test_an_unrelated_token_is_still_refused_during_a_rotation(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "new-secret")
+    monkeypatch.setattr(z3_main, "PREVIOUS_SECRET", "old-secret")
+
+    assert (
+        client.post(
+            "/solve",
+            json=qubo_payload(),
+            headers={"Authorization": "Bearer neither-secret"},
+        ).status_code
+        == 403
+    )
+
+
+def test_an_empty_previous_secret_never_widens_authorization(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "new-secret")
+    for empty in ("", "   ", None):
+        monkeypatch.setattr(z3_main, "PREVIOUS_SECRET", empty)
+        assert z3_main.accepted_secrets() == ["new-secret"]
+        assert z3_main.token_is_accepted("") is False
+
+
+def test_rotation_state_is_reported_without_revealing_secrets(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "new-secret")
+    monkeypatch.setattr(z3_main, "PREVIOUS_SECRET", "old-secret")
+    body = client.get("/metrics").json()
+    assert body["rotation_in_progress"] is True
+    assert "new-secret" not in str(body)
+    assert "old-secret" not in str(body)
+
+    monkeypatch.setattr(z3_main, "PREVIOUS_SECRET", None)
+    assert client.get("/metrics").json()["rotation_in_progress"] is False
+
+
+def test_a_previous_secret_equal_to_the_current_one_is_not_a_rotation(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "same-secret")
+    monkeypatch.setattr(z3_main, "PREVIOUS_SECRET", "same-secret")
+    assert z3_main.accepted_secrets() == ["same-secret"]
+    assert client.get("/metrics").json()["rotation_in_progress"] is False

@@ -45,6 +45,14 @@ jobs:
       # Metering always records usage. Enforcement (paid gating) stays opt-in
       # until a durable ledger store is attached; see REVENUE_AUTOMATION.md.
       REVENUE_ENFORCE: ${{ vars.DSG_REVENUE_ENFORCE || '0' }}
+      # Stripe credentials. Setting DSG_KEY_VAULT_NAME makes the deployment read
+      # them from Key Vault through the app's managed identity instead, so the
+      # live key never passes through this workflow. See SECRET_MANAGEMENT.md.
+      KEY_VAULT_NAME: ${{ vars.DSG_KEY_VAULT_NAME }}
+      KEY_VAULT_STRIPE_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_SECRET_NAME || 'stripe-secret-key' }}
+      KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
+      CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      CONFIGURED_STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
     steps:
       - name: Checkout
@@ -144,15 +152,37 @@ jobs:
           }
 
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" >/dev/null 2>&1; then
+            # Cinema is still running on the previous credential until its own
+            # deployment step lands. Keep accepting that value for the length of
+            # this deployment so requests in flight are not rejected against a
+            # secret that is correct but one revision old. The window is closed
+            # explicitly once the Cinema E2E has passed.
+            PREVIOUS_Z3_SECRET=$(az containerapp secret show \
+              --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+              --secret-name solver-secret --query value --output tsv 2>/dev/null || true)
+
+            Z3_SECRET_ARGS=("solver-secret=$Z3_SECRET")
+            Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET="
+            if [[ -n "$PREVIOUS_Z3_SECRET" && "$PREVIOUS_Z3_SECRET" != "$Z3_SECRET" ]]; then
+              echo "::add-mask::$PREVIOUS_Z3_SECRET"
+              Z3_SECRET_ARGS+=("solver-previous-secret=$PREVIOUS_Z3_SECRET")
+              Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET=secretref:solver-previous-secret"
+              echo 'ROTATION_WINDOW_OPEN=1' >> "$GITHUB_ENV"
+            else
+              echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
+            fi
+
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
-            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --secrets "solver-secret=$Z3_SECRET" --output none
+            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --secrets "${Z3_SECRET_ARGS[@]}" --output none
             retry az containerapp update \
               --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
               --image "$Z3_IMAGE_REF" \
-              --set-env-vars DSG_SOLVER_SHARED_SECRET=secretref:solver-secret Z3_DETERMINISTIC_SEED=42 Z3_TIMEOUT_MS=30000 PORT=8080 \
+              --set-env-vars DSG_SOLVER_SHARED_SECRET=secretref:solver-secret "$Z3_ROTATION_ENV" Z3_DETERMINISTIC_SEED=42 Z3_TIMEOUT_MS=30000 PORT=8080 \
               --output none
           else
+            # First deployment: there is no earlier credential to honour.
+            echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
             retry az containerapp create \
               --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --environment "$CONTAINER_ENV" \
               --image "$Z3_IMAGE_REF" --ingress external --target-port 8080 --transport http \
@@ -210,42 +240,76 @@ jobs:
             return 1
           }
 
+          # Secret and env sets are assembled once, so an optional credential adds
+          # one array entry instead of another copy of the whole deployment call.
+          CINEMA_SECRET_ARGS=("backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET")
+          CINEMA_ENV_ARGS=(
+            DSG_BACKEND_BASE_URL="$Z3_URL"
+            DSG_BACKEND_API_KEY=secretref:backend-secret
+            CINEMA_API_SECRET=secretref:cinema-secret
+            DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE"
+            PORT=8000
+          )
+
+          if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            CINEMA_SECRET_ARGS+=("revenue-admin-secret=$REVENUE_ADMIN_SECRET")
+            CINEMA_ENV_ARGS+=(DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret)
+          fi
+
+          # Stripe credentials are long-lived and externally issued, unlike the
+          # per-deployment values above: they cannot be regenerated on each run
+          # and a leak costs money. Prefer Key Vault so they are stored, rotated,
+          # and audited outside this workflow, with repository secrets as the
+          # fallback. With neither configured Stripe stays unlinked, and
+          # /billing/status keeps reporting NOT_VERIFIED_NOT_LINKED truthfully.
+          STRIPE_SOURCE='none'
+          STRIPE_WEBHOOK_CONFIGURED='false'
+          if [[ -n "$KEY_VAULT_NAME" ]]; then
+            VAULT_BASE="https://$KEY_VAULT_NAME.vault.azure.net/secrets"
+            CINEMA_SECRET_ARGS+=(
+              "stripe-secret-key=keyvaultref:$VAULT_BASE/$KEY_VAULT_STRIPE_SECRET_NAME,identityref:$PULL_IDENTITY_ID"
+              "stripe-webhook-secret=keyvaultref:$VAULT_BASE/$KEY_VAULT_STRIPE_WEBHOOK_NAME,identityref:$PULL_IDENTITY_ID"
+            )
+            CINEMA_ENV_ARGS+=(
+              STRIPE_SECRET_KEY=secretref:stripe-secret-key
+              STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret
+            )
+            STRIPE_SOURCE='key_vault'
+            STRIPE_WEBHOOK_CONFIGURED='true'
+          else
+            if [[ -n "$CONFIGURED_STRIPE_SECRET_KEY" ]]; then
+              CINEMA_SECRET_ARGS+=("stripe-secret-key=$CONFIGURED_STRIPE_SECRET_KEY")
+              CINEMA_ENV_ARGS+=(STRIPE_SECRET_KEY=secretref:stripe-secret-key)
+              STRIPE_SOURCE='repository_secret'
+            fi
+            if [[ -n "$CONFIGURED_STRIPE_WEBHOOK_SECRET" ]]; then
+              CINEMA_SECRET_ARGS+=("stripe-webhook-secret=$CONFIGURED_STRIPE_WEBHOOK_SECRET")
+              CINEMA_ENV_ARGS+=(STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret)
+              STRIPE_SOURCE='repository_secret'
+              STRIPE_WEBHOOK_CONFIGURED='true'
+            fi
+          fi
+          echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
+          echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
+          echo "Stripe credential source: $STRIPE_SOURCE"
+
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
-            if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
-              retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" --output none
-              retry az containerapp update \
-                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
-                --image "$CINEMA_IMAGE_REF" \
-                --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
-                --output none
-            else
-              retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" --output none
-              retry az containerapp update \
-                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
-                --image "$CINEMA_IMAGE_REF" \
-                --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
-                --output none
-            fi
+            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "${CINEMA_SECRET_ARGS[@]}" --output none
+            retry az containerapp update \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --image "$CINEMA_IMAGE_REF" \
+              --set-env-vars "${CINEMA_ENV_ARGS[@]}" \
+              --output none
           else
-            if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
-              retry az containerapp create \
-                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
-                --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
-                --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
-                --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" \
-                --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
-                --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
-            else
-              retry az containerapp create \
-                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
-                --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
-                --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
-                --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" \
-                --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
-                --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
-            fi
+            retry az containerapp create \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
+              --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
+              --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
+              --secrets "${CINEMA_SECRET_ARGS[@]}" \
+              --env-vars "${CINEMA_ENV_ARGS[@]}" \
+              --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
           fi
 
           retry az containerapp ingress update \
@@ -299,6 +363,54 @@ jobs:
           test "$CINEMA_REQUEST_1" = "$CINEMA_REQUEST_2"
           test "$CINEMA_HASH_1" = "$DIRECT_HASH"
           test "$CINEMA_REQUEST_1" = "$DIRECT_REQUEST"
+
+      - name: Close the credential rotation window
+        if: env.ROTATION_WINDOW_OPEN == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The E2E above proved Cinema reaches Z3 on the new credential, so the
+          # previous one is no longer needed. Revoking it here keeps the window
+          # to the length of one deployment instead of leaving a second valid
+          # credential live until the next deploy happens to overwrite it.
+          retry() {
+            local attempt=1
+            while (( attempt <= 6 )); do
+              if "$@"; then return 0; fi
+              sleep $((attempt * 10))
+              ((attempt++))
+            done
+            return 1
+          }
+
+          retry az containerapp update \
+            --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+            --set-env-vars DSG_SOLVER_PREVIOUS_SECRET= \
+            --output none
+
+          retry az containerapp secret remove \
+            --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+            --secret-names solver-previous-secret --output none
+
+          # Prove the revoked credential is actually refused and the current one
+          # still works, so a failed revocation cannot pass silently.
+          for attempt in $(seq 1 30); do
+            ROTATING=$(curl --silent --show-error "$Z3_URL/metrics" \
+              | jq -r '.rotation_in_progress // empty' || true)
+            [[ "$ROTATING" == "false" ]] && break
+            [[ "$attempt" == "30" ]] && { echo 'Rotation window did not close' >&2; exit 1; }
+            sleep 5
+          done
+
+          LIVE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$Z3_URL/solve" \
+            --header "Authorization: Bearer $Z3_SECRET" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/payload.json)
+          test "$LIVE_CODE" = '200'
+
+          echo 'Rotation window closed; only the current credential is accepted.'
 
       - name: Verify marketplace adapters and Azure browser CORS
         shell: bash
@@ -379,6 +491,27 @@ jobs:
             (.checkout_status == (if .stripe.charges_enabled then "LINKED" else "NOT_VERIFIED_NOT_LINKED" end)) and
             ([.catalog.plans[].plan] | sort == ["enterprise","free","metered","team"])
           ' /tmp/billing-status.json >/dev/null
+
+          # A provisioned Stripe signing secret must actually have reached the
+          # running app, and an absent one must leave webhooks refused rather
+          # than half-configured. Note charges_enabled/webhooks_enabled remain
+          # false until live Stripe verification passes: possessing a secret is
+          # never treated as proof that charging works.
+          WEBHOOK_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/billing/webhook/stripe" \
+            --header 'Content-Type: application/json' --data '{"type":"invoice.paid"}')
+          if [[ "$STRIPE_WEBHOOK_CONFIGURED" == "true" ]]; then
+            # Configured: the route now rejects on signature, not on absence.
+            test "$WEBHOOK_CODE" = '400'
+            jq -e '.stripe.webhooks_configured == true' /tmp/billing-status.json >/dev/null
+          else
+            # Not configured: unsigned webhooks are refused, never trusted.
+            test "$WEBHOOK_CODE" = '503'
+            jq -e '.stripe.webhooks_configured == false' /tmp/billing-status.json >/dev/null
+          fi
+          jq -e --arg source "$STRIPE_SOURCE" '.stripe.configured == ($source != "none")' \
+            /tmp/billing-status.json >/dev/null
+          echo "Stripe credential source verified as: $STRIPE_SOURCE"
 
           # Admin billing routes must reject an unauthenticated caller.
           REPORT_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/report")

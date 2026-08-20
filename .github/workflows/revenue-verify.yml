@@ -12,6 +12,10 @@ on:
       - 'tests/test_revenue.py'
       - 'tests/test_channel_delivery.py'
       - 'tests/test_cinema_main.py'
+      - 'tests/test_z3_main.py'
+      - 'z3_main.py'
+      - 'AZURE_BOOTSTRAP_KEY_VAULT.sh'
+      - '.github/workflows/deploy-cinema-production.yml'
       - 'marketplace/github-action-v2/**'
       - 'marketplace/openai-plugin/**'
       - 'stripe-app/src/**'
@@ -54,7 +58,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-cinema.txt pytest
+          python -m pip install -r requirements-cinema.txt pytest pyyaml z3-solver==4.13.0
 
       - name: Compile revenue system
         run: |
@@ -68,6 +72,7 @@ jobs:
             revenue/engine.py \
             revenue/ledger.py \
             revenue/pricing.py \
+            z3_main.py \
             revenue/remediation.py \
             revenue/activation.py \
             revenue/stripe_sync.py
@@ -77,7 +82,8 @@ jobs:
           python -m pytest -q \
             tests/test_revenue.py \
             tests/test_channel_delivery.py \
-            tests/test_cinema_main.py
+            tests/test_cinema_main.py \
+            tests/test_z3_main.py
 
       - name: Assert every channel package can reach the live contract
         shell: bash
@@ -118,6 +124,76 @@ jobs:
               assert fix.next_step.strip(), f'{code} has no next step'
               assert fix.problem.strip(), f'{code} has no problem statement'
           print(f'{len(all_codes())} denial codes all carry a next step')
+          PY
+
+      - name: Assert secret handling stays fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n AZURE_BOOTSTRAP_KEY_VAULT.sh
+
+          # The rotation window must accept exactly the current and previous
+          # credentials, compare in constant time, and never widen on a blank.
+          python - <<'PY'
+          import os
+
+          os.environ['DSG_SOLVER_SHARED_SECRET'] = 'current'
+          import z3_main
+
+          z3_main.SHARED_SECRET = 'current'
+          for blank in ('', '   ', None):
+              z3_main.PREVIOUS_SECRET = blank
+              assert z3_main.accepted_secrets() == ['current'], blank
+              assert z3_main.token_is_accepted('') is False
+              assert z3_main.token_is_accepted('previous') is False
+
+          z3_main.PREVIOUS_SECRET = 'previous'
+          assert z3_main.accepted_secrets() == ['current', 'previous']
+          assert z3_main.token_is_accepted('current') is True
+          assert z3_main.token_is_accepted('previous') is True
+          assert z3_main.token_is_accepted('neither') is False
+
+          # A previous value equal to the current one is not a second credential.
+          z3_main.PREVIOUS_SECRET = 'current'
+          assert z3_main.accepted_secrets() == ['current']
+
+          # The comparison must not short-circuit on the first match, or timing
+          # reveals which credential matched.
+          import inspect
+          source = inspect.getsource(z3_main.token_is_accepted)
+          assert 'return True' not in source, 'token_is_accepted short-circuits'
+          assert 'hmac.compare_digest' in source
+          print('rotation window contract verified')
+          PY
+
+          # The deployment must close the window it opens, and must never leave
+          # a second credential live.
+          python - <<'PY'
+          import yaml
+
+          with open('.github/workflows/deploy-cinema-production.yml', encoding='utf-8') as handle:
+              workflow = yaml.safe_load(handle)
+
+          steps = workflow['jobs']['deploy-production']['steps']
+          names = [step.get('name', '') for step in steps]
+
+          assert 'Close the credential rotation window' in names, 'rotation window is never closed'
+
+          close_index = names.index('Close the credential rotation window')
+          e2e_index = names.index('Verify production Cinema to Z3 E2E and replay')
+          assert e2e_index < close_index, 'the window closes before the E2E proves the new credential'
+
+          close_step = steps[close_index]
+          assert 'solver-previous-secret' in close_step['run'], 'the previous credential is not revoked'
+          assert 'rotation_in_progress' in close_step['run'], 'closure is not verified'
+
+          # Stripe credentials must prefer the vault and must never be echoed.
+          deploy = next(s for s in steps if s.get('name') == 'Deploy Cinema production')['run']
+          assert 'keyvaultref:' in deploy, 'Key Vault reference path is missing'
+          assert 'identityref:' in deploy, 'Key Vault reference has no identity'
+          for forbidden in ('echo "$CONFIGURED_STRIPE_SECRET_KEY"', 'echo $CONFIGURED_STRIPE_SECRET_KEY'):
+              assert forbidden not in deploy, 'a Stripe credential is echoed'
+          print('deployment rotation and Key Vault contract verified')
           PY
 
       - name: Assert no credential material is committed

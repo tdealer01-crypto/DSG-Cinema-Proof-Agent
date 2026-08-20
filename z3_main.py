@@ -32,6 +32,13 @@ Z3_TIMEOUT_MS = int(os.getenv("Z3_TIMEOUT_MS", "30000"))
 Z3_SEED = int(os.getenv("Z3_DETERMINISTIC_SEED", "42"))
 SHARED_SECRET = os.getenv("DSG_SOLVER_SHARED_SECRET")
 
+# Accepted only while a deployment is rotating the shared credential. Cinema and
+# Z3 are updated in separate steps, so without this the requests in flight
+# between those two steps would fail authorization against a secret that is
+# correct but one revision old. The deployment clears it once Cinema is on the
+# new value.
+PREVIOUS_SECRET = (os.getenv("DSG_SOLVER_PREVIOUS_SECRET") or "").strip() or None
+
 app = FastAPI(title="DSG ONE Z3 Verification Service", version="2.0.0")
 
 
@@ -80,13 +87,41 @@ def z3_decimal(value: Decimal):
     return RealVal(decimal_string(value))
 
 
+def accepted_secrets() -> list[str]:
+    """Credentials this instance honours, newest first.
+
+    Normalisation happens here rather than only at load time so a blank value
+    can never widen authorization, however the setting was supplied.
+    """
+    secrets = []
+    current = (SHARED_SECRET or "").strip()
+    if current:
+        secrets.append(current)
+    previous = (PREVIOUS_SECRET or "").strip()
+    if previous and previous != current:
+        secrets.append(previous)
+    return secrets
+
+
+def token_is_accepted(token: str) -> bool:
+    """Constant-time membership test across every accepted credential.
+
+    Every candidate is compared even after a match so the response time cannot
+    reveal which credential matched or how many are configured.
+    """
+    matched = False
+    for candidate in accepted_secrets():
+        matched |= hmac.compare_digest(token, candidate)
+    return matched
+
+
 def require_auth(authorization: Optional[str]) -> None:
     if not SHARED_SECRET:
         raise HTTPException(status_code=503, detail="solver secret is not configured")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Bearer authorization required")
     token = authorization[7:].strip()
-    if not token or not hmac.compare_digest(token, SHARED_SECRET):
+    if not token or not token_is_accepted(token):
         raise HTTPException(status_code=403, detail="invalid bearer token")
 
 
@@ -384,6 +419,7 @@ def metrics():
         "seed": Z3_SEED,
         "timeout_ms": Z3_TIMEOUT_MS,
         "secret_configured": bool(SHARED_SECRET),
+        "rotation_in_progress": len(accepted_secrets()) > 1,
     }
 
 
