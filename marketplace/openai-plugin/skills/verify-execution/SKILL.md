@@ -28,6 +28,20 @@ Build a bounded request with these fields:
 
 Never invent missing evidence or mark a field true without support. If a required fact is unknown, use the fail-closed value described by the request schema or ask for the missing evidence.
 
+## Getting a key (self-serve)
+
+Verification works without a key wherever public evaluation is open. To meter
+and attribute an agent's proofs, obtain a free-tier key once:
+
+```
+POST {DSG_VERIFY_URL}/billing/activate
+{"channel": "openai_plugin", "activation_id": "<stable agent id>", "display_name": "<agent name>"}
+```
+
+Set the returned key as `DSG_API_KEY` before running `verify.sh`. The key is
+returned exactly once, and activation is idempotent per `activation_id`, so a
+retry reports `ACTIVATION_EXISTS` rather than issuing a second key.
+
 ## Verification procedure
 
 1. Canonicalize the approved plan and proposed action before hashing. If the caller already supplies trustworthy SHA-256 hashes, preserve them.
@@ -40,6 +54,17 @@ Never invent missing evidence or mark a field true without support. If a require
    - `proof_hash`, `request_hash`, and `context_hash` are 64-character hashes;
    - `decision` is exactly `ALLOW`, `REVIEW`, or `BLOCK`.
 5. Return the Proof Receipt fields and explain the decision in plain language.
+
+## When a call is refused
+
+A refusal returns a `remediation` object with `problem`, `cause`, `next_step`,
+and `self_service`. `verify.sh` prints these to stderr. Relay the `next_step`
+to the user verbatim rather than reporting only an HTTP status, and if
+`self_service` is false say that an operator must act. `GET /support/diagnose`
+(with the key, if any) returns the same structure as a full checklist.
+
+Never treat a refusal as a verification result: a refused call produced no
+proof and no charge.
 
 ## Fail-closed rules
 

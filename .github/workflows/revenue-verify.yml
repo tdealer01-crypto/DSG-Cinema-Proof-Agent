@@ -1,0 +1,350 @@
+name: Verify Revenue System
+
+on:
+  pull_request:
+    paths:
+      - 'revenue/**'
+      - 'cinema_main.py'
+      - 'marketplace_verification.py'
+      - 'scripts/revenue_report.py'
+      - 'requirements-cinema.txt'
+      - 'Dockerfile.cinema'
+      - 'tests/test_revenue.py'
+      - 'tests/test_channel_delivery.py'
+      - 'tests/test_cinema_main.py'
+      - 'tests/test_z3_main.py'
+      - 'tests/test_durable_store.py'
+      - 'z3_main.py'
+      - 'AZURE_BOOTSTRAP_KEY_VAULT.sh'
+      - '.github/workflows/deploy-cinema-production.yml'
+      - 'marketplace/github-action-v2/**'
+      - 'marketplace/openai-plugin/**'
+      - 'stripe-app/src/**'
+      - 'landing/**'
+      - 'azure-landing/**'
+      - '.github/workflows/revenue-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'revenue/**'
+      - 'cinema_main.py'
+      - 'scripts/revenue_report.py'
+      - 'tests/test_revenue.py'
+      - 'tests/test_channel_delivery.py'
+      - 'marketplace/**'
+      - '.github/workflows/revenue-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revenue-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest pyyaml z3-solver==4.13.0
+
+      - name: Compile revenue system
+        run: |
+          python -m py_compile \
+            cinema_main.py \
+            marketplace_verification.py \
+            scripts/revenue_report.py \
+            revenue/__init__.py \
+            revenue/accounts.py \
+            revenue/api.py \
+            revenue/engine.py \
+            revenue/ledger.py \
+            revenue/pricing.py \
+            z3_main.py \
+            revenue/remediation.py \
+            revenue/activation.py \
+            revenue/stripe_sync.py
+
+      - name: Run revenue, channel, and Cinema contract tests
+        run: |
+          python -m pytest -q \
+            tests/test_revenue.py \
+            tests/test_channel_delivery.py \
+            tests/test_cinema_main.py \
+            tests/test_z3_main.py \
+            tests/test_durable_store.py
+
+      - name: Assert every channel package can reach the live contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Each channel must carry the key header and surface the remediation,
+          # or a refused user is left with a bare status code again.
+          grep -q 'X-DSG-API-Key' marketplace/github-action-v2/scripts/verified-execution.sh
+          grep -q 'GITHUB_STEP_SUMMARY' marketplace/github-action-v2/scripts/verified-execution.sh
+          grep -q 'X-DSG-API-Key' marketplace/openai-plugin/skills/verify-execution/scripts/verify.sh
+          grep -q 'next_step' marketplace/openai-plugin/skills/verify-execution/scripts/verify.sh
+          grep -q '/billing/activate' marketplace/openai-plugin/skills/verify-execution/SKILL.md
+          grep -q 'readRemediation' stripe-app/src/views/ChargeGate.tsx
+          grep -q 'billing/activate' landing/index.html
+
+          # The landing pages stay one artifact.
+          cmp landing/index.html azure-landing/index.html
+
+          # Activation must never be able to hand out a paid plan.
+          python - <<'PY'
+          from revenue.activation import ACTIVATION_PLAN
+          from revenue.pricing import get_plan
+
+          plan = get_plan(ACTIVATION_PLAN)
+          assert plan.base_price_micros == 0, 'activation must not grant a paid plan'
+          assert plan.hard_cap_units is not None, 'activation plan must be capped'
+          assert plan.requires_linked_payment is False
+          print(f'activation grants {plan.plan}, capped at {plan.hard_cap_units} units')
+          PY
+
+          # Every denial code must carry an actionable next step.
+          python - <<'PY'
+          from revenue.remediation import all_codes, remediation_for
+
+          for code in all_codes():
+              fix = remediation_for(code)
+              assert fix.next_step.strip(), f'{code} has no next step'
+              assert fix.problem.strip(), f'{code} has no problem statement'
+          print(f'{len(all_codes())} denial codes all carry a next step')
+          PY
+
+      - name: Assert secret handling stays fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n AZURE_BOOTSTRAP_KEY_VAULT.sh
+
+          # The rotation window must accept exactly the current and previous
+          # credentials, compare in constant time, and never widen on a blank.
+          python - <<'PY'
+          import os
+
+          os.environ['DSG_SOLVER_SHARED_SECRET'] = 'current'
+          import z3_main
+
+          z3_main.SHARED_SECRET = 'current'
+          for blank in ('', '   ', None):
+              z3_main.PREVIOUS_SECRET = blank
+              assert z3_main.accepted_secrets() == ['current'], blank
+              assert z3_main.token_is_accepted('') is False
+              assert z3_main.token_is_accepted('previous') is False
+
+          z3_main.PREVIOUS_SECRET = 'previous'
+          assert z3_main.accepted_secrets() == ['current', 'previous']
+          assert z3_main.token_is_accepted('current') is True
+          assert z3_main.token_is_accepted('previous') is True
+          assert z3_main.token_is_accepted('neither') is False
+
+          # A previous value equal to the current one is not a second credential.
+          z3_main.PREVIOUS_SECRET = 'current'
+          assert z3_main.accepted_secrets() == ['current']
+
+          # The comparison must not short-circuit on the first match, or timing
+          # reveals which credential matched.
+          import inspect
+          source = inspect.getsource(z3_main.token_is_accepted)
+          assert 'return True' not in source, 'token_is_accepted short-circuits'
+          assert 'hmac.compare_digest' in source
+          print('rotation window contract verified')
+          PY
+
+          # The deployment must close the window it opens, and must never leave
+          # a second credential live.
+          python - <<'PY'
+          import yaml
+
+          with open('.github/workflows/deploy-cinema-production.yml', encoding='utf-8') as handle:
+              workflow = yaml.safe_load(handle)
+
+          steps = workflow['jobs']['deploy-production']['steps']
+          names = [step.get('name', '') for step in steps]
+
+          assert 'Close the credential rotation window' in names, 'rotation window is never closed'
+
+          close_index = names.index('Close the credential rotation window')
+          e2e_index = names.index('Verify production Cinema to Z3 E2E and replay')
+          assert e2e_index < close_index, 'the window closes before the E2E proves the new credential'
+
+          close_step = steps[close_index]
+          assert 'solver-previous-secret' in close_step['run'], 'the previous credential is not revoked'
+          assert 'rotation_in_progress' in close_step['run'], 'closure is not verified'
+
+          # Stripe credentials must prefer the vault and must never be echoed.
+          deploy = next(s for s in steps if s.get('name') == 'Deploy Cinema production')['run']
+          assert 'keyvaultref:' in deploy, 'Key Vault reference path is missing'
+          assert 'identityref:' in deploy, 'Key Vault reference has no identity'
+          for forbidden in ('echo "$CONFIGURED_STRIPE_SECRET_KEY"', 'echo $CONFIGURED_STRIPE_SECRET_KEY'):
+              assert forbidden not in deploy, 'a Stripe credential is echoed'
+          print('deployment rotation and Key Vault contract verified')
+          PY
+
+      - name: Assert a shared revenue store cannot lose writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A ledger or registry rewritten from a stale in-memory view silently
+          # destroys billing records, and the surviving chain still verifies, so
+          # the loss is invisible. Both stores must lock across processes.
+          for module in revenue/ledger.py revenue/accounts.py; do
+            grep -q 'fcntl.flock' "$module" || {
+              echo "$module has no cross-process lock" >&2; exit 1; }
+            grep -q '_reload_if_changed' "$module" || {
+              echo "$module never refreshes before writing" >&2; exit 1; }
+          done
+
+          python - <<'PY'
+          import inspect
+
+          from revenue.accounts import AccountStore
+          from revenue.ledger import LedgerStore
+
+          for store in (LedgerStore, AccountStore):
+              section = inspect.getsource(store._critical_section)
+              assert '_file_lock' in section, f'{store.__name__} skips the file lock'
+              assert '_reload_if_changed' in section, f'{store.__name__} skips the reload'
+
+              # Every mutating path must go through the critical section.
+              for name in ('_persist',):
+                  assert hasattr(store, name), f'{store.__name__}.{name} is missing'
+
+          # The lock must live beside the data file, not on it: the data file is
+          # replaced by rename, which drops a lock held on the old inode.
+          source = inspect.getsource(LedgerStore._file_lock)
+          assert 'with_suffix' in source and '.lock' in source
+          print('shared-store locking contract verified')
+          PY
+
+      - name: Assert no credential material is committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Live Stripe keys and DSG API keys must never reach the repository.
+          if grep -rInE '\b(sk_live_|rk_live_|whsec_[A-Za-z0-9]{16,})' \
+            revenue scripts cinema_main.py tests/test_revenue.py; then
+            echo 'Live secret material found in the revenue system' >&2
+            exit 1
+          fi
+          if grep -rInE 'dsg_(live|test)_[0-9a-f]{16}_[0-9a-f]{48}' \
+            revenue scripts cinema_main.py; then
+            echo 'A concrete DSG API key is present in source' >&2
+            exit 1
+          fi
+
+      - name: Assert the metering gate is fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A billable receipt must require a proved global optimum.
+          grep -q 'refusing to meter an unverified receipt' revenue/engine.py
+          grep -q 'refusing to meter a receipt without a global optimum proof' revenue/engine.py
+          # Entitlement must be resolved before Cinema asks Z3 to do any work.
+          python - <<'PY'
+          import ast
+
+          source = open('cinema_main.py', encoding='utf-8').read()
+          tree = ast.parse(source)
+
+          for name in ('verify_evaluate', 'stripe_evaluate'):
+              function = next(
+                  node
+                  for node in ast.walk(tree)
+                  if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+              )
+              calls = [
+                  ast.unparse(node.func)
+                  for node in ast.walk(function)
+                  if isinstance(node, ast.Call)
+              ]
+              assert 'billing.authorize_request' in calls, f'{name} does not authorize'
+              assert 'billing.meter' in calls, f'{name} does not meter'
+              assert calls.index('billing.authorize_request') < calls.index('z3_request'), (
+                  f'{name} calls the solver before checking entitlement'
+              )
+          print('metering gate order verified')
+          PY
+
+      - name: Verify ledger determinism and report rendering
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          import tempfile
+
+          from revenue.engine import RevenueEngine
+          from revenue.ledger import verify_chain
+
+
+          def build_ledger():
+              engine = RevenueEngine()
+              account, key = engine.accounts.issue(display_name='CI', plan='metered')
+              engine.accounts.update(account.account_id, payment_linked=True)
+              for index in range(5):
+                  authorization = engine.authorize(key, 'verified_execution')
+                  engine.record_usage(
+                      authorization,
+                      sku='verified_execution',
+                      receipt={
+                          'verified': True,
+                          'verification': 'VERIFIED_GLOBAL_OPTIMUM',
+                          'proof_hash': 'a' * 64,
+                          'context_hash': f'{index:064d}',
+                      },
+                  )
+              return engine
+
+
+          first = build_ledger()
+          second = build_ledger()
+
+          # Entry hashes must depend only on the billed facts, never on account
+          # identity or wall-clock time, so two identical runs chain identically.
+          def commitments(engine):
+              return [
+                  {
+                      k: v
+                      for k, v in entry.commitment().items()
+                      if k not in {'account_id', 'recorded_at', 'idempotency_key', 'prev_hash'}
+                  }
+                  for entry in engine.ledger.entries()
+              ]
+
+          assert commitments(first) == commitments(second), 'ledger is not deterministic'
+          assert verify_chain(first.ledger.entries())['verified'] is True
+          assert first.period_report()['recorded_usage_amount_micros'] == 500_000
+          assert first.period_report()['recognized_amount_micros'] == 0
+
+          with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as handle:
+              json.dump(first.period_report(), handle)
+              path = handle.name
+
+          output = subprocess.run(
+              ['python', 'scripts/revenue_report.py', '--local-report', path],
+              capture_output=True,
+              text=True,
+              check=True,
+          ).stdout
+          assert 'Chain verified: **True**' in output
+          assert '$0.500000' in output
+          assert 'Truth boundary' in output
+          print('ledger determinism and report rendering verified')
+          PY

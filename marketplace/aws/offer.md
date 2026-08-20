@@ -6,6 +6,8 @@
 
 **Short description:** Deterministic Z3 proof receipts for AI and automated actions.
 
+**Product website:** https://dsgoneverifiedweb.z1.web.core.windows.net/
+
 **Long description:** DSG Verified Execution verifies whether an automated action stayed inside an approved plan and deterministic constraints, then returns an exact Z3-backed proof receipt containing authorization completion, out-of-plan rejection, replay match, evidence completeness, proof hashes, and optional cost/run data.
 
 ## Recommended AWS offer type

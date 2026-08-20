@@ -32,8 +32,9 @@ from marketplace_verification import (
     context_hash as verification_context_hash,
     target_decision as verification_target_decision,
 )
+from revenue import api as billing
 
-app = FastAPI(title="DSG Cinema Proof Agent", version="1.2.0")
+app = FastAPI(title="DSG Cinema Proof Agent", version="1.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,8 +47,13 @@ app.add_middleware(
     allow_origin_regex=r"https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept"],
+    allow_headers=["Content-Type", "Accept", "X-DSG-API-Key"],
 )
+
+app.include_router(billing.router)
+
+VERIFIED_EXECUTION_SKU = "verified_execution"
+STRIPE_DECISION_SKU = "stripe_policy_decision"
 
 
 class ConfigurationError(RuntimeError):
@@ -92,20 +98,32 @@ def _authorize(authorization: str | None) -> None:
         raise HTTPException(status_code=403, detail="invalid bearer token")
 
 
+def _proof_failure(message: str, code: str = billing.VERIFICATION_NOT_PROVED) -> HTTPException:
+    """A 502 that tells the caller what to do, not just that something failed."""
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error": code,
+            "message": message,
+            "remediation": billing.remediation_for(code).to_dict(),
+        },
+    )
+
+
 def _validate_exact_proof(body: Any) -> dict[str, Any]:
     if not isinstance(body, dict):
-        raise HTTPException(status_code=502, detail="Z3 returned non-object JSON")
+        raise _proof_failure("Z3 returned non-object JSON")
     if body.get("verified") is not True:
-        raise HTTPException(status_code=502, detail="Z3 proof is not verified")
+        raise _proof_failure("Z3 proof is not verified")
     if body.get("verification") != "VERIFIED_GLOBAL_OPTIMUM":
-        raise HTTPException(status_code=502, detail="Z3 did not prove global optimality")
+        raise _proof_failure("Z3 did not prove global optimality")
 
     proof_hash = body.get("proof_hash")
     request_hash = body.get("request_hash")
     if not isinstance(proof_hash, str) or len(proof_hash) != 64:
-        raise HTTPException(status_code=502, detail="Z3 proof_hash is invalid")
+        raise _proof_failure("Z3 proof_hash is invalid")
     if not isinstance(request_hash, str) or len(request_hash) != 64:
-        raise HTTPException(status_code=502, detail="Z3 request_hash is invalid")
+        raise _proof_failure("Z3 request_hash is invalid")
     return body
 
 
@@ -136,7 +154,10 @@ async def z3_request(
                 json=payload,
             )
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="Z3 backend request failed") from exc
+        raise _proof_failure(
+            "Z3 backend request failed",
+            billing.BACKEND_UNAVAILABLE,
+        ) from exc
 
     try:
         body: Any = response.json()
@@ -303,7 +324,10 @@ async def solve(
 
     status_code, proof = await z3_request("POST", "/solve", payload)
     if status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Z3 solve failed with HTTP {status_code}")
+        raise _proof_failure(
+            f"Z3 solve failed with HTTP {status_code}",
+            billing.BACKEND_UNAVAILABLE,
+        )
 
     verified_proof = _validate_exact_proof(proof)
     return {
@@ -316,14 +340,94 @@ async def solve(
     }
 
 
+def _check(name: str, status: str, detail: str) -> dict[str, str]:
+    return {"check": name, "status": status, "detail": detail}
+
+
+@app.get("/support/diagnose")
+async def support_diagnose(
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
+    """Tell a caller exactly why verification is not working for them right now.
+
+    The route answers the support question directly instead of leaving a user to
+    infer it from an HTTP status: it reports which checks pass, which one blocks,
+    and the single next action that resolves it. It requires no credential, and
+    it never reveals whether a specific unknown key exists beyond pass or fail.
+    """
+    checks: list[dict[str, str]] = []
+    blocking: str | None = None
+
+    # 1. Deployment configuration.
+    try:
+        _backend_url()
+        _required_secret("DSG_BACKEND_API_KEY")
+        checks.append(
+            _check("service_configuration", "pass", "Backend URL and credential are configured")
+        )
+    except ConfigurationError as exc:
+        checks.append(_check("service_configuration", "fail", str(exc)))
+        blocking = billing.CONFIGURATION_INCOMPLETE
+
+    # 2. Verification backend reachability.
+    if blocking is None:
+        try:
+            status_code, body = await z3_request("GET", "/ready")
+            ready = status_code == 200 and isinstance(body, dict) and body.get("status") == "ready"
+        except HTTPException as exc:
+            ready = False
+            body = exc.detail
+        if ready:
+            checks.append(_check("verification_backend", "pass", "Exact Z3 verifier is ready"))
+        else:
+            checks.append(_check("verification_backend", "fail", "Z3 verifier is not ready"))
+            blocking = billing.BACKEND_UNAVAILABLE
+    else:
+        checks.append(
+            _check("verification_backend", "skip", "Not checked while configuration is incomplete")
+        )
+
+    # 3. Caller identity and entitlement.
+    entitlement = billing.diagnose_entitlement(x_dsg_api_key, VERIFIED_EXECUTION_SKU)
+    checks.extend(entitlement["checks"])
+    if blocking is None and entitlement["blocking"] is not None:
+        blocking = entitlement["blocking"]
+
+    if blocking is None:
+        status = "READY"
+    elif blocking in {
+        billing.CONFIGURATION_INCOMPLETE,
+        billing.BACKEND_UNAVAILABLE,
+        billing.BILLING_STORAGE_NOT_READY,
+    }:
+        status = "SERVICE_UNAVAILABLE"
+    else:
+        status = "ACTION_REQUIRED"
+
+    return {
+        "status": status,
+        "checks": checks,
+        "remediation": billing.remediation_for(blocking or "OK").to_dict(),
+        "billing": entitlement["billing"],
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/verify/evaluate")
-async def verify_evaluate(request: VerificationRequest) -> dict[str, Any]:
+async def verify_evaluate(
+    request: VerificationRequest,
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
     """Create a deterministic Verified Execution receipt for any marketplace.
 
     The endpoint accepts only bounded verification facts, never an arbitrary
     QUBO. Cinema derives the fixed 3-variable ALLOW/REVIEW/BLOCK problem and
     requires an exact Z3 global-optimum proof before returning a receipt.
+
+    Entitlement is checked before any solver work, and the receipt is metered
+    only after Z3 has proved the global optimum.
     """
+    authorization = billing.authorize_request(x_dsg_api_key, VERIFIED_EXECUTION_SKU)
     target, factors = verification_target_decision(request)
     linear, quadratic = _decision_qubo(target)
     context_hash = verification_context_hash(request)
@@ -340,14 +444,17 @@ async def verify_evaluate(request: VerificationRequest) -> dict[str, Any]:
 
     status_code, proof = await z3_request("POST", "/solve", solver_payload)
     if status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Z3 solve failed with HTTP {status_code}")
+        raise _proof_failure(
+            f"Z3 solve failed with HTTP {status_code}",
+            billing.BACKEND_UNAVAILABLE,
+        )
 
     verified_proof = _validate_exact_proof(proof)
     decision = _decision_from_witness(verified_proof.get("witness"))
     if decision != target:
         raise HTTPException(status_code=502, detail="Z3 decision does not match deterministic policy target")
 
-    return {
+    receipt = {
         "receipt_version": RECEIPT_VERSION,
         "policy_version": POLICY_VERSION,
         "execution_id": request.execution_id,
@@ -376,15 +483,29 @@ async def verify_evaluate(request: VerificationRequest) -> dict[str, Any]:
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    billing_block = await billing.meter(
+        authorization,
+        sku=VERIFIED_EXECUTION_SKU,
+        receipt=receipt,
+        channel=request.channel,
+    )
+    if billing_block is not None:
+        receipt["billing"] = billing_block
+    return receipt
+
 
 @app.post("/stripe/evaluate")
-async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
+async def stripe_evaluate(
+    request: StripeVerifyRequest,
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
     """Verify a Stripe-context policy decision with an exact Z3 proof.
 
     This route intentionally accepts no arbitrary QUBO or solver program. The
     backend derives a fixed-size decision QUBO itself, keeping public compute
     bounded and the Z3 credential server-side.
     """
+    authorization = billing.authorize_request(x_dsg_api_key, STRIPE_DECISION_SKU)
     if not request.stripe_account_id.startswith("acct_"):
         raise HTTPException(status_code=400, detail="invalid stripe_account_id")
     if not request.object_id.startswith(_stripe_prefix(request.object_type)):
@@ -407,7 +528,10 @@ async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
 
     status_code, proof = await z3_request("POST", "/solve", solver_payload)
     if status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Z3 solve failed with HTTP {status_code}")
+        raise _proof_failure(
+            f"Z3 solve failed with HTTP {status_code}",
+            billing.BACKEND_UNAVAILABLE,
+        )
 
     verified_proof = _validate_exact_proof(proof)
     decision = _decision_from_witness(verified_proof.get("witness"))
@@ -419,7 +543,7 @@ async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
     else:
         reason = "No elevated risk factors detected"
 
-    return {
+    receipt = {
         "receipt_version": RECEIPT_VERSION,
         "decision": decision,
         "reason": reason,
@@ -435,3 +559,13 @@ async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
         "energy_exact": verified_proof.get("energy_exact"),
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    billing_block = await billing.meter(
+        authorization,
+        sku=STRIPE_DECISION_SKU,
+        receipt=receipt,
+        channel="stripe",
+    )
+    if billing_block is not None:
+        receipt["billing"] = billing_block
+    return receipt

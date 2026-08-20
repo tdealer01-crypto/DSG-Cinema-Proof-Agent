@@ -8,6 +8,7 @@ on:
       - 'cinema_main.py'
       - 'requirements.txt'
       - 'requirements-cinema.txt'
+      - 'revenue/**'
       - 'Dockerfile'
       - 'Dockerfile.cinema'
       - 'tests/**'
@@ -40,6 +41,23 @@ jobs:
       AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      CONFIGURED_REVENUE_ADMIN_SECRET: ${{ secrets.DSG_REVENUE_ADMIN_SECRET }}
+      # Metering always records usage. Enforcement (paid gating) stays opt-in
+      # until a durable ledger store is attached; see REVENUE_AUTOMATION.md.
+      REVENUE_ENFORCE: ${{ vars.DSG_REVENUE_ENFORCE || '0' }}
+      # Stripe credentials. Setting DSG_KEY_VAULT_NAME makes the deployment read
+      # them from Key Vault through the app's managed identity instead, so the
+      # live key never passes through this workflow. See SECRET_MANAGEMENT.md.
+      KEY_VAULT_NAME: ${{ vars.DSG_KEY_VAULT_NAME }}
+      KEY_VAULT_STRIPE_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_SECRET_NAME || 'stripe-secret-key' }}
+      KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
+      CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      CONFIGURED_STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      # Durable revenue storage. Enforcement stays refused until the ledger and
+      # account registry survive a restart and have a single writer.
+      REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
+      REVENUE_SHARE_NAME: revenue
+      REVENUE_MOUNT_PATH: /revenue
 
     steps:
       - name: Checkout
@@ -51,8 +69,8 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r requirements-cinema.txt pytest
-          python -m py_compile cinema_main.py marketplace_verification.py
-          python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py
+          python -m py_compile cinema_main.py marketplace_verification.py revenue/*.py
+          python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py tests/test_revenue.py
 
       - name: Azure login with OIDC
         uses: azure/login@v2
@@ -78,9 +96,24 @@ jobs:
           CINEMA_SECRET=$(openssl rand -hex 32)
           echo "::add-mask::$Z3_SECRET"
           echo "::add-mask::$CINEMA_SECRET"
+
+          # Revenue reconciliation must use a stable repository secret. Missing
+          # configuration stays explicitly unavailable; never mint an ephemeral
+          # value that the scheduled workflow cannot know.
+          REVENUE_ADMIN_SECRET="${CONFIGURED_REVENUE_ADMIN_SECRET:-}"
+          if [[ -z "$REVENUE_ADMIN_SECRET" ]]; then
+            REVENUE_ADMIN_CONFIGURED=false
+            echo 'DSG_REVENUE_ADMIN_SECRET is not configured; admin reconciliation will remain unavailable.'
+          else
+            REVENUE_ADMIN_CONFIGURED=true
+            echo "::add-mask::$REVENUE_ADMIN_SECRET"
+          fi
+
           echo "PULL_IDENTITY_ID=$PULL_IDENTITY_ID" >> "$GITHUB_ENV"
           echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
           echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
+          echo "REVENUE_ADMIN_SECRET=$REVENUE_ADMIN_SECRET" >> "$GITHUB_ENV"
+          echo "REVENUE_ADMIN_CONFIGURED=$REVENUE_ADMIN_CONFIGURED" >> "$GITHUB_ENV"
 
       - name: Ensure production Container Apps environment
         shell: bash
@@ -93,6 +126,45 @@ jobs:
               --location "$LOCATION" \
               --output none
           fi
+
+      - name: Ensure durable revenue storage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # A file-backed ledger on a container filesystem is lost on restart,
+          # which is why enforcement refuses to turn on without this. An Azure
+          # Files share gives the ledger and the account registry a lifetime
+          # independent of any revision.
+          if ! az storage account show --resource-group "$RESOURCE_GROUP" --name "$REVENUE_STORAGE_ACCOUNT" >/dev/null 2>&1; then
+            az storage account create \
+              --resource-group "$RESOURCE_GROUP" --name "$REVENUE_STORAGE_ACCOUNT" \
+              --location "$LOCATION" --sku Standard_LRS --kind StorageV2 \
+              --min-tls-version TLS1_2 --allow-blob-public-access false \
+              --output none
+          fi
+
+          STORAGE_KEY=$(az storage account keys list \
+            --resource-group "$RESOURCE_GROUP" --account-name "$REVENUE_STORAGE_ACCOUNT" \
+            --query '[0].value' --output tsv)
+          test -n "$STORAGE_KEY"
+          echo "::add-mask::$STORAGE_KEY"
+
+          az storage share-rm create \
+            --resource-group "$RESOURCE_GROUP" --storage-account "$REVENUE_STORAGE_ACCOUNT" \
+            --name "$REVENUE_SHARE_NAME" --quota 16 --output none 2>/dev/null || true
+
+          # Register the share with the Container Apps environment so the app
+          # can mount it. AccessMode ReadWrite is required: the ledger appends.
+          az containerapp env storage set \
+            --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_ENV" \
+            --storage-name "$REVENUE_SHARE_NAME" \
+            --azure-file-account-name "$REVENUE_STORAGE_ACCOUNT" \
+            --azure-file-account-key "$STORAGE_KEY" \
+            --azure-file-share-name "$REVENUE_SHARE_NAME" \
+            --access-mode ReadWrite --output none
+
+          echo 'REVENUE_STORAGE_READY=1' >> "$GITHUB_ENV"
 
       - name: Build immutable production images
         shell: bash
@@ -124,15 +196,37 @@ jobs:
           }
 
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" >/dev/null 2>&1; then
+            # Cinema is still running on the previous credential until its own
+            # deployment step lands. Keep accepting that value for the length of
+            # this deployment so requests in flight are not rejected against a
+            # secret that is correct but one revision old. The window is closed
+            # explicitly once the Cinema E2E has passed.
+            PREVIOUS_Z3_SECRET=$(az containerapp secret show \
+              --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+              --secret-name solver-secret --query value --output tsv 2>/dev/null || true)
+
+            Z3_SECRET_ARGS=("solver-secret=$Z3_SECRET")
+            Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET="
+            if [[ -n "$PREVIOUS_Z3_SECRET" && "$PREVIOUS_Z3_SECRET" != "$Z3_SECRET" ]]; then
+              echo "::add-mask::$PREVIOUS_Z3_SECRET"
+              Z3_SECRET_ARGS+=("solver-previous-secret=$PREVIOUS_Z3_SECRET")
+              Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET=secretref:solver-previous-secret"
+              echo 'ROTATION_WINDOW_OPEN=1' >> "$GITHUB_ENV"
+            else
+              echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
+            fi
+
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
-            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --secrets "solver-secret=$Z3_SECRET" --output none
+            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --secrets "${Z3_SECRET_ARGS[@]}" --output none
             retry az containerapp update \
               --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
               --image "$Z3_IMAGE_REF" \
-              --set-env-vars DSG_SOLVER_SHARED_SECRET=secretref:solver-secret Z3_DETERMINISTIC_SEED=42 Z3_TIMEOUT_MS=30000 PORT=8080 \
+              --set-env-vars DSG_SOLVER_SHARED_SECRET=secretref:solver-secret "$Z3_ROTATION_ENV" Z3_DETERMINISTIC_SEED=42 Z3_TIMEOUT_MS=30000 PORT=8080 \
               --output none
           else
+            # First deployment: there is no earlier credential to honour.
+            echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
             retry az containerapp create \
               --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --environment "$CONTAINER_ENV" \
               --image "$Z3_IMAGE_REF" --ingress external --target-port 8080 --transport http \
@@ -190,23 +284,130 @@ jobs:
             return 1
           }
 
+          # Secret and env sets are assembled once, so an optional credential adds
+          # one array entry instead of another copy of the whole deployment call.
+          CINEMA_SECRET_ARGS=("backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET")
+          CINEMA_ENV_ARGS=(
+            DSG_BACKEND_BASE_URL="$Z3_URL"
+            DSG_BACKEND_API_KEY=secretref:backend-secret
+            CINEMA_API_SECRET=secretref:cinema-secret
+            DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE"
+            PORT=8000
+          )
+
+          if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            CINEMA_SECRET_ARGS+=("revenue-admin-secret=$REVENUE_ADMIN_SECRET")
+            CINEMA_ENV_ARGS+=(DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret)
+          fi
+
+          # Stripe credentials are long-lived and externally issued, unlike the
+          # per-deployment values above: they cannot be regenerated on each run
+          # and a leak costs money. Prefer Key Vault so they are stored, rotated,
+          # and audited outside this workflow, with repository secrets as the
+          # fallback. With neither configured Stripe stays unlinked, and
+          # /billing/status keeps reporting NOT_VERIFIED_NOT_LINKED truthfully.
+          STRIPE_SOURCE='none'
+          STRIPE_WEBHOOK_CONFIGURED='false'
+          if [[ -n "$KEY_VAULT_NAME" ]]; then
+            VAULT_BASE="https://$KEY_VAULT_NAME.vault.azure.net/secrets"
+            CINEMA_SECRET_ARGS+=(
+              "stripe-secret-key=keyvaultref:$VAULT_BASE/$KEY_VAULT_STRIPE_SECRET_NAME,identityref:$PULL_IDENTITY_ID"
+              "stripe-webhook-secret=keyvaultref:$VAULT_BASE/$KEY_VAULT_STRIPE_WEBHOOK_NAME,identityref:$PULL_IDENTITY_ID"
+            )
+            CINEMA_ENV_ARGS+=(
+              STRIPE_SECRET_KEY=secretref:stripe-secret-key
+              STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret
+            )
+            STRIPE_SOURCE='key_vault'
+            STRIPE_WEBHOOK_CONFIGURED='true'
+          else
+            if [[ -n "$CONFIGURED_STRIPE_SECRET_KEY" ]]; then
+              CINEMA_SECRET_ARGS+=("stripe-secret-key=$CONFIGURED_STRIPE_SECRET_KEY")
+              CINEMA_ENV_ARGS+=(STRIPE_SECRET_KEY=secretref:stripe-secret-key)
+              STRIPE_SOURCE='repository_secret'
+            fi
+            if [[ -n "$CONFIGURED_STRIPE_WEBHOOK_SECRET" ]]; then
+              CINEMA_SECRET_ARGS+=("stripe-webhook-secret=$CONFIGURED_STRIPE_WEBHOOK_SECRET")
+              CINEMA_ENV_ARGS+=(STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret)
+              STRIPE_SOURCE='repository_secret'
+              STRIPE_WEBHOOK_CONFIGURED='true'
+            fi
+          fi
+          echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
+          echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
+
+          # Point the stores at the mounted share and attest only what this
+          # deployment actually arranged. Single-writer is a property of the
+          # replica ceiling, so it is derived here rather than declared: an
+          # attestation that does not match the deployment would let enforcement
+          # run on a ledger two replicas are racing to rewrite.
+          CINEMA_MAX_REPLICAS=2
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" ]]; then
+            CINEMA_ENV_ARGS+=(
+              DSG_REVENUE_ACCOUNT_STORE="$REVENUE_MOUNT_PATH/accounts.json"
+              DSG_REVENUE_LEDGER_STORE="$REVENUE_MOUNT_PATH/ledger.json"
+              DSG_REVENUE_STORAGE_DURABLE=1
+            )
+            if [[ "$REVENUE_ENFORCE" == "1" ]]; then
+              # Paid gating runs on exactly one writer.
+              CINEMA_MAX_REPLICAS=1
+              CINEMA_ENV_ARGS+=(DSG_REVENUE_SINGLE_WRITER=1)
+            else
+              CINEMA_ENV_ARGS+=(DSG_REVENUE_SINGLE_WRITER=0)
+            fi
+          else
+            CINEMA_ENV_ARGS+=(DSG_REVENUE_STORAGE_DURABLE=0 DSG_REVENUE_SINGLE_WRITER=0)
+          fi
+          echo "CINEMA_MAX_REPLICAS=$CINEMA_MAX_REPLICAS" >> "$GITHUB_ENV"
+          echo "Stripe credential source: $STRIPE_SOURCE"
+
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
-            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" --output none
+            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "${CINEMA_SECRET_ARGS[@]}" --output none
             retry az containerapp update \
               --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
               --image "$CINEMA_IMAGE_REF" \
-              --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret PORT=8000 \
+              --set-env-vars "${CINEMA_ENV_ARGS[@]}" \
+              --min-replicas 1 --max-replicas "$CINEMA_MAX_REPLICAS" \
               --output none
           else
             retry az containerapp create \
               --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
               --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
               --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
-              --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" \
-              --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret PORT=8000 \
-              --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
+              --secrets "${CINEMA_SECRET_ARGS[@]}" \
+              --env-vars "${CINEMA_ENV_ARGS[@]}" \
+              --min-replicas 1 --max-replicas "$CINEMA_MAX_REPLICAS" --cpu 0.5 --memory 1.0Gi --output none
+          fi
+
+          # Mount the durable share. Done after the app exists so the same call
+          # works for both create and update.
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" ]]; then
+            CURRENT=$(mktemp --suffix=.yaml)
+            az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --output yaml > "$CURRENT"
+            python - "$CURRENT" "$REVENUE_SHARE_NAME" "$REVENUE_MOUNT_PATH" <<'PY'
+          import sys, yaml
+
+          path, share, mount = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path, encoding='utf-8') as handle:
+              app = yaml.safe_load(handle)
+
+          template = app['properties']['template']
+          template['volumes'] = [
+              {'name': 'revenue', 'storageType': 'AzureFile', 'storageName': share}
+          ]
+          for container in template['containers']:
+              container['volumeMounts'] = [
+                  {'volumeName': 'revenue', 'mountPath': mount}
+              ]
+
+          with open(path, 'w', encoding='utf-8') as handle:
+              yaml.safe_dump(app, handle)
+          PY
+            retry az containerapp update \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --yaml "$CURRENT" --output none
           fi
 
           retry az containerapp ingress update \
@@ -260,6 +461,54 @@ jobs:
           test "$CINEMA_REQUEST_1" = "$CINEMA_REQUEST_2"
           test "$CINEMA_HASH_1" = "$DIRECT_HASH"
           test "$CINEMA_REQUEST_1" = "$DIRECT_REQUEST"
+
+      - name: Close the credential rotation window
+        if: env.ROTATION_WINDOW_OPEN == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The E2E above proved Cinema reaches Z3 on the new credential, so the
+          # previous one is no longer needed. Revoking it here keeps the window
+          # to the length of one deployment instead of leaving a second valid
+          # credential live until the next deploy happens to overwrite it.
+          retry() {
+            local attempt=1
+            while (( attempt <= 6 )); do
+              if "$@"; then return 0; fi
+              sleep $((attempt * 10))
+              ((attempt++))
+            done
+            return 1
+          }
+
+          retry az containerapp update \
+            --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+            --set-env-vars DSG_SOLVER_PREVIOUS_SECRET= \
+            --output none
+
+          retry az containerapp secret remove \
+            --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+            --secret-names solver-previous-secret --output none
+
+          # Prove the revoked credential is actually refused and the current one
+          # still works, so a failed revocation cannot pass silently.
+          for attempt in $(seq 1 30); do
+            ROTATING=$(curl --silent --show-error "$Z3_URL/metrics" \
+              | jq -r '.rotation_in_progress // empty' || true)
+            [[ "$ROTATING" == "false" ]] && break
+            [[ "$attempt" == "30" ]] && { echo 'Rotation window did not close' >&2; exit 1; }
+            sleep 5
+          done
+
+          LIVE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$Z3_URL/solve" \
+            --header "Authorization: Bearer $Z3_SECRET" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/payload.json)
+          test "$LIVE_CODE" = '200'
+
+          echo 'Rotation window closed; only the current credential is accepted.'
 
       - name: Verify marketplace adapters and Azure browser CORS
         shell: bash
@@ -317,6 +566,128 @@ jobs:
           jq -s '.' /tmp/marketplace-e2e.jsonl > /tmp/marketplace-e2e.json
           jq -n --slurpfile low /tmp/stripe-low-response.json --slurpfile critical /tmp/stripe-critical-response.json '{low:{decision:$low[0].decision,risk_score:$low[0].risk_score,verification:$low[0].verification},critical:{decision:$critical[0].decision,risk_score:$critical[0].risk_score,verification:$critical[0].verification}}' > /tmp/stripe-e2e.json
 
+      - name: Verify the revenue system reports its state truthfully
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/billing/status" > /tmp/billing-status.json
+
+          # The public status route must never leak credential material.
+          if jq -e 'tostring | test("sk_live_|sk_test_|whsec_|dsg_(live|test)_")' /tmp/billing-status.json >/dev/null; then
+            echo 'Public billing status exposed credential material' >&2
+            exit 1
+          fi
+
+          # Checkout state must match whether Stripe is actually linked, and
+          # enforcement must match what this deployment configured.
+          jq -e --arg enforce "$REVENUE_ENFORCE" '
+            .billing_version == "dsg-revenue-1.1.0" and
+            .metering_enabled == true and
+            .enforcement_requested == ($enforce == "1") and
+            .metering_enforced == (($enforce == "1") and .enforcement_ready) and
+            (.checkout_status == (if .stripe.charges_enabled then "LINKED" else "NOT_VERIFIED_NOT_LINKED" end)) and
+            ([.catalog.plans[].plan] | sort == ["enterprise","free","metered","team"])
+          ' /tmp/billing-status.json >/dev/null
+
+          # A provisioned Stripe signing secret must actually have reached the
+          # running app, and an absent one must leave webhooks refused rather
+          # than half-configured. Note charges_enabled/webhooks_enabled remain
+          # false until live Stripe verification passes: possessing a secret is
+          # never treated as proof that charging works.
+          WEBHOOK_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/billing/webhook/stripe" \
+            --header 'Content-Type: application/json' --data '{"type":"invoice.paid"}')
+          if [[ "$STRIPE_WEBHOOK_CONFIGURED" == "true" ]]; then
+            # Configured: the route now rejects on signature, not on absence.
+            test "$WEBHOOK_CODE" = '400'
+            jq -e '.stripe.webhooks_configured == true' /tmp/billing-status.json >/dev/null
+          else
+            # Not configured: unsigned webhooks are refused, never trusted.
+            test "$WEBHOOK_CODE" = '503'
+            jq -e '.stripe.webhooks_configured == false' /tmp/billing-status.json >/dev/null
+          fi
+          jq -e --arg source "$STRIPE_SOURCE" '.stripe.configured == ($source != "none")' \
+            /tmp/billing-status.json >/dev/null
+          echo "Stripe credential source verified as: $STRIPE_SOURCE"
+
+          # Enforcement readiness must reflect the storage this deployment
+          # actually arranged, not an attestation someone set by hand.
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" && "$REVENUE_ENFORCE" == "1" ]]; then
+            jq -e '.enforcement_ready == true' /tmp/billing-status.json >/dev/null
+          else
+            jq -e '.enforcement_ready == false or .metering_enforced == false' /tmp/billing-status.json >/dev/null
+          fi
+
+          # The ledger must live on the mounted share, not the container
+          # filesystem, or it is lost on the next restart.
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" && "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
+              "$CINEMA_URL/billing/ledger/verify" > /tmp/ledger-before.json
+            jq -e '.verified == true' /tmp/ledger-before.json >/dev/null
+
+            CURRENT_REVISION=$(az containerapp revision list \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query "[?properties.active].name | [0]" --output tsv)
+            az containerapp revision restart \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --revision "$CURRENT_REVISION" --output none
+
+            for attempt in $(seq 1 60); do
+              if curl --silent --fail --show-error \
+                --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
+                "$CINEMA_URL/billing/ledger/verify" > /tmp/ledger-after.json 2>/dev/null; then
+                break
+              fi
+              [[ "$attempt" == "60" ]] && { echo 'Cinema did not return after restart' >&2; exit 1; }
+              sleep 5
+            done
+
+            # A ledger on ephemeral storage comes back empty with a genesis head.
+            BEFORE_HEAD=$(jq -r '.head_hash' /tmp/ledger-before.json)
+            AFTER_HEAD=$(jq -r '.head_hash' /tmp/ledger-after.json)
+            test "$BEFORE_HEAD" = "$AFTER_HEAD"
+            jq -e '.verified == true' /tmp/ledger-after.json >/dev/null
+            echo "Ledger survived a restart with head $AFTER_HEAD"
+          fi
+
+          # Admin billing routes must reject an unauthenticated caller.
+          REPORT_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/report")
+          if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            test "$REPORT_CODE" = '401'
+          else
+            test "$REPORT_CODE" = '503'
+          fi
+          USAGE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/usage")
+          test "$USAGE_CODE" = '401'
+
+          # A bad API key must be rejected rather than served for free.
+          KEY_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/verify/evaluate" \
+            --header 'Content-Type: application/json' \
+            --header "X-DSG-API-Key: dsg_live_00000000000000000000000000000000_$(printf '0%.0s' $(seq 1 48))" \
+            --data @/tmp/marketplace-request.json)
+          test "$KEY_CODE" = '401'
+
+          # A configured stable admin credential must work. Missing
+          # configuration remains explicitly unavailable in the evidence.
+          if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
+              "$CINEMA_URL/billing/ledger/verify" > /tmp/billing-ledger.json
+            jq -e '.verified == true' /tmp/billing-ledger.json >/dev/null
+          else
+            jq -n '{verified:false,entries:0,head_hash:null,availability:"UNAVAILABLE_ADMIN_SECRET"}' > /tmp/billing-ledger.json
+          fi
+
+          jq -n --argjson admin_routes_authenticated "$REVENUE_ADMIN_CONFIGURED" \
+            --slurpfile status /tmp/billing-status.json \
+            --slurpfile ledger /tmp/billing-ledger.json \
+            '{checkout_status:$status[0].checkout_status,metering_enforced:$status[0].metering_enforced,enforcement_ready:$status[0].enforcement_ready,charges_enabled:$status[0].stripe.charges_enabled,ledger_verified:$ledger[0].verified,ledger_entries:$ledger[0].entries,admin_routes_authenticated:$admin_routes_authenticated,invalid_api_key_rejected:true}' \
+            > /tmp/revenue-e2e.json
+          cat /tmp/revenue-e2e.json
+
       - name: Write non-secret production evidence
         shell: bash
         run: |
@@ -331,7 +702,8 @@ jobs:
             --slurpfile cinema /tmp/cinema-proof-1.json \
             --slurpfile marketplace /tmp/marketplace-e2e.json \
             --slurpfile stripe /tmp/stripe-e2e.json \
-            '{commit:$commit,environment:"production",transport:"https",z3_url:$z3_url,cinema_url:$cinema_url,z3_image:$z3_image,cinema_image:$cinema_image,direct_verification:$direct[0].verification,cinema_status:$cinema[0].cinema_status,verification:$cinema[0].verification,witness:$cinema[0].z3_proof.witness,energy_exact:$cinema[0].z3_proof.energy_exact,proof_hash:$cinema[0].proof_hash,request_hash:$cinema[0].request_hash,replay_match:true,direct_proof_match:true,azure_browser_cors:true,render_browser_cors:true,marketplace_adapters:$marketplace[0],stripe_adapter:$stripe[0]}' \
+            --slurpfile revenue /tmp/revenue-e2e.json \
+            '{commit:$commit,environment:"production",transport:"https",z3_url:$z3_url,cinema_url:$cinema_url,z3_image:$z3_image,cinema_image:$cinema_image,direct_verification:$direct[0].verification,cinema_status:$cinema[0].cinema_status,verification:$cinema[0].verification,witness:$cinema[0].z3_proof.witness,energy_exact:$cinema[0].z3_proof.energy_exact,proof_hash:$cinema[0].proof_hash,request_hash:$cinema[0].request_hash,replay_match:true,direct_proof_match:true,azure_browser_cors:true,render_browser_cors:true,marketplace_adapters:$marketplace[0],stripe_adapter:$stripe[0],revenue_system:$revenue[0]}' \
             > production_evidence.json
           cat production_evidence.json
 

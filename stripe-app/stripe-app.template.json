@@ -7,7 +7,7 @@
   "description": "DSG Governance Gate shows ALLOW, REVIEW, or BLOCK decisions directly in Stripe payment detail views. The current transaction context is sent to the Cinema backend, which maps it to a bounded policy-decision QUBO and uses the server-side Z3 verifier to prove the global optimum. If the context or proof cannot be verified, the app falls back to REVIEW.",
   "shortDescription": "Exact Z3-verified policy decisions inside Stripe payment views",
   "documentationUrl": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/stripe-app/README.md",
-  "websiteUrl": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent",
+  "websiteUrl": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
   "supportEmail": "support@dsg.pics",
   "ui_extension": {
     "views": [

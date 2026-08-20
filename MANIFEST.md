@@ -1,103 +1,64 @@
-# DSG ONE Z3 Deployment Package — Manifest
+# DSG ONE — Current System Manifest
 
-## Package Information
-- **Created:** Aug 19, 2026
-- **Version:** 1.0.0 (Production Ready)
-- **Target:** Azure Container Instances (tdealer01-1888 Microsoft Foundry)
-- **Status:** ✅ Complete, Tested, Documented
+This manifest describes the active Verified Execution system. It intentionally
+does not present retired Control Plane components or historical deployment
+scripts as the current product path.
 
-## File Inventory
+## Runtime
 
-### Core Application (2 files)
-- `z3_main.py` (FastAPI Z3 solver service)
-- `requirements.txt` (Python dependencies)
-- `Dockerfile` (Container specification)
+| Component | Files | Responsibility |
+|---|---|---|
+| Exact verifier | `z3_main.py`, `requirements.txt`, `Dockerfile` | Authenticated exact Z3 solve and proof hashes |
+| Cinema | `cinema_main.py`, `marketplace_verification.py`, `requirements-cinema.txt`, `Dockerfile.cinema` | Bounded policy mapping, proof validation, public API, support diagnosis |
+| Revenue | `revenue/`, `scripts/revenue_report.py` | Identity, activation, entitlement, atomic metering, scoped Stripe evidence, reconciliation |
+| Browser UI | `landing/index.html`, `azure-landing/index.html` | One shared live-proof and Marketplace experience |
 
-### Deployment Automation (3 files)
-- `EXECUTE_ROUND_1_AZURE.sh` (Full Bash automation, 15-20 min)
-- `deploy_z3_azure_rest.py` (Python REST API alternative, no Docker)
-- `Z3_DEPLOYMENT_QUICK_COMMANDS.sh` (Quick reference commands)
+## Distribution
 
-### GitHub Actions (1 file)
-- `.github/workflows/deploy-z3-azure.yml` (Automated CI/CD workflow)
+| Channel | Artifact |
+|---|---|
+| GitHub Marketplace | `marketplace/github-action-v2/` |
+| Stripe Apps | `stripe-app/` |
+| OpenAI Skills | `marketplace/openai-plugin/` |
+| Microsoft Marketplace | `marketplace/azure/offer.md` |
+| AWS Marketplace | `marketplace/aws/offer.md` |
+| JetBrains Marketplace | `marketplace/jetbrains/offer.md` |
+| Direct API | Cinema `/verify/evaluate` and `/stripe/evaluate` |
 
-### Documentation (7 files)
-- `README.md` (Quick start + overview)
-- `ROUND_1_DEPLOYMENT_GUIDE.md` (Complete deployment guide, 40+ pages)
-- `GITHUB_ACTIONS_SETUP.md` (GitHub Actions specific instructions)
-- `APPROVAL_CHECKLIST.txt` (User authorization checklist)
-- `REVENUE_PATHS_CONCRETE.md` (Business strategy)
-- `skill-mcp-environment-setup.md` (MCP environment)
-- `MANIFEST.md` (This file)
+The machine-readable channel state is
+`marketplace/launch-manifest.json`; external publication truth is tracked in
+`marketplace/SUBMISSION_QUEUE.md`.
 
-## Total Files: 14
+## Deployment evidence and automation
 
-## Size Breakdown
-- Application code: ~30 KB
-- Deployment scripts: ~50 KB
-- Documentation: ~200 KB
-- **Total package: ~280 KB (uncompressed)**
+| Path | Purpose |
+|---|---|
+| `.deployment/azure-3d-landing.json` | Receipt-verified official Azure landing URL |
+| `.github/workflows/deploy-cinema-production.yml` | Cinema deployment plus production E2E |
+| `.github/workflows/deploy-azure-3d-landing.yml` | Shared landing deployment and receipt |
+| `.github/workflows/marketplace-launch-verify.yml` | Multi-Marketplace package and UI validation |
+| `.github/workflows/stripe-app-v2-7.yml` | Stripe UI validation and production package |
+| `.github/workflows/revenue-verify.yml` | Entitlement, ledger, Stripe, and channel regressions |
+| `.github/workflows/revenue-autopilot.yml` | Daily evidence-backed reconciliation |
 
-## Deployment Options
+## Verification coverage
 
-| Option | Script | Prerequisites | Time | Complexity |
-|--------|--------|---------------|------|------------|
-| A | `EXECUTE_ROUND_1_AZURE.sh` | Docker, Azure CLI, auth | 15-20 min | Medium |
-| B | `deploy_z3_azure_rest.py` | Python, auth token | 15-20 min | Low |
-| C | GitHub Actions workflow | GitHub + secrets | Auto | Low |
+- `tests/test_z3_main.py`: exact solver and proof behavior.
+- `tests/test_cinema_main.py`: Cinema, CORS, bounded policy, and fail-closed proof behavior.
+- `tests/test_marketplace_surfaces.py`: shared UI, status labels, links, and manifest consistency.
+- `tests/test_revenue.py`: pricing, atomic quota enforcement, ledger, Stripe scope/order/idempotency, API billing.
+- `tests/test_channel_delivery.py`: activation, channel attribution, remediation, and diagnosis.
 
-## Quick Start
+## Commercial truth boundary
 
-```bash
-# Option A: Shell
-chmod +x EXECUTE_ROUND_1_AZURE.sh
-./EXECUTE_ROUND_1_AZURE.sh
+- Free activation is capped and cannot grant a paid plan.
+- Checkout is not live until `/billing/status` verifies every configured Stripe
+  commerce object.
+- Paid enforcement stays off until durable account/ledger storage and a single
+  writer are configured.
+- Recorded usage is not represented as collected revenue. Only exact scoped
+  paid-invoice evidence is reported, separately from usage, and no independent
+  financial audit is claimed.
 
-# Option B: Python
-python3 deploy_z3_azure_rest.py
-
-# Option C: GitHub
-git push → Go to Actions tab → Run workflow
-```
-
-## Deployment Checklist
-
-- [ ] Read README.md (5 min)
-- [ ] Choose deployment option (A/B/C)
-- [ ] Follow deployment guide for your option
-- [ ] Deployment runs (15-20 min)
-- [ ] Outputs saved (SERVICE_URL + API_SECRET)
-- [ ] Health check passes
-- [ ] QUBO test returns SAT
-- [ ] Ready for ROUND 2 (Cinema app)
-
-## Success Criteria
-
-✅ Deployment complete when:
-- Container created in Azure Portal
-- Health endpoint returns HTTP 200
-- `/solve` endpoint accepts POST requests
-- API authentication works (Bearer token)
-- Returns deterministic SAT result for test QUBO
-
-## Support
-
-**Troubleshooting:** See `ROUND_1_DEPLOYMENT_GUIDE.md` → Troubleshooting section
-
-## Version History
-
-| Version | Date | Status | Notes |
-|---------|------|--------|-------|
-| 1.0.0 | Aug 19, 2026 | ✅ Complete | Production ready, all scripts tested |
-
-## License & Attribution
-
-Created for DSG ONE Platform (Aug 19, 2026)
-- Z3 Solver: Microsoft Research
-- FastAPI: Sebastian Ramirez
-- Azure: Microsoft
-- Documentation: DSG ONE Team
-
----
-
-**Ready to deploy!** Start with README.md or ROUND_1_DEPLOYMENT_GUIDE.md
+See `README.md`, `CHANNEL_DELIVERY.md`, and `REVENUE_AUTOMATION.md` for the
+current operating contract.

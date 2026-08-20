@@ -21,16 +21,48 @@ BASE_URL="${BASE_URL%/}"
 TMP_OUTPUT="$(mktemp)"
 trap 'rm -f "$TMP_OUTPUT"' EXIT
 
-HTTP_CODE=$(curl --silent --show-error --max-time 60 \
-  --output "$TMP_OUTPUT" \
-  --write-out '%{http_code}' \
-  --request POST "$BASE_URL/verify/evaluate" \
-  --header 'Content-Type: application/json' \
-  --data "@$REQUEST_FILE" || true)
+CURL_ARGS=(
+  --silent --show-error --max-time 60
+  --output "$TMP_OUTPUT"
+  --write-out '%{http_code}'
+  --request POST "$BASE_URL/verify/evaluate"
+  --header 'Content-Type: application/json'
+  --data "@$REQUEST_FILE"
+)
+# An optional key meters and attributes this agent's proofs. Without one the
+# call still works wherever public evaluation is open.
+if [[ -n "${DSG_API_KEY:-}" ]]; then
+  CURL_ARGS+=(--header "X-DSG-API-Key: ${DSG_API_KEY}")
+fi
+
+HTTP_CODE=$(curl "${CURL_ARGS[@]}" || true)
 
 if [[ "$HTTP_CODE" != "200" ]]; then
-  cat "$TMP_OUTPUT" >&2 || true
-  echo "DSG verification failed with HTTP $HTTP_CODE" >&2
+  # Emit the structured next action so the agent can tell the user how to fix
+  # this instead of surfacing a bare HTTP status.
+  python3 - "$TMP_OUTPUT" "$HTTP_CODE" <<'REMEDIATE' >&2
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding='utf-8') as handle:
+        body = json.load(handle)
+except Exception:
+    body = {}
+
+detail = body.get('detail') if isinstance(body.get('detail'), dict) else body
+remediation = detail.get('remediation') if isinstance(detail, dict) else None
+
+if isinstance(remediation, dict):
+    print(f"DSG verification refused: {remediation.get('problem', '')}")
+    print(f"Cause: {remediation.get('cause', '')}")
+    print(f"Next step: {remediation.get('next_step', '')}")
+    if remediation.get('endpoint'):
+        print(f"Endpoint: {remediation['endpoint']}")
+    print(f"Self-service: {remediation.get('self_service')}")
+else:
+    print(f"DSG verification failed with HTTP {sys.argv[2]}")
+    print(json.dumps(body, indent=2)[:2000])
+REMEDIATE
   exit 1
 fi
 
