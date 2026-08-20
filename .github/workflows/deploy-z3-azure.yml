@@ -177,62 +177,85 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if az containerapp show \
-            --name "$CONTAINER_APP_NAME" \
-            --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
-            az containerapp identity assign \
-              --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --user-assigned "$IDENTITY_ID" \
-              --output none
+          deploy_with_retry() {
+            local max_attempts=5
+            local wait_seconds=2
+            local attempt=1
 
-            az containerapp registry set \
-              --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --server "$ACR_NAME.azurecr.io" \
-              --identity "$IDENTITY_ID" \
-              --output none
+            while (( attempt <= max_attempts )); do
+              if [[ "$attempt" -gt 1 ]]; then
+                echo "Attempt $attempt/$max_attempts after ${wait_seconds}s..."
+                sleep "$wait_seconds"
+                wait_seconds=$((wait_seconds * 2))
+              fi
 
-            az containerapp secret set \
-              --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --secrets "solver-secret=$DSG_SOLVER_SHARED_SECRET" \
-              --output none
+              if az containerapp show \
+                --name "$CONTAINER_APP_NAME" \
+                --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+                az containerapp identity assign \
+                  --name "$CONTAINER_APP_NAME" \
+                  --resource-group "$RESOURCE_GROUP" \
+                  --user-assigned "$IDENTITY_ID" \
+                  --output none 2>&1 | grep -v "already assigned" || true
 
-            az containerapp update \
-              --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --image "$IMAGE_REF" \
-              --set-env-vars \
-                DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
-                Z3_DETERMINISTIC_SEED=42 \
-                Z3_TIMEOUT_MS=30000 \
-                PORT=8080 \
-              --output none
-          else
-            az containerapp create \
-              --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --environment "$CONTAINER_ENV_NAME" \
-              --image "$IMAGE_REF" \
-              --ingress external \
-              --target-port 8080 \
-              --transport http \
-              --user-assigned "$IDENTITY_ID" \
-              --registry-server "$ACR_NAME.azurecr.io" \
-              --registry-identity "$IDENTITY_ID" \
-              --secrets "solver-secret=$DSG_SOLVER_SHARED_SECRET" \
-              --env-vars \
-                DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
-                Z3_DETERMINISTIC_SEED=42 \
-                Z3_TIMEOUT_MS=30000 \
-                PORT=8080 \
-              --min-replicas 1 \
-              --max-replicas 2 \
-              --cpu 0.5 \
-              --memory 1.0Gi \
-              --output none
-          fi
+                az containerapp registry set \
+                  --name "$CONTAINER_APP_NAME" \
+                  --resource-group "$RESOURCE_GROUP" \
+                  --server "$ACR_NAME.azurecr.io" \
+                  --identity "$IDENTITY_ID" \
+                  --output none
+
+                az containerapp secret set \
+                  --name "$CONTAINER_APP_NAME" \
+                  --resource-group "$RESOURCE_GROUP" \
+                  --secrets "solver-secret=$DSG_SOLVER_SHARED_SECRET" \
+                  --output none
+
+                az containerapp update \
+                  --name "$CONTAINER_APP_NAME" \
+                  --resource-group "$RESOURCE_GROUP" \
+                  --image "$IMAGE_REF" \
+                  --set-env-vars \
+                    DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
+                    Z3_DETERMINISTIC_SEED=42 \
+                    Z3_TIMEOUT_MS=30000 \
+                    PORT=8080 \
+                  --output none && break
+              else
+                az containerapp create \
+                  --name "$CONTAINER_APP_NAME" \
+                  --resource-group "$RESOURCE_GROUP" \
+                  --environment "$CONTAINER_ENV_NAME" \
+                  --image "$IMAGE_REF" \
+                  --ingress external \
+                  --target-port 8080 \
+                  --transport http \
+                  --user-assigned "$IDENTITY_ID" \
+                  --registry-server "$ACR_NAME.azurecr.io" \
+                  --registry-identity "$IDENTITY_ID" \
+                  --secrets "solver-secret=$DSG_SOLVER_SHARED_SECRET" \
+                  --env-vars \
+                    DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
+                    Z3_DETERMINISTIC_SEED=42 \
+                    Z3_TIMEOUT_MS=30000 \
+                    PORT=8080 \
+                  --min-replicas 1 \
+                  --max-replicas 2 \
+                  --cpu 0.5 \
+                  --memory 1.0Gi \
+                  --output none && break
+              fi
+
+              ((attempt++))
+            done
+
+            if (( attempt > max_attempts )); then
+              echo "Failed after $max_attempts attempts"
+              return 1
+            fi
+          }
+
+          deploy_with_retry
 
           az containerapp ingress update \
             --name "$CONTAINER_APP_NAME" \
