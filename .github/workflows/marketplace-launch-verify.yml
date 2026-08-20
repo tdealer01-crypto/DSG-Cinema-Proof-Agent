@@ -6,6 +6,7 @@ on:
     paths:
       - 'cinema_main.py'
       - 'marketplace_verification.py'
+      - 'requirements-cinema.txt'
       - 'tests/test_cinema_main.py'
       - 'marketplace/**'
       - 'landing/**'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'cinema_main.py'
       - 'marketplace_verification.py'
+      - 'requirements-cinema.txt'
       - 'tests/test_cinema_main.py'
       - 'marketplace/**'
       - 'landing/**'
@@ -57,6 +59,23 @@ jobs:
           bash -n marketplace/github-action-v2/scripts/verified-execution.sh
           grep -q '/verify/evaluate' marketplace/github-action-v2/action.yml || {
             echo 'Verified Execution endpoint is not documented in GitHub Action package' >&2
+            exit 1
+          }
+          python - <<'PY'
+          import yaml
+          with open('marketplace/github-action-v2/action.yml', encoding='utf-8') as f:
+              action = yaml.safe_load(f)
+          safety = ['authorized','plan_aligned','constraints_pass','execution_succeeded','replay_match','evidence_complete']
+          for key in safety:
+              spec = action['inputs'][key]
+              assert spec.get('required') is True, f'{key} must be required'
+              assert 'default' not in spec, f'{key} must not have a permissive default'
+          PY
+
+      - name: Validate Pydantic runtime contract
+        run: |
+          grep -Eq '^pydantic==2\.' requirements-cinema.txt || {
+            echo 'Cinema requires an explicit Pydantic 2 pin for field_validator' >&2
             exit 1
           }
 
