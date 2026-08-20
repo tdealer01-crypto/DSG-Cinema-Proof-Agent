@@ -4,8 +4,11 @@
     "tagline": "Deterministic proof receipts for AI and automated actions.",
     "runtime": "Cinema + exact Z3",
     "verification_endpoint": "/verify/evaluate",
+    "production_api_base": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io",
+    "public_landing": "https://dsgone3dc2d94861e332.z23.web.core.windows.net/",
     "receipt_version": "dsg-proof-receipt-1.0.0",
-    "policy_version": "dsg-verified-execution-1.0.0"
+    "policy_version": "dsg-verified-execution-1.0.0",
+    "checkout_status": "NOT_VERIFIED_NOT_LINKED"
   },
   "truth_boundary": {
     "supported": [
@@ -26,13 +29,16 @@
       "channel": "GitHub Marketplace Action",
       "status": "LIVE_V1",
       "listing": "DSG Secure Deploy Gate",
-      "next": "package backward-compatible Verified Execution v2 against Cinema /verify/evaluate",
+      "public_url": "https://github.com/marketplace/actions/dsg-secure-deploy-gate",
+      "v2_package": "marketplace/github-action-v2/",
+      "next": "publish the prepared Verified Execution v2 package from the dedicated Action repository",
       "commercial_role": "free acquisition channel; paid verification service sold separately"
     },
     {
       "channel": "Stripe Apps Marketplace",
       "status": "PACKAGE_V2_7_PREPARED",
       "app_id": "pics.dsg.governance",
+      "package": "stripe-app/",
       "next": "bind to production Cinema URL, upload with Stripe CLI, external test, submit review",
       "commercial_role": "native Stripe distribution"
     },
@@ -40,21 +46,38 @@
       "channel": "Microsoft Marketplace",
       "status": "SUBMISSION_PACK_PREPARED",
       "recommended_listing": "Contact me",
+      "package": "marketplace/azure/offer.md",
       "next": "create SaaS offer in Partner Center and submit listing",
       "commercial_role": "enterprise lead generation first; transactable SaaS later"
     },
     {
       "channel": "AWS Marketplace",
-      "status": "SUBMISSION_PACK_PREPARED",
+      "status": "BLOCKED_EXTERNAL",
       "recommended_listing": "SaaS",
+      "package": "marketplace/aws/offer.md",
       "next": "complete seller onboarding and marketplace billing/entitlement integration before public paid launch",
       "commercial_role": "enterprise procurement channel"
     },
     {
       "channel": "JetBrains Marketplace",
-      "status": "PLUGIN_SPEC_PREPARED",
+      "status": "SPEC_ONLY",
+      "package": "marketplace/jetbrains/offer.md",
       "next": "build signed IDE plugin artifact, verify compatibility, upload for review",
       "commercial_role": "developer acquisition and paid plugin option"
+    },
+    {
+      "channel": "OpenAI Skills",
+      "status": "READY_FOR_EXTERNAL_SUBMIT",
+      "package": "marketplace/openai-plugin/",
+      "next": "complete publisher verification and submit through the current OpenAI publishing surface",
+      "commercial_role": "agent distribution using the bounded /verify/evaluate contract"
+    },
+    {
+      "channel": "Direct API",
+      "status": "LIVE",
+      "public_url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs",
+      "next": "add customer authentication and metering before a paid self-serve API plan",
+      "commercial_role": "live verification integration and technical evaluation"
     }
   ]
 }

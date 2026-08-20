@@ -4,6 +4,7 @@ import {
   Badge,
   Banner,
   Box,
+  Button,
   ContextView,
   Spinner,
 } from '@stripe/ui-extension-sdk/ui';
@@ -114,6 +115,7 @@ export default function ChargeGate({
   const [result, setResult] = useState<VerificationResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,6 +190,7 @@ export default function ChargeGate({
     transaction.currency,
     transaction.stripeStatus,
     transaction.riskLevel,
+    retryKey,
   ]);
 
   if (loading) {
@@ -213,6 +216,9 @@ export default function ChargeGate({
           <Box css={{ font: 'caption', color: 'secondary' }}>
             No transaction is treated as approved when the exact proof is unavailable.
           </Box>
+          <Button type="primary" onPress={() => setRetryKey((value) => value + 1)}>
+            Retry verification
+          </Button>
         </Box>
       </ContextView>
     );

@@ -1,0 +1,50 @@
+name: Request a verified proof
+description: Start a paid DSG Verified Execution proof request without sharing secrets.
+title: "[Verified Proof] "
+labels:
+  - verified-proof-request
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request a paid verification engagement. Do not paste credentials, private keys, customer data, or proprietary source code. Checkout is not active yet; submitting this form does not create a charge.
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Where will DSG run?
+      options:
+        - GitHub / CI
+        - Stripe operation
+        - Azure workflow
+        - AWS workflow
+        - OpenAI agent or skill
+        - IDE / developer workflow
+        - Direct API
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What action must be verified?
+      description: Describe the approved outcome and the action in plain language. Do not include secrets.
+      placeholder: Verify that the production deployment stayed inside the approved release plan.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What evidence is available?
+      description: List evidence types only, such as workflow result, test output, deployment receipt, or replay record.
+      placeholder: GitHub Actions result, test report, deployment URL, and replay output.
+    validations:
+      required: true
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have not included secrets, credentials, private keys, or sensitive customer data.
+          required: true
+        - label: I understand that this request does not create a payment and that scope/price must be confirmed before work begins.
+          required: true

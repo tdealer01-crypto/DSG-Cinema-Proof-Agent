@@ -30,9 +30,11 @@ The service does **not** claim SOC 2, ISO, regulatory, or third-party certificat
 |---|---|---|---|
 | GitHub Marketplace Action | LIVE v1.1.0 | Existing DSG Secure Deploy Gate is publicly installable | Publish the prepared Verified Execution v2 release from the dedicated Action repo |
 | Stripe Apps Marketplace | v2.7 package implemented | Native Stripe verification UI/package | Stripe CLI upload, external test, then Submit for review in Stripe Dashboard |
+| OpenAI Skills | submission package ready | Bounded skill calling `/verify/evaluate` | Complete publisher verification and external submission |
 | Microsoft Marketplace | submission metadata ready | Start with `Contact me` SaaS listing for enterprise leads | Partner Center publisher enrollment/offer submission |
-| AWS Marketplace | submission metadata ready | SaaS procurement package can be prepared | Seller onboarding plus AWS Marketplace billing/entitlement integration before paid public listing |
+| AWS Marketplace | blocked externally | SaaS offer specification only | Seller onboarding plus AWS Marketplace billing/entitlement integration before paid public listing |
 | JetBrains Marketplace | plugin specification ready | Developer-channel concept uses the same `/verify/evaluate` API | Build/sign plugin ZIP, declare trader status, upload for manual review |
+| Direct API | LIVE | Public bounded verification endpoint and API documentation | Add customer authentication and metering before paid self-service |
 
 ## Commercial model by channel
 
@@ -76,3 +78,11 @@ A marketplace package is considered submission-ready only when all of these are 
 4. No Z3/Cinema secret is embedded in client packages.
 5. The listing has no certification claim without evidence.
 6. Production URL is resolved from the live deployment, not guessed or hard-coded from stale infrastructure.
+
+## Verified production surfaces
+
+- Landing: `https://dsgone3dc2d94861e332.z23.web.core.windows.net/`
+- Cinema API: `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io`
+- API documentation: `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs`
+
+Checkout is intentionally not linked because no live payment URL and receipt flow have been verified in this repository.

@@ -45,6 +45,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify Cinema and marketplace contracts before deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+          python -m py_compile cinema_main.py marketplace_verification.py
+          python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py
+
       - name: Azure login with OIDC
         uses: azure/login@v2
         with:
@@ -243,6 +252,62 @@ jobs:
           test "$CINEMA_HASH_1" = "$DIRECT_HASH"
           test "$CINEMA_REQUEST_1" = "$DIRECT_REQUEST"
 
+      - name: Verify marketplace adapters and Azure browser CORS
+        shell: bash
+        run: |
+          set -euo pipefail
+          AZURE_ORIGIN='https://dsgone3dc2d94861e332.z23.web.core.windows.net'
+          RENDER_ORIGIN='https://dsg-one-verified-execution.onrender.com'
+          VERIFY_URL="$CINEMA_URL/verify/evaluate"
+
+          for origin in "$AZURE_ORIGIN" "$RENDER_ORIGIN"; do
+            CORS_CODE=$(curl --silent --show-error --output /dev/null --dump-header /tmp/cors-headers.txt --write-out '%{http_code}' \
+              --request OPTIONS "$VERIFY_URL" \
+              --header "Origin: $origin" \
+              --header 'Access-Control-Request-Method: POST' \
+              --header 'Access-Control-Request-Headers: content-type')
+            test "$CORS_CODE" = '200'
+            tr -d '\r' < /tmp/cors-headers.txt | grep -Fxi "access-control-allow-origin: $origin"
+          done
+
+          : > /tmp/marketplace-e2e.jsonl
+          for channel in github aws azure jetbrains openai_plugin api; do
+            jq -n \
+              --arg channel "$channel" \
+              --arg execution_id "production-$channel-e2e" \
+              --arg trace_id "production-$channel-trace" \
+              '{channel:$channel,approved_plan_hash:("1"*64),proposed_action_hash:("2"*64),execution_id:$execution_id,trace_id:$trace_id,agent_identity:"github-actions-production-e2e",authorized:true,plan_aligned:true,constraints_pass:true,execution_succeeded:true,replay_match:true,evidence_complete:true,cost_microunits:0}' \
+              > /tmp/marketplace-request.json
+
+            curl --fail-with-body --silent --show-error \
+              --request POST "$VERIFY_URL" \
+              --header "Origin: $AZURE_ORIGIN" \
+              --header 'Content-Type: application/json' \
+              --data @/tmp/marketplace-request.json \
+              > /tmp/marketplace-response.json
+
+            jq -e --arg channel "$channel" '
+              .channel == $channel and
+              .decision == "ALLOW" and
+              .verified == true and
+              .verification == "VERIFIED_GLOBAL_OPTIMUM" and
+              (.proof_hash | test("^[0-9a-f]{64}$")) and
+              (.request_hash | test("^[0-9a-f]{64}$")) and
+              (.context_hash | test("^[0-9a-f]{64}$"))
+            ' /tmp/marketplace-response.json >/dev/null
+            jq -c '{channel,decision,verified,verification,proof_hash}' /tmp/marketplace-response.json >> /tmp/marketplace-e2e.jsonl
+          done
+
+          jq -n '{stripe_account_id:"acct_production_e2e",object_type:"charge",object_id:"ch_production_e2e",amount_cents:5000,currency:"usd",stripe_status:"succeeded",risk_level:"low"}' > /tmp/stripe-low-request.json
+          jq -n '{stripe_account_id:"acct_production_e2e",object_type:"payout",object_id:"po_production_e2e",amount_cents:6000000,currency:"thb",stripe_status:"pending",risk_level:"critical"}' > /tmp/stripe-critical-request.json
+
+          curl --fail-with-body --silent --show-error --request POST "$CINEMA_URL/stripe/evaluate" --header 'Content-Type: application/json' --data @/tmp/stripe-low-request.json > /tmp/stripe-low-response.json
+          curl --fail-with-body --silent --show-error --request POST "$CINEMA_URL/stripe/evaluate" --header 'Content-Type: application/json' --data @/tmp/stripe-critical-request.json > /tmp/stripe-critical-response.json
+          jq -e '.decision == "ALLOW" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and .risk_score == 0' /tmp/stripe-low-response.json >/dev/null
+          jq -e '.decision == "BLOCK" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and .risk_score == 100' /tmp/stripe-critical-response.json >/dev/null
+          jq -s '.' /tmp/marketplace-e2e.jsonl > /tmp/marketplace-e2e.json
+          jq -n --slurpfile low /tmp/stripe-low-response.json --slurpfile critical /tmp/stripe-critical-response.json '{low:{decision:$low[0].decision,risk_score:$low[0].risk_score,verification:$low[0].verification},critical:{decision:$critical[0].decision,risk_score:$critical[0].risk_score,verification:$critical[0].verification}}' > /tmp/stripe-e2e.json
+
       - name: Write non-secret production evidence
         shell: bash
         run: |
@@ -255,7 +320,9 @@ jobs:
             --arg cinema_image "$CINEMA_IMAGE_REF" \
             --slurpfile direct /tmp/z3-proof-1.json \
             --slurpfile cinema /tmp/cinema-proof-1.json \
-            '{commit:$commit,environment:"production",transport:"https",z3_url:$z3_url,cinema_url:$cinema_url,z3_image:$z3_image,cinema_image:$cinema_image,direct_verification:$direct[0].verification,cinema_status:$cinema[0].cinema_status,verification:$cinema[0].verification,witness:$cinema[0].z3_proof.witness,energy_exact:$cinema[0].z3_proof.energy_exact,proof_hash:$cinema[0].proof_hash,request_hash:$cinema[0].request_hash,replay_match:true,direct_proof_match:true}' \
+            --slurpfile marketplace /tmp/marketplace-e2e.json \
+            --slurpfile stripe /tmp/stripe-e2e.json \
+            '{commit:$commit,environment:"production",transport:"https",z3_url:$z3_url,cinema_url:$cinema_url,z3_image:$z3_image,cinema_image:$cinema_image,direct_verification:$direct[0].verification,cinema_status:$cinema[0].cinema_status,verification:$cinema[0].verification,witness:$cinema[0].z3_proof.witness,energy_exact:$cinema[0].z3_proof.energy_exact,proof_hash:$cinema[0].proof_hash,request_hash:$cinema[0].request_hash,replay_match:true,direct_proof_match:true,azure_browser_cors:true,render_browser_cors:true,marketplace_adapters:$marketplace[0],stripe_adapter:$stripe[0]}' \
             > production_evidence.json
           cat production_evidence.json
 

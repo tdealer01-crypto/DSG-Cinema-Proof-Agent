@@ -40,7 +40,10 @@ app.add_middleware(
     allow_origins=[
         "https://dashboard.stripe.com",
         "https://dashboard-test.stripe.com",
+        "https://dsgone3dc2d94861e332.z23.web.core.windows.net",
+        "https://dsg-one-verified-execution.onrender.com",
     ],
+    allow_origin_regex=r"https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Accept"],
@@ -417,6 +420,7 @@ async def stripe_evaluate(request: StripeVerifyRequest) -> dict[str, Any]:
         reason = "No elevated risk factors detected"
 
     return {
+        "receipt_version": RECEIPT_VERSION,
         "decision": decision,
         "reason": reason,
         "risk_score": score,

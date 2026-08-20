@@ -14,6 +14,7 @@ RECEIPT_VERSION = "dsg-proof-receipt-1.0.0"
 VerificationChannel = Literal[
     "github",
     "stripe",
+    "openai_plugin",
     "aws",
     "azure",
     "jetbrains",
