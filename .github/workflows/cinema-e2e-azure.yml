@@ -1,0 +1,288 @@
+name: Cinema Azure E2E Proof
+
+on:
+  pull_request:
+    paths:
+      - 'cinema_main.py'
+      - 'requirements-cinema.txt'
+      - 'tests/test_cinema_main.py'
+      - '.github/workflows/cinema-e2e-azure.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      Z3_CONTAINER_APP: dsg-z3-verifier-staging
+      CINEMA_STAGING_APP: dsg-cinema-proof-agent-stg-1888
+      CINEMA_PLAN: plan-DSG-Cinema-Proof-Agent
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve staging secrets and Z3 URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+
+          Z3_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$Z3_FQDN"
+
+          Z3_SECRET=$(openssl rand -hex 32)
+          CINEMA_SECRET=$(openssl rand -hex 32)
+          echo "::add-mask::$Z3_SECRET"
+          echo "::add-mask::$CINEMA_SECRET"
+
+          echo "Z3_SERVICE_URL=https://$Z3_FQDN" >> "$GITHUB_ENV"
+          echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
+          echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
+
+      - name: Rotate Z3 staging secret fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp secret set \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" \
+            --secrets "solver-secret=$Z3_SECRET" \
+            --output none
+
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" \
+            --set-env-vars \
+              DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
+              Z3_DETERMINISTIC_SEED=42 \
+              Z3_TIMEOUT_MS=30000 \
+              E2E_REVISION="$GITHUB_SHA" \
+            --output none
+
+      - name: Verify direct Z3 exact proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 36); do
+            CODE=$(curl --silent --show-error \
+              --output /tmp/z3-ready.json \
+              --write-out '%{http_code}' \
+              "$Z3_SERVICE_URL/ready" || true)
+            if [[ "$CODE" == "200" ]] && jq -e '.status == "ready"' /tmp/z3-ready.json >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == "36" ]]; then
+              cat /tmp/z3-ready.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          PAYLOAD='{"request_id":"cinema-azure-e2e","preset_name":"cinema-e2e","problem_type":"qubo","linear":[-4,-3,1],"quadratic":[[0,1,5],[1,2,2]],"proveOptimality":true,"z3TimeoutMs":30000}'
+          echo "$PAYLOAD" > /tmp/e2e-payload.json
+
+          curl --fail-with-body --silent --show-error \
+            --request POST "$Z3_SERVICE_URL/solve" \
+            --header "Authorization: Bearer $Z3_SECRET" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/e2e-payload.json > /tmp/z3-proof.json
+
+          jq -e '
+            .verified == true and
+            .verification == "VERIFIED_GLOBAL_OPTIMUM" and
+            .witness == [1,0,0] and
+            .energy_exact == "-4" and
+            (.proof_hash | type == "string" and length == 64) and
+            (.request_hash | type == "string" and length == 64)
+          ' /tmp/z3-proof.json >/dev/null
+
+      - name: Ensure isolated Cinema staging Web App
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! az webapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_STAGING_APP" >/dev/null 2>&1; then
+            az webapp create \
+              --resource-group "$RESOURCE_GROUP" \
+              --plan "$CINEMA_PLAN" \
+              --name "$CINEMA_STAGING_APP" \
+              --runtime 'PYTHON:3.11' \
+              --output none
+          fi
+
+          az webapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_STAGING_APP" \
+            --https-only true \
+            --output none
+
+          CINEMA_HOST=$(az webapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_STAGING_APP" \
+            --query defaultHostName \
+            --output tsv)
+          test -n "$CINEMA_HOST"
+          echo "CINEMA_URL=https://$CINEMA_HOST" >> "$GITHUB_ENV"
+
+      - name: Configure Cinema staging runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          az webapp config appsettings set \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_STAGING_APP" \
+            --settings \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+              DSG_BACKEND_BASE_URL="$Z3_SERVICE_URL" \
+              DSG_BACKEND_API_KEY="$Z3_SECRET" \
+              CINEMA_API_SECRET="$CINEMA_SECRET" \
+            --output none
+
+          az webapp config set \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_STAGING_APP" \
+            --startup-file 'python -m uvicorn cinema_main:app --host 0.0.0.0 --port 8000' \
+            --output none
+
+      - name: Deploy Cinema staging package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/cinema-package /tmp/cinema-app.zip
+          mkdir -p /tmp/cinema-package
+          cp cinema_main.py /tmp/cinema-package/cinema_main.py
+          cp requirements-cinema.txt /tmp/cinema-package/requirements.txt
+          (
+            cd /tmp/cinema-package
+            zip -q -r /tmp/cinema-app.zip .
+          )
+
+          az webapp deploy \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_STAGING_APP" \
+            --src-path /tmp/cinema-app.zip \
+            --type zip \
+            --clean true \
+            --restart true \
+            --timeout 600000 \
+            --output none
+
+      - name: Verify Cinema health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            CODE=$(curl --silent --show-error \
+              --output /tmp/cinema-health.json \
+              --write-out '%{http_code}' \
+              --max-time 20 \
+              "$CINEMA_URL/health" || true)
+            if [[ "$CODE" == "200" ]] && jq -e '.status == "ready" and .backend == "ready"' /tmp/cinema-health.json >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [[ "$attempt" == "60" ]]; then
+              cat /tmp/cinema-health.json 2>/dev/null || true
+              echo "Cinema staging did not become ready" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Verify Cinema to Z3 exact proof and replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          for output in /tmp/cinema-proof-1.json /tmp/cinema-proof-2.json; do
+            curl --fail-with-body --silent --show-error \
+              --request POST "$CINEMA_URL/solve" \
+              --header "Authorization: Bearer $CINEMA_SECRET" \
+              --header 'Content-Type: application/json' \
+              --data @/tmp/e2e-payload.json > "$output"
+          done
+
+          jq -e '
+            .cinema_status == "VERIFIED" and
+            .verified == true and
+            .verification == "VERIFIED_GLOBAL_OPTIMUM" and
+            .z3_proof.verified == true and
+            .z3_proof.verification == "VERIFIED_GLOBAL_OPTIMUM" and
+            .z3_proof.witness == [1,0,0] and
+            .z3_proof.energy_exact == "-4"
+          ' /tmp/cinema-proof-1.json >/dev/null
+
+          CINEMA_HASH_1=$(jq -r '.proof_hash' /tmp/cinema-proof-1.json)
+          CINEMA_HASH_2=$(jq -r '.proof_hash' /tmp/cinema-proof-2.json)
+          CINEMA_REQUEST_1=$(jq -r '.request_hash' /tmp/cinema-proof-1.json)
+          CINEMA_REQUEST_2=$(jq -r '.request_hash' /tmp/cinema-proof-2.json)
+          DIRECT_HASH=$(jq -r '.proof_hash' /tmp/z3-proof.json)
+          DIRECT_REQUEST=$(jq -r '.request_hash' /tmp/z3-proof.json)
+
+          test "$CINEMA_HASH_1" = "$CINEMA_HASH_2"
+          test "$CINEMA_REQUEST_1" = "$CINEMA_REQUEST_2"
+          test "$CINEMA_HASH_1" = "$DIRECT_HASH"
+          test "$CINEMA_REQUEST_1" = "$DIRECT_REQUEST"
+
+      - name: Write non-secret Cinema E2E evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg z3_url "$Z3_SERVICE_URL" \
+            --arg cinema_url "$CINEMA_URL" \
+            --slurpfile direct /tmp/z3-proof.json \
+            --slurpfile cinema /tmp/cinema-proof-1.json \
+            '{
+              commit: $commit,
+              environment: "staging",
+              z3_service_url: $z3_url,
+              cinema_service_url: $cinema_url,
+              transport: "https",
+              direct_z3: {
+                verification: $direct[0].verification,
+                verified: $direct[0].verified,
+                witness: $direct[0].witness,
+                energy_exact: $direct[0].energy_exact,
+                proof_hash: $direct[0].proof_hash,
+                request_hash: $direct[0].request_hash
+              },
+              cinema_e2e: {
+                cinema_status: $cinema[0].cinema_status,
+                verification: $cinema[0].verification,
+                verified: $cinema[0].verified,
+                proof_hash: $cinema[0].proof_hash,
+                request_hash: $cinema[0].request_hash,
+                replay_match: true,
+                direct_proof_match: true
+              }
+            }' > cinema_e2e_evidence.json
+          cat cinema_e2e_evidence.json
+
+      - name: Upload Cinema E2E evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-e2e-evidence-${{ github.sha }}
+          path: cinema_e2e_evidence.json
+          retention-days: 30
