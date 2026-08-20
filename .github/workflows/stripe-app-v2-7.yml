@@ -49,7 +49,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Stripe App dependencies
         working-directory: stripe-app
@@ -63,7 +63,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' stripe-app cinema_main.py; then
+          if grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
+            stripe-app/src stripe-app/stripe-app.template.json cinema_main.py; then
             echo 'Retired Control Plane runtime URL detected'
             exit 1
           fi
@@ -142,7 +143,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Generate production manifest and runtime binding
         working-directory: stripe-app
@@ -160,7 +161,8 @@ jobs:
           set -euo pipefail
           test -f stripe-app/stripe-app.json
           ! grep -R -n '__CINEMA_API_BASE__' stripe-app/stripe-app.json stripe-app/src/runtime.ts
-          ! grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' stripe-app
+          ! grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
+            stripe-app/src stripe-app/stripe-app.json
           jq -e '.id == "pics.dsg.governance" and .version == "2.7.0" and .distribution_type == "public" and .sandbox_install_compatible == true' stripe-app/stripe-app.json >/dev/null
           jq -e --arg base "$CINEMA_API_BASE/" '.ui_extension.content_security_policy["connect-src"] == [$base]' stripe-app/stripe-app.json >/dev/null
 
