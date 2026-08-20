@@ -36,7 +36,7 @@ Cinema → exact Z3 → VERIFIED_GLOBAL_OPTIMUM
 meter()                      ← proof-bound, idempotent
   │
   ├─→ hash-chained usage ledger  (local evidence)
-  └─→ Stripe meter event         (only when STRIPE_SECRET_KEY is set)
+  └─→ Stripe meter event         (only with a configured key and meter)
 ```
 
 Denials are fail-closed and never fall through to a free proof:
@@ -48,7 +48,9 @@ Denials are fail-closed and never fall through to a free proof:
 | Key malformed, unknown, or wrong mode | `UNKNOWN_KEY` | 401 |
 | Account suspended or closed | `ACCOUNT_SUSPENDED` | 403 |
 | Plan quota exhausted | `QUOTA_EXCEEDED` | 402 |
-| Metered plan with no linked payment | `PAYMENT_NOT_LINKED` | 402 |
+| Paid plan with no current paid entitlement | `PAYMENT_NOT_LINKED` | 402 |
+| Paid enforcement requested without durable single-writer storage | `BILLING_STORAGE_NOT_READY` | 503 |
+| A proved receipt cannot be appended safely | `METERING_REFUSED` | 503 |
 
 Presenting a key always opts a caller into authentication: a bad key is
 rejected rather than quietly served for free, even while enforcement is off.
@@ -79,6 +81,9 @@ record is.
 - Reopening a tampered ledger file fails closed rather than loading it.
 - Billing is idempotent on `sha256(account | sku | context_hash)`, so replaying
   the same verification context is recorded once and billed once.
+- Quota recheck, included-unit pricing, and append occur under the same ledger
+  lock. Two requests authorized before either proof finishes cannot cross a
+  hard cap or consume the same included unit.
 - Entry amounts are fixed at append time, so included-unit accounting never
   changes retroactively.
 
@@ -116,23 +121,30 @@ stored, the plaintext is returned exactly once, and comparison is constant-time.
 
 The link is optional and fail-closed in both directions:
 
-- No `STRIPE_SECRET_KEY` → `checkout_status` reports `NOT_VERIFIED_NOT_LINKED`,
-  usage is still metered into the ledger, and meter events carry
-  `sync_state: PENDING_UNLINKED`. Nothing pretends a charge occurred.
+- A `STRIPE_SECRET_KEY` by itself is only `CONFIGURED_UNVERIFIED` and cannot
+  make `charges_enabled` true. The public status route verifies the configured
+  product, price, payment link, meter, and webhook endpoint against Stripe before it reports
+  `LINKED_VERIFIED`.
+- Missing or failed operational checks keep `checkout_status` at
+  `NOT_VERIFIED_NOT_LINKED`; meter events remain `PENDING_UNLINKED` until the
+  key and meter configuration are present.
 - No `STRIPE_WEBHOOK_SECRET` → inbound webhooks are rejected with 503 rather
   than trusted, so entitlement can never be granted by an unsigned caller.
 
 Signatures are verified against Stripe's `t=…,v1=…` scheme with a 300-second
-tolerance window. Events for unknown customers are reported as ignored and
-never create an account implicitly.
+tolerance window. A signed event must also match the configured DSG
+product/price and the account's exact subscription. Event IDs and paid invoice
+IDs are persisted for idempotency, test/live mode must match the configured
+Stripe key, and field-level event cursors prevent stale entitlement regressions
+without dropping a late plan update from another event stream.
 
 ## Automation
 
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `revenue-verify.yml` | PR / push / dispatch | Tests, credential scan, AST check that entitlement is resolved before the solver runs, ledger determinism, report rendering |
-| `revenue-autopilot.yml` | daily 02:15 UTC / dispatch | Probes production, verifies the live chain, files a report artifact and issue comment, fails the run if the chain is broken |
-| `deploy-cinema-production.yml` | push to main | Provisions the revenue credential, then proves the deployed billing surface authenticates, rejects bad keys, and leaks no secrets |
+| `revenue-autopilot.yml` | daily 02:15 UTC / dispatch | Probes production, verifies the live chain, files evidence, and fails for any unavailable, malformed, or broken required probe |
+| `deploy-cinema-production.yml` | push to main | Uses a stable configured admin credential when present, records UNAVAILABLE when absent, rejects bad keys, and checks for secret leakage |
 
 `scripts/revenue_report.py` renders the reconciliation. It reports
 `UNAVAILABLE` for any probe that failed and never estimates a missing number —
@@ -148,8 +160,16 @@ an unreachable service is not reported as zero revenue.
 | `DSG_REVENUE_LEDGER_STORE` | no | JSON file path for the usage ledger |
 | `DSG_REVENUE_ACCOUNTS` | no | JSON array of bootstrap accounts (hashes only; plaintext secrets are rejected) |
 | `STRIPE_SECRET_KEY` | to charge | Enables meter-event push |
-| `STRIPE_WEBHOOK_SECRET` | for webhooks | Enables signed inbound events |
+| `STRIPE_WEBHOOK_SECRET` | for webhooks | Verifies signed inbound events |
+| `STRIPE_PRODUCT_ID` | to charge | Exact DSG Stripe product scope |
+| `STRIPE_PRICE_ID` | to charge | Exact DSG Stripe price scope |
+| `STRIPE_PAYMENT_LINK_ID` | to claim checkout ready | Payment Link verified by `/billing/status` |
+| `STRIPE_METER_ID` | to charge | Meter verified by `/billing/status` and required for pushes |
+| `STRIPE_WEBHOOK_ENDPOINT_ID` | to claim ready | Registered endpoint verified through Stripe |
+| `STRIPE_WEBHOOK_ENDPOINT_URL` | to claim ready | Exact public `/billing/webhook/stripe` URL |
 | `STRIPE_METER_EVENT_NAME` | no | Defaults to `dsg_verified_execution` |
+| `DSG_REVENUE_STORAGE_DURABLE` | before enforcement | Operator attestation that both stores are durable |
+| `DSG_REVENUE_SINGLE_WRITER` | before enforcement | Operator attestation that exactly one writer serves the stores |
 
 ## Truth boundary
 
@@ -160,20 +180,26 @@ an unreachable service is not reported as zero revenue.
 - Hash-chained, replayable, tamper-evident usage ledger.
 - Idempotent billing per verification context.
 - Signature-verified Stripe webhooks; forged and stale signatures rejected.
+- Product, price, and subscription scoped webhook mutations with persisted
+  event idempotency and ordering checks.
+- Team base revenue is capped at the actual USD `amount_paid` for that period;
+  a zero-value or missing paid amount grants neither included use nor base
+  recognition.
 - Hash-only API key storage with constant-time comparison.
 
 **Not claimed:**
 
 - **No active checkout link.** `checkout_status` stays
-  `NOT_VERIFIED_NOT_LINKED` until `STRIPE_SECRET_KEY` is configured, and the
-  landing page continues to say so.
+  `NOT_VERIFIED_NOT_LINKED` until Stripe independently confirms the configured
+  product, price, Payment Link, meter, and webhook endpoint; the landing page continues to say so.
 - **No durable billing storage.** The bundled stores are process memory and a
   single JSON file. Azure Container Apps filesystems are ephemeral and this
   deployment runs up to two replicas, so the ledger is **not** durable or
   single-writer in production today. This is why `DSG_REVENUE_ENFORCE`
   defaults to off: quota enforcement across restarts would not be reliable.
-- **No settled revenue.** Ledger totals are recorded usage, not invoiced,
-  collected, or audited money.
+- **No audited revenue claim.** Recorded usage is not an invoice. The separate
+  recognized figure is limited to scoped USD `invoice.paid` amounts and still
+  is not an independent financial audit.
 - **No completed Stripe marketplace review.**
 
 ## Activation sequence
@@ -192,10 +218,11 @@ Each step is independently verifiable, in order:
    to Postgres) and point `DSG_REVENUE_LEDGER_STORE` and
    `DSG_REVENUE_ACCOUNT_STORE` at it. Until this is done, do not enable
    enforcement — this is the one genuine blocker to charging.
-5. **Link Stripe.** Create the meter and price matching the catalog, then set
-   `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. Confirm
-   `GET /billing/status` flips to `LINKED`, and update the landing page's
+5. **Link Stripe.** Create the product, price, Payment Link, meter, and webhook matching
+   the catalog, then configure all Stripe variables above. Confirm
+   `GET /billing/status` reports `LINKED_VERIFIED`, and update the landing page's
    checkout line in the same change so the public claim stays true.
-6. **Turn on enforcement.** Set repository variable `DSG_REVENUE_ENFORCE=1`
-   and redeploy. Verification now requires a key, and the autopilot begins
-   reporting recognized amounts.
+6. **Turn on enforcement.** Run a single writer, set both storage attestations,
+   then set `DSG_REVENUE_ENFORCE=1` and redeploy. If any prerequisite is absent,
+   verification fails closed with `BILLING_STORAGE_NOT_READY` instead of
+   silently serving paid traffic from unsafe storage.

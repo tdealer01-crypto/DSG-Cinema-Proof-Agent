@@ -21,13 +21,20 @@ from pydantic import BaseModel, Field
 
 from .accounts import Account
 from .activation import ActivationService, activation_ref
-from .engine import Authorization, RevenueEngine, idempotency_key
-from .ledger import ChainError, verify_chain
+from .engine import (
+    Authorization,
+    EntitlementChangedError,
+    RevenueEngine,
+    idempotency_key,
+)
+from .ledger import ChainError, QuotaExceededError, verify_chain
 from .pricing import catalog_snapshot, get_plan, micros_to_usd_string
 from .remediation import (
     ACCOUNT_SUSPENDED,
     BACKEND_UNAVAILABLE,
+    BILLING_STORAGE_NOT_READY,
     CONFIGURATION_INCOMPLETE,
+    METERING_REFUSED,
     PAYMENT_NOT_LINKED,
     QUOTA_EXCEEDED,
     UNKNOWN_KEY,
@@ -39,6 +46,7 @@ from .stripe_sync import (
     apply_webhook_event,
     config_from_env,
     push_meter_event,
+    verify_operational_link,
 )
 
 CHECKOUT_STATUS_UNLINKED = "NOT_VERIFIED_NOT_LINKED"
@@ -111,6 +119,17 @@ def authorize_request(api_key: Optional[str], sku: str) -> Optional[Authorizatio
     engine = get_engine()
     presented = (api_key or "").strip()
 
+    if engine.enforcement_requested and not engine.enforcement_ready:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": BILLING_STORAGE_NOT_READY,
+                "message": "paid enforcement was requested without safe durable storage",
+                "blockers": list(engine.enforcement_blockers),
+                "remediation": remediation_for(BILLING_STORAGE_NOT_READY).to_dict(),
+            },
+        )
+
     if not presented and not engine.enforce:
         return None
 
@@ -137,9 +156,9 @@ async def meter(
 ) -> Optional[dict]:
     """Record a verified receipt as one billable unit.
 
-    Metering never changes the verification outcome: a billing-side failure is
-    reported inside the receipt rather than raising over a proof that already
-    succeeded.
+    A proof is released only after its local billing record is durable for this
+    process. If entitlement changes during solver work, fail closed instead of
+    returning an authenticated proof for free.
     """
     if authorization is None or authorization.account is None:
         return None
@@ -152,14 +171,36 @@ async def meter(
             receipt=receipt,
             channel=channel,
         )
+    except QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "QUOTA_EXCEEDED",
+                "message": str(exc),
+                "remediation": remediation_for(QUOTA_EXCEEDED).to_dict(),
+                "billing": authorization.summary(),
+            },
+        ) from exc
+    except EntitlementChangedError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={
+                "error": exc.decision,
+                "message": str(exc),
+                "remediation": remediation_for(exc.decision).to_dict(),
+                "billing": authorization.summary(),
+            },
+        ) from exc
     except ValueError as exc:
-        return {
-            "metered": False,
-            "reason": str(exc),
-            "account_id": authorization.account.account_id,
-            "plan": authorization.account.plan,
-            "period": authorization.period,
-        }
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": METERING_REFUSED,
+                "message": str(exc),
+                "remediation": remediation_for(METERING_REFUSED).to_dict(),
+                "billing": authorization.summary(),
+            },
+        ) from exc
 
     config = config_from_env()
     sync = await push_meter_event(
@@ -196,6 +237,20 @@ def diagnose_entitlement(api_key: Optional[str], sku: str) -> dict:
     engine = get_engine()
     presented = (api_key or "").strip()
     checks: list[dict] = []
+
+    if engine.enforcement_requested and not engine.enforcement_ready:
+        checks.append(
+            {
+                "check": "billing_storage",
+                "status": "fail",
+                "detail": "; ".join(engine.enforcement_blockers),
+            }
+        )
+        return {
+            "checks": checks,
+            "blocking": BILLING_STORAGE_NOT_READY,
+            "billing": None,
+        }
 
     if not presented:
         if engine.enforce:
@@ -281,19 +336,22 @@ def diagnose_entitlement(api_key: Optional[str], sku: str) -> dict:
     if authorization.decision == PAYMENT_NOT_LINKED:
         checks.append(
             {
-                "check": "payment_method",
+                "check": "paid_entitlement",
                 "status": "fail",
-                "detail": "The plan bills per proof but no payment method is linked",
+                "detail": (
+                    "The plan requires a linked payment method and, where it has "
+                    "a base price, a scoped paid invoice for the current period"
+                ),
             }
         )
         return {"checks": checks, "blocking": PAYMENT_NOT_LINKED, "billing": summary}
 
     checks.append(
         {
-            "check": "payment_method",
+            "check": "paid_entitlement",
             "status": "pass" if account.payment_linked else "skip",
             "detail": (
-                "Payment method is linked"
+                "Current paid entitlement is confirmed"
                 if account.payment_linked
                 else "No payment method needed while included units remain"
             ),
@@ -332,18 +390,25 @@ class UpdateAccountRequest(BaseModel):
 
 # ------------------------------------------------------------------- endpoints
 @router.get("/status")
-def billing_status() -> dict:
+async def billing_status() -> dict:
     """Public, non-secret description of how this deployment can be paid."""
     engine = get_engine()
     config = config_from_env()
+    operational = await verify_operational_link(config)
+    stripe_status = config.status(operational)
     return {
-        "billing_version": "dsg-revenue-1.0.0",
+        "billing_version": "dsg-revenue-1.1.0",
         "metering_enabled": True,
         "metering_enforced": engine.enforce,
+        "enforcement_requested": engine.enforcement_requested,
+        "enforcement_ready": engine.enforcement_ready,
+        "enforcement_blockers": list(engine.enforcement_blockers),
         "checkout_status": (
-            CHECKOUT_STATUS_LINKED if config.linked else CHECKOUT_STATUS_UNLINKED
+            CHECKOUT_STATUS_LINKED
+            if stripe_status["charges_enabled"]
+            else CHECKOUT_STATUS_UNLINKED
         ),
-        "stripe": config.status(),
+        "stripe": stripe_status,
         "catalog": catalog_snapshot(),
         "ledger": {
             "entries": engine.ledger.size(),
@@ -494,7 +559,7 @@ async def stripe_webhook(
     try:
         verify_webhook_signature(payload, stripe_signature, config.webhook_secret)
     except SignatureError as exc:
-        status = 503 if not config.accepts_webhooks else 400
+        status = 503 if not config.webhook_secret else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     try:
@@ -504,7 +569,7 @@ async def stripe_webhook(
     if not isinstance(event, dict):
         raise HTTPException(status_code=400, detail="webhook body is not a JSON object")
 
-    result = apply_webhook_event(event, get_engine().accounts)
+    result = apply_webhook_event(event, get_engine().accounts, config)
     return {"received": True, "event_id": event.get("id"), "result": result}
 
 
@@ -520,6 +585,8 @@ __all__ = [
     "activation_ref",
     "remediation_for",
     "BACKEND_UNAVAILABLE",
+    "BILLING_STORAGE_NOT_READY",
     "CONFIGURATION_INCOMPLETE",
+    "METERING_REFUSED",
     "VERIFICATION_NOT_PROVED",
 ]

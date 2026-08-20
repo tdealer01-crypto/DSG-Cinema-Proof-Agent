@@ -1,342 +1,165 @@
-# DSG ONE — Z3 Solver Deployment Package
-## Complete Production-Ready Package (Aug 19, 2026)
+# DSG ONE — Verified Execution
 
-### 📦 What's Inside
+DSG ONE turns a bounded automation decision into a deterministic, replayable
+Proof Receipt. Cinema derives an `ALLOW`, `REVIEW`, or `BLOCK` policy decision,
+the exact Z3 backend proves the global optimum, and the caller receives hashes
+that bind the request, context, and proof.
 
-```
-dsg-z3-complete/
-├── z3_main.py                          # Z3 Solver FastAPI service
-├── requirements.txt                    # Python dependencies
-├── Dockerfile                          # Container image spec
-├── requirements.txt                    # Python dependencies
-│
-├── DEPLOYMENT SCRIPTS:
-├── EXECUTE_ROUND_1_AZURE.sh           # Shell script (full automation)
-├── deploy_z3_azure_rest.py            # Python REST API alternative
-├── Z3_DEPLOYMENT_QUICK_COMMANDS.sh    # Quick reference commands
-│
-├── GITHUB ACTIONS:
-└── .github/workflows/
-    └── deploy-z3-azure.yml            # Automated GitHub Actions workflow
-│
-└── DOCUMENTATION:
-    ├── README.md                       # This file
-    ├── ROUND_1_DEPLOYMENT_GUIDE.md    # Complete deployment guide
-    ├── GITHUB_ACTIONS_SETUP.md        # GitHub Actions instructions
-    ├── APPROVAL_CHECKLIST.txt         # User approval checklist
-    ├── REVENUE_PATHS_CONCRETE.md      # Revenue strategy
-    └── skill-mcp-environment-setup.md # MCP environment details
-```
+This repository is the current DSG ONE system. Legacy Control Plane links and
+retired runtimes are not part of the active product path.
 
----
+## Public surfaces
 
-## 🚀 Quick Start (Choose One)
+| Surface | URL | Evidence state |
+|---|---|---|
+| Azure 3D landing | https://dsgoneverifiedweb.z1.web.core.windows.net/ | Receipt tracked in `.deployment/azure-3d-landing.json` |
+| Render landing | https://dsg-one-verified-execution.onrender.com/ | Secondary public UI |
+| Cinema API docs | https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs | Bounded verification API |
+| GitHub Marketplace | https://github.com/marketplace/actions/dsg-secure-deploy-gate | Public v1.1.0 Action; v2 package remains prepared in this repo |
 
-### Option A: GitHub Actions (RECOMMENDED - No local setup)
-```bash
-# 1. Setup (one time)
-az ad sp create-for-rbac --name "github-z3-deployer" --role Contributor \
-  --scopes /subscriptions/dcf13c0d-0d9f-4f81-aa89-c6b50aaef839 --json-auth
+The Azure deployment receipt is the source of truth for the official landing
+URL. A prepared package is not described as approved or public until the
+marketplace itself confirms that state.
 
-# 2. Add GitHub Secrets (Settings → Secrets):
-#    - AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
-#    - AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
-#    - AZURE_CLIENT_ID: (from service principal)
-#    - AZURE_CLIENT_SECRET: (from service principal)
+## End-to-end contract
 
-# 3. Push to repo:
-git add .
-git commit -m "Add Z3 solver deployment"
-git push
-
-# 4. Go to GitHub Actions tab and click "Run workflow"
+```text
+Marketplace / agent / app
+        ↓ bounded facts + optional X-DSG-API-Key
+Cinema entitlement check
+        ↓ authorized before solver work
+Deterministic policy mapping
+        ↓ fixed ALLOW / REVIEW / BLOCK problem
+Exact Z3 global-optimum proof
+        ↓ verified receipt only
+Proof-bound ledger + channel attribution
 ```
 
-### Option B: Local Shell Script (requires Docker + Azure CLI)
-```bash
-chmod +x EXECUTE_ROUND_1_AZURE.sh
+The product proves one bounded decision. It does not claim SOC 2, ISO,
+regulatory compliance, legal approval, or third-party certification.
 
-az login --tenant cbc618d5-9aa3-46b5-ae64-d07794603a7a
-az account set --subscription dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+## Run a live proof
 
-./EXECUTE_ROUND_1_AZURE.sh
-```
+The fastest path is the [Azure 3D landing](https://dsgoneverifiedweb.z1.web.core.windows.net/).
+It provides fixed, synthetic scenarios and displays a result only when the
+response contains:
 
-### Option C: Local Python (no Docker required)
-```bash
-export AZURE_ACCESS_TOKEN=$(az account get-access-token --query accessToken -o tsv)
+- `verified: true`
+- `verification: VERIFIED_GLOBAL_OPTIMUM`
+- a valid `decision` (`ALLOW`, `REVIEW`, or `BLOCK`)
+- 64-character `proof_hash`, `request_hash`, and `context_hash`
 
-python3 deploy_z3_azure_rest.py
-```
+The receipt can be downloaded as JSON. An unavailable backend never becomes an
+`ALLOW` result.
 
----
-
-## 📋 Files Explained
-
-### Source Code
-- **z3_main.py** - FastAPI Z3 solver service
-  - `/health` endpoint - Health check
-  - `/solve` endpoint - QUBO/SAT solver
-  - Deterministic seed=42 for reproducible results
-  - Bearer token authentication (DSG_SOLVER_SHARED_SECRET)
-
-- **requirements.txt** - Python dependencies
-  - fastapi==0.109.1
-  - uvicorn
-  - pydantic==2.6.1
-  - z3-solver==4.13.0
-
-### Deployment Scripts
-- **EXECUTE_ROUND_1_AZURE.sh** - Full Bash automation (15-20 min)
-  - Creates Azure resource group
-  - Builds Docker image
-  - Pushes to Container Registry
-  - Deploys to Container Instances
-  - Tests health endpoint
-  - Saves credentials
-
-- **deploy_z3_azure_rest.py** - Python REST API deployment (no Docker)
-  - Uses Azure REST APIs directly
-  - No Docker required
-  - Same end result as shell script
-
-- **Z3_DEPLOYMENT_QUICK_COMMANDS.sh** - Quick reference
-  - Azure CLI commands
-  - Docker commands
-  - Testing commands
-
-### GitHub Actions Workflow
-- **.github/workflows/deploy-z3-azure.yml** - Automated deployment
-  - Triggers on: push to main OR manual workflow_dispatch
-  - Authenticates via Azure Federated Identity
-  - Builds & pushes Docker image
-  - Deploys to Container Instances
-  - Tests health & QUBO endpoints
-  - Saves outputs as artifact
-
-### Docker
-- **Dockerfile** - Container specification
-  - Based on Python 3.11
-  - Installs dependencies
-  - Runs Z3 service on port 8080
-  - Health check every 10 seconds
-
-### Documentation
-- **ROUND_1_DEPLOYMENT_GUIDE.md** - Comprehensive guide
-  - Prerequisites
-  - Step-by-step instructions
-  - Troubleshooting
-  - Testing guide
-
-- **GITHUB_ACTIONS_SETUP.md** - GitHub Actions specific
-  - Service principal creation
-  - GitHub Secrets setup
-  - Workflow explanation
-
-- **APPROVAL_CHECKLIST.txt** - User authorization
-- **REVENUE_PATHS_CONCRETE.md** - Business model
-- **skill-mcp-environment-setup.md** - MCP integration
-
----
-
-## 🎯 Deployment Architecture
-
-```
-GitHub/Local Machine
-        ↓
-   (Option A/B/C)
-        ↓
-   Azure Authentication
-        ↓
-   Build Docker Image
-   (Python 3.11 + Z3)
-        ↓
-   Azure Container Registry
-   (Push: tdealer01acr)
-        ↓
-   Azure Container Instances
-   (z3-solver-service)
-        ↓
-   Service Endpoint
-   http://z3-solver-service.westus3.azurecontainer.io:8080
-        ↓
-   Cinema App + AIMO Integration + Revenue Tracking
-```
-
----
-
-## 🔐 Security
-
-- **Bearer Token Auth** - All API calls require DSG_SOLVER_SHARED_SECRET
-- **GitHub Secrets** - Credentials never stored in code
-- **Azure Managed Identity** - No hardcoded passwords
-- **Health Checks** - Automatic container restart
-- **Production-Ready** - 4 CPU cores, 8GB memory
-
----
-
-## 📊 Deployment Timeline
-
-| Step | Duration | Action |
-|------|----------|--------|
-| 1. Setup | 5 min | Create service principal |
-| 2. Build | 3-5 min | Docker build (first time) |
-| 3. Push | 1-2 min | Push to ACR |
-| 4. Deploy | 2-3 min | Create container |
-| 5. Start | 30 sec | Container initialization |
-| 6. Test | 1 min | Health & QUBO tests |
-| **TOTAL** | **~15-20 min** | **Complete** |
-
----
-
-## ✅ What You Get After Deployment
-
-```
-SERVICE_URL = http://z3-solver-service.westus3.azurecontainer.io:8080
-API_SECRET = <random-32-char-hex>
-FOUNDRY_ENDPOINT = https://tdealer01-1888-resource.services.ai.azure.com/api/projects/tdealer01-1888
-```
-
----
-
-## 🧪 Test Your Deployment
+For API use, activate a free key and send one bounded request:
 
 ```bash
-SERVICE_URL="http://z3-solver-service.westus3.azurecontainer.io:8080"
-API_SECRET="<from-deployment-output>"
+export CINEMA_URL="https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io"
 
-# Health check
-curl "$SERVICE_URL/health"
+curl -X POST "$CINEMA_URL/billing/activate" \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"api","activation_id":"example-client-001","display_name":"Example client"}'
 
-# QUBO solve test
-curl -X POST "$SERVICE_URL/solve" \
-  -H "Authorization: Bearer $API_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "request_id": "test-001",
-    "problem_type": "QUBO",
-    "linear": [-4, -3, 1],
-    "quadratic": [[0, 1, 5], [1, 2, 2]],
-    "variables": 3,
-    "seed": 42
-  }'
-
-# Expected response:
-# HTTP 200
-# {
-#   "status": "SAT",
-#   "z3_status": "sat",
-#   "witness": [1, 0, 0],
-#   "energy": -4,
-#   "proof_hash": "sha256:...",
-#   "execution_time_ms": XXX
-# }
+curl -X POST "$CINEMA_URL/verify/evaluate" \
+  -H "X-DSG-API-Key: $DSG_API_KEY" \
+  -H 'Content-Type: application/json' \
+  --data @verification-request.json
 ```
 
----
+The activation key is shown once and only its hash is retained. Self-serve
+activation grants the capped free plan; it cannot grant paid capacity.
 
-## 📞 Support
+## Marketplace state
 
-### If deployment fails:
-1. Read `ROUND_1_DEPLOYMENT_GUIDE.md` - Troubleshooting section
-2. Check Azure Portal for resource group status
-3. Verify credentials in GitHub Secrets or local environment
-4. Run quick commands from `Z3_DEPLOYMENT_QUICK_COMMANDS.sh`
+| Channel | Current repository state | Next external step |
+|---|---|---|
+| GitHub Marketplace Action | Public v1.1.0; Verified Execution v2 prepared | Release v2 from the dedicated Action repository and publish the Marketplace update |
+| Stripe Apps Marketplace | Native v2.7 package prepared | External test, Stripe CLI upload, and Stripe review |
+| OpenAI Skills | Skills-only submission package prepared | Publisher verification and external submission |
+| Microsoft Marketplace | Contact-me offer pack prepared | Partner Center enrollment and offer submission |
+| AWS Marketplace | Blocked externally | Seller onboarding plus AWS billing and entitlement integration |
+| JetBrains Marketplace | Specification only | Build/sign a plugin ZIP and submit for review |
+| Direct API | Public bounded API | Keep paid enforcement off until storage and commerce gates pass |
 
-### If health check fails:
-```bash
-# Check container logs
-az container logs --resource-group rg-t.dealer01-0468 --name z3-solver-service
+All prepared listing metadata uses the receipt-verified Azure landing as the
+product website. Detailed state and blockers live in:
 
-# Restart container
-az container restart --resource-group rg-t.dealer01-0468 --name z3-solver-service
-```
+- `marketplace/launch-manifest.json`
+- `marketplace/SUBMISSION_QUEUE.md`
+- `marketplace/README.md`
+- `CHANNEL_DELIVERY.md`
 
----
+## Revenue and entitlement
 
-## 🎯 Next Steps (After Deployment)
+The billable unit is one Z3 `VERIFIED_GLOBAL_OPTIMUM` Proof Receipt. The revenue
+layer provides:
 
-### ROUND 2: Update Cinema App
-- File: `app/src/main/java/com/example/BuildConfig.kt`
-- Set `DSG_BACKEND_BASE_URL = "<SERVICE_URL>"`
-- Set `DSG_BACKEND_API_KEY = "<API_SECRET>"`
+- hash-only API keys and fail-closed entitlement checks before solver work;
+- atomic quota recheck, included-unit pricing, and ledger append;
+- a SHA-256 hash-chained usage ledger;
+- event- and invoice-idempotent Stripe webhooks scoped to the configured DSG
+  product, price, subscription, and test/live mode;
+- scoped paid-invoice reporting that excludes unrelated invoice lines;
+- reconciliation that reports `UNAVAILABLE` instead of inventing zero revenue.
 
-### ROUND 3: Test AIMO Integration
-- Send QUBO proofs from Cinema to Z3
-- Verify proof hashes match
-- Test sealed witness validation
+Current commercial boundary:
 
-### ROUND 4: Enable Revenue
-- Z3 Verified Exec revenue path enabled
-- Start collecting $99 per verified proof
+- Checkout remains `NOT_VERIFIED_NOT_LINKED` until Stripe verifies the exact
+  product, price, Payment Link, meter, webhook endpoint, API key, and secret.
+- Paid enforcement also requires durable account and ledger stores plus a
+  single revenue writer. If any prerequisite is absent, it fails closed with
+  `BILLING_STORAGE_NOT_READY`.
+- Recorded usage is not a paid invoice. Scoped `invoice.paid` receipts are
+  reported separately and are not presented as an independent financial audit.
 
----
-
-## 💰 Automated Revenue System
-
-The metering, entitlement, and billing layer lives in `revenue/` and is
-documented in `REVENUE_AUTOMATION.md`.
-
-- **Billable unit:** one Z3 `VERIFIED_GLOBAL_OPTIMUM` proof receipt. An
-  unverified receipt cannot be billed — this is enforced in code.
-- **Entitlement:** fail-closed and resolved before any solver work runs.
-- **Ledger:** append-only and SHA-256 hash-chained, so usage is replayable the
-  same way proofs are.
-- **Billing:** optional Stripe link. With no `STRIPE_SECRET_KEY`, usage is
-  still metered but `checkout_status` truthfully reports
-  `NOT_VERIFIED_NOT_LINKED` and nothing is charged.
+Inspect the deployed state:
 
 ```bash
-# What this deployment can charge for, and whether it can charge at all
 curl "$CINEMA_URL/billing/status"
-
-# One account's current-period usage
 curl -H "X-DSG-API-Key: $DSG_API_KEY" "$CINEMA_URL/billing/usage"
+curl -H "X-DSG-API-Key: $DSG_API_KEY" "$CINEMA_URL/support/diagnose"
 ```
 
-Automation: `revenue-verify.yml` gates every change, `revenue-autopilot.yml`
-reconciles production daily, and the production deploy proves the live billing
-surface authenticates and leaks no credentials.
+See `REVENUE_AUTOMATION.md` for storage, Stripe, deployment, and reconciliation
+activation gates.
 
----
+## Repository map
 
-## 🔌 Channel → Value → Resolution
+| Path | Purpose |
+|---|---|
+| `cinema_main.py` | Public Cinema API, proof validation, support diagnosis |
+| `marketplace_verification.py` | Bounded request and deterministic decision contract |
+| `z3_main.py` | Authenticated exact Z3 backend |
+| `revenue/` | Accounts, activation, pricing, entitlement, ledger, Stripe sync |
+| `landing/` and `azure-landing/` | One shared browser UI artifact |
+| `marketplace/` | Channel adapters, listing packs, and status evidence |
+| `stripe-app/` | Stripe-native UI extension package |
+| `.github/workflows/` | CI, deployment, packaging, and reconciliation |
+| `tests/` | API, billing, UI-contract, and marketplace regressions |
 
-`CHANNEL_DELIVERY.md` documents the automated path from a marketplace listing to
-a working proof, with no human in the loop.
+## Local verification
 
 ```bash
-# 1. Activate a free key from any channel (no operator, no card)
-curl -X POST "$CINEMA_URL/billing/activate" -H 'Content-Type: application/json' \
-  -d '{"channel":"github","activation_id":"acme/pipeline","display_name":"Acme"}'
-
-# 2. Verify with it — metered and attributed to that channel
-curl -X POST "$CINEMA_URL/verify/evaluate" -H "X-DSG-API-Key: $KEY" ...
-
-# 3. Stuck? Ask the service what is wrong and what to do
-curl -H "X-DSG-API-Key: $KEY" "$CINEMA_URL/support/diagnose"
+python3 -m pip install -r requirements.txt -r requirements-cinema.txt pytest pyyaml
+python3 -m pytest -q
+bash landing/validate.sh
+bash marketplace/openai-plugin/scripts/validate.sh
+bash -n marketplace/github-action-v2/scripts/verified-execution.sh
 ```
 
-Every refusal — bad key, exhausted quota, unlinked payment, backend down —
-returns a `remediation` object with the problem, the cause, the single next
-step, and whether the user can fix it alone. The GitHub Action writes it to the
-run summary, the OpenAI skill prints it for the agent to relay, the Stripe app
-shows it in the decision panel, and the landing page shows it in the result.
+CI additionally installs and type-checks the Stripe App package, validates the
+Marketplace manifests, and runs production deployment smoke tests after merge.
 
----
+## Deployment ownership
 
-## 📈 Revenue Impact
+- `.github/workflows/deploy-cinema-production.yml` deploys Cinema and runs the
+  production API, CORS, Marketplace, Stripe, and revenue smoke tests.
+- `.github/workflows/deploy-azure-3d-landing.yml` publishes the shared landing
+  artifact and writes the public Azure receipt.
+- `.github/workflows/revenue-autopilot.yml` reconciles production daily and
+  fails when required evidence is missing or invalid.
 
-After Z3 deployment:
-- **Month 1**: $2,950 MRR (Delivery Proof + Z3)
-- **Month 2**: $4,000-$8,000 MRR (Scale)
-- **Month 3+**: $50K-$200K potential (Stripe + MCP)
-
----
-
-**Package created:** Aug 19, 2026, 07:30 UTC  
-**Status:** ✅ Production-Ready  
-**Quality:** Verified, Tested, Documented  
-**Autonomy Level:** Full (user runs self-contained scripts)
-
-Ready to deploy! 🚀
+Paid enforcement is intentionally left off until every documented prerequisite
+is present. Core verification and capped free activation remain independently
+usable.

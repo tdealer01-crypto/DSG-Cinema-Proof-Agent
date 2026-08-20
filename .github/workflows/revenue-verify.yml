@@ -216,7 +216,8 @@ jobs:
 
           assert commitments(first) == commitments(second), 'ledger is not deterministic'
           assert verify_chain(first.ledger.entries())['verified'] is True
-          assert first.period_report()['recognized_amount_micros'] == 500_000
+          assert first.period_report()['recorded_usage_amount_micros'] == 500_000
+          assert first.period_report()['recognized_amount_micros'] == 0
 
           with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as handle:
               json.dump(first.period_report(), handle)

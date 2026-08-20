@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -151,6 +152,26 @@ def test_activation_is_idempotent_and_case_insensitive(engine):
     assert second.json()["decision"] == ACTIVATION_EXISTS
     assert "api_key" not in second.json()
     assert len(engine.accounts.all()) == 1
+
+
+def test_simultaneous_activation_retries_issue_exactly_one_key():
+    store = AccountStore()
+    service = ActivationService(store)
+
+    def run(_: int):
+        return service.activate(
+            channel="github",
+            activation_id="acme/concurrent",
+            display_name="Acme",
+        )
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(run, range(24)))
+
+    assert sum(result.decision == ACTIVATED for result in results) == 1
+    assert sum(result.decision == ACTIVATION_EXISTS for result in results) == 23
+    assert sum(result.api_key is not None for result in results) == 1
+    assert len(store.all()) == 1
 
 
 def test_activation_can_only_grant_the_free_plan(engine):
@@ -400,7 +421,7 @@ def test_diagnose_reports_a_metered_plan_without_payment(engine, monkeypatch):
 
     body = client.get("/support/diagnose", headers={"X-DSG-API-Key": key}).json()
     assert body["remediation"]["code"] == PAYMENT_NOT_LINKED
-    payment = next(c for c in body["checks"] if c["check"] == "payment_method")
+    payment = next(c for c in body["checks"] if c["check"] == "paid_entitlement")
     assert payment["status"] == "fail"
 
 
@@ -430,6 +451,21 @@ def test_diagnose_requires_a_key_when_enforcement_is_on(engine, monkeypatch):
     body = client.get("/support/diagnose").json()
     assert body["status"] == "ACTION_REQUIRED"
     assert body["remediation"]["code"] == UNKNOWN_KEY
+
+
+def test_diagnose_reports_unsafe_paid_enforcement_as_service_configuration(
+    engine,
+    monkeypatch,
+):
+    configure_backend(monkeypatch)
+    unsafe = RevenueEngine.from_env({"DSG_REVENUE_ENFORCE": "1"})
+    billing.reset_engine(unsafe)
+
+    body = client.get("/support/diagnose").json()
+    assert body["status"] == "SERVICE_UNAVAILABLE"
+    assert body["remediation"]["code"] == "BILLING_STORAGE_NOT_READY"
+    storage = next(c for c in body["checks"] if c["check"] == "billing_storage")
+    assert storage["status"] == "fail"
 
 
 def test_diagnose_never_reveals_more_than_pass_or_fail_for_a_bad_key(engine, monkeypatch):

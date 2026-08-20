@@ -10,9 +10,10 @@ Usage:
         --admin-secret "$DSG_REVENUE_ADMIN_SECRET" --output revenue-report.md
 
 Exit codes:
-    0  report rendered (probes may still be UNAVAILABLE)
+    0  every required probe returned validated evidence
     1  usage error
     2  a reachable service returned a broken ledger chain
+    3  one or more required probes were unavailable or malformed
 """
 
 from __future__ import annotations
@@ -131,8 +132,16 @@ def render(
     if report.get("ok"):
         body = report["body"]
         lines.append(f"- Billing period: `{body.get('period')}`")
-        lines.append(f"- Accounts billed: `{body.get('accounts_billed')}`")
+        lines.append(
+            f"- Accounts with activity: `{body.get('accounts_with_activity')}`"
+        )
+        lines.append(f"- Accounts with paid invoices: `{body.get('accounts_billed')}`")
         lines.append(f"- Billable units: `{body.get('billable_units')}`")
+        recorded = body.get("recorded_usage_amount_micros")
+        if isinstance(recorded, int):
+            lines.append(f"- Recorded usage amount: **{micros_to_usd(recorded)}**")
+        else:
+            lines.append(f"- Recorded usage amount: {UNAVAILABLE}")
         recognized = body.get("recognized_amount_micros")
         if isinstance(recognized, int):
             lines.append(f"- Recognized amount: **{micros_to_usd(recognized)}**")
@@ -142,14 +151,15 @@ def render(
 
         accounts = body.get("accounts") or []
         if accounts:
-            lines.append("| Account | Plan | Units | Amount |")
-            lines.append("|---|---|---:|---:|")
+            lines.append("| Account | Plan | Units | Recorded usage | Paid invoices |")
+            lines.append("|---|---|---:|---:|---:|")
             for item in accounts:
                 account = item.get("account", {})
                 lines.append(
                     f"| `{account.get('account_id')}` | {account.get('plan')} "
                     f"| {item.get('units')} "
-                    f"| {micros_to_usd(item.get('total_amount_micros', 0))} |"
+                    f"| {micros_to_usd(item.get('usage_amount_micros', 0))} "
+                    f"| {micros_to_usd(item.get('recognized_amount_micros', 0))} |"
                 )
         else:
             lines.append("No account recorded billable usage in this period.")
@@ -163,16 +173,17 @@ def render(
     lines.append("## Truth boundary")
     lines.append("")
     lines.append(
-        "- Figures above are the service's own ledger totals. They are not "
-        "invoiced revenue, settled payments, or audited financials."
+        "- Recorded usage is the service's proof ledger, not an invoice. "
+        "Recognized amount is limited to scoped USD invoice.paid amounts; "
+        "neither figure is an independent financial audit."
     )
     lines.append(
         "- A row marked UNAVAILABLE means the probe failed. It does not mean "
         "the value is zero."
     )
     lines.append(
-        "- Charges only occur where `Stripe charges enabled` is true and the "
-        "account carries a linked payment method."
+        "- A working self-serve charge path is claimed only where "
+        "`Stripe charges enabled` is true."
     )
     lines.append("")
     return "\n".join(lines)
@@ -244,6 +255,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     if chain.get("ok") and chain["body"].get("verified") is not True:
         print("ledger chain did not verify", file=sys.stderr)
         return 2
+
+    required = [report, chain] if args.local_report else [health, status, report, chain]
+    unavailable = [item.get("path", "unknown") for item in required if not item.get("ok")]
+    if unavailable:
+        print(
+            f"required revenue probes unavailable: {', '.join(unavailable)}",
+            file=sys.stderr,
+        )
+        return 3
+
+    if not args.local_report:
+        if health["body"].get("status") not in {"ready", "ok"}:
+            print("health probe did not report a ready service", file=sys.stderr)
+            return 3
+        status_body = status["body"]
+        if not isinstance(status_body.get("metering_enforced"), bool):
+            print("billing status omitted metering_enforced", file=sys.stderr)
+            return 3
+
+    report_body = report["body"]
+    if not isinstance(report_body.get("recorded_usage_amount_micros"), int):
+        print("billing report omitted an exact recorded usage amount", file=sys.stderr)
+        return 3
+    if not isinstance(report_body.get("recognized_amount_micros"), int):
+        print("billing report omitted an exact recognized amount", file=sys.stderr)
+        return 3
     return 0
 
 

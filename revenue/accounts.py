@@ -51,6 +51,10 @@ class Account:
     stripe_customer_id: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
     payment_linked: bool = False
+    stripe_paid_amounts_micros: dict[str, int] = field(default_factory=dict)
+    stripe_paid_invoice_ids: list[str] = field(default_factory=list)
+    stripe_processed_event_ids: list[str] = field(default_factory=list)
+    stripe_field_event_created: dict[str, int] = field(default_factory=dict)
     activation_ref: Optional[str] = None
     unit_price_micros: Optional[int] = None
     hard_cap_units: Optional[int] = None
@@ -123,6 +127,115 @@ class AccountStore:
                 if account.stripe_customer_id == customer_id:
                     return account
         return None
+
+    def apply_stripe_event(
+        self,
+        *,
+        customer_id: str,
+        subscription_id: str,
+        event_id: str,
+        event_created: int,
+        allow_subscription_binding: bool,
+        changes: dict,
+        paid_period: Optional[str] = None,
+        paid_amount_micros: Optional[int] = None,
+        paid_invoice_id: Optional[str] = None,
+    ) -> tuple[Optional[Account], str]:
+        """Atomically apply one already-verified, DSG-scoped Stripe event.
+
+        Stripe retries and delivers webhooks out of order.  The account store
+        therefore owns idempotency and ordering rather than leaving them to an
+        HTTP handler.  A subscription can be bound only by an event whose
+        catalog scope was validated by ``stripe_sync.apply_webhook_event``.
+        """
+        allowed = {
+            "plan",
+            "status",
+            "stripe_subscription_id",
+            "payment_linked",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"cannot apply Stripe fields: {sorted(unknown)}")
+        if "plan" in changes:
+            get_plan(changes["plan"])
+        if "status" in changes and changes["status"] not in _VALID_STATUSES:
+            raise ValueError(f"invalid status: {changes['status']}")
+
+        with self._lock:
+            account = next(
+                (
+                    candidate
+                    for candidate in self._accounts.values()
+                    if candidate.stripe_customer_id == customer_id
+                ),
+                None,
+            )
+            if account is None:
+                return None, "unknown_customer"
+            if event_id in account.stripe_processed_event_ids:
+                return account, "duplicate"
+            if paid_invoice_id and paid_invoice_id in account.stripe_paid_invoice_ids:
+                return account, "duplicate_invoice"
+            current_subscription = account.stripe_subscription_id
+            if current_subscription and current_subscription != subscription_id:
+                return account, "subscription_mismatch"
+            if not current_subscription and not allow_subscription_binding:
+                return account, "subscription_not_bound"
+
+            applied_changes = dict(changes)
+            if not current_subscription and allow_subscription_binding:
+                applied_changes.setdefault("stripe_subscription_id", subscription_id)
+
+            cursor_for = {
+                "plan": "plan",
+                "status": "entitlement",
+                "payment_linked": "entitlement",
+                "stripe_subscription_id": "subscription_binding",
+            }
+            cursors = dict(account.stripe_field_event_created)
+            current_changes: dict = {}
+            for field_name, value in applied_changes.items():
+                cursor_name = cursor_for[field_name]
+                if event_created < cursors.get(cursor_name, 0):
+                    continue
+                current_changes[field_name] = value
+                cursors[cursor_name] = max(
+                    cursors.get(cursor_name, 0),
+                    event_created,
+                )
+
+            paid_amounts = dict(account.stripe_paid_amounts_micros)
+            paid_recorded = False
+            if paid_period and paid_amount_micros is not None:
+                if paid_amount_micros < 0:
+                    raise ValueError("paid Stripe amount must not be negative")
+                paid_amounts[paid_period] = (
+                    paid_amounts.get(paid_period, 0) + paid_amount_micros
+                )
+                paid_recorded = True
+
+            if not current_changes and not paid_recorded:
+                return account, "stale"
+
+            processed = [*account.stripe_processed_event_ids, event_id]
+            paid_invoices = list(account.stripe_paid_invoice_ids)
+            if paid_invoice_id:
+                paid_invoices.append(paid_invoice_id)
+            updated = replace(
+                account,
+                **current_changes,
+                stripe_paid_amounts_micros=paid_amounts,
+                stripe_paid_invoice_ids=paid_invoices,
+                stripe_processed_event_ids=processed,
+                stripe_field_event_created=cursors,
+                updated_at=utc_now(),
+            )
+            self._accounts[account.account_id] = updated
+            if updated.key_id:
+                self._by_key_id[updated.key_id] = account.account_id
+            self._persist()
+            return updated, "applied"
 
     def authenticate(self, api_key: str) -> Optional[Account]:
         """Return the account for a presented key, or None.

@@ -30,6 +30,7 @@
       "status": "LIVE_V1",
       "listing": "DSG Secure Deploy Gate",
       "public_url": "https://github.com/marketplace/actions/dsg-secure-deploy-gate",
+      "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "v2_package": "marketplace/github-action-v2/",
       "next": "publish the prepared Verified Execution v2 package from the dedicated Action repository",
       "commercial_role": "free acquisition channel; paid verification service sold separately"
@@ -38,6 +39,7 @@
       "channel": "Stripe Apps Marketplace",
       "status": "PACKAGE_V2_7_PREPARED",
       "app_id": "pics.dsg.governance",
+      "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "stripe-app/",
       "next": "bind to production Cinema URL, upload with Stripe CLI, external test, submit review",
       "commercial_role": "native Stripe distribution"
@@ -46,6 +48,7 @@
       "channel": "Microsoft Marketplace",
       "status": "SUBMISSION_PACK_PREPARED",
       "recommended_listing": "Contact me",
+      "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "marketplace/azure/offer.md",
       "next": "create SaaS offer in Partner Center and submit listing",
       "commercial_role": "enterprise lead generation first; transactable SaaS later"
@@ -54,6 +57,7 @@
       "channel": "AWS Marketplace",
       "status": "BLOCKED_EXTERNAL",
       "recommended_listing": "SaaS",
+      "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "marketplace/aws/offer.md",
       "next": "complete seller onboarding and marketplace billing/entitlement integration before public paid launch",
       "commercial_role": "enterprise procurement channel"
@@ -61,6 +65,7 @@
     {
       "channel": "JetBrains Marketplace",
       "status": "SPEC_ONLY",
+      "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "marketplace/jetbrains/offer.md",
       "next": "build signed IDE plugin artifact, verify compatibility, upload for review",
       "commercial_role": "developer acquisition and paid plugin option"
@@ -68,6 +73,7 @@
     {
       "channel": "OpenAI Skills",
       "status": "READY_FOR_EXTERNAL_SUBMIT",
+      "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "marketplace/openai-plugin/",
       "next": "complete publisher verification and submit through the current OpenAI publishing surface",
       "commercial_role": "agent distribution using the bounded /verify/evaluate contract"
@@ -76,37 +82,39 @@
       "channel": "Direct API",
       "status": "LIVE",
       "public_url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs",
-      "next": "add customer authentication and metering before a paid self-serve API plan",
+      "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
+      "next": "attach durable storage and verified Stripe commerce before enabling paid enforcement",
       "commercial_role": "live verification integration and technical evaluation"
     }
   ],
   "revenue_automation": {
-    "system": "dsg-revenue-1.0.0",
-    "status": "IMPLEMENTED_METERING_LIVE_CHARGES_NOT_LINKED",
+    "system": "dsg-revenue-1.1.0",
+    "status": "IMPLEMENTED_SAFE_RECORD_ONLY_CHARGES_NOT_VERIFIED",
     "billable_unit": "one Z3 VERIFIED_GLOBAL_OPTIMUM proof receipt",
     "status_endpoint": "/billing/status",
     "usage_endpoint": "/billing/usage",
     "webhook_endpoint": "/billing/webhook/stripe",
     "ledger": "SHA-256 hash-chained, append-only, replayable",
-    "enforcement_default": "record-only; DSG_REVENUE_ENFORCE=1 turns on paid gating",
+    "enforcement_default": "record-only; paid gating also requires durable single-writer storage attestations",
     "supported": [
       "API-key customer identity with hash-only secret storage",
       "fail-closed entitlement checks before any solver work",
       "proof-bound metering that cannot bill an unverified receipt",
+      "atomic quota recheck, pricing, and append under one ledger lock",
       "idempotent billing per verification context",
-      "signature-verified Stripe webhooks driving entitlement state",
-      "scheduled reconciliation with UNAVAILABLE reporting instead of estimates"
+      "signature-verified Stripe webhooks scoped to the exact product, price, and subscription",
+      "scheduled reconciliation that fails when required evidence is UNAVAILABLE"
     ],
     "not_claimed": [
       "an active Stripe checkout link",
       "durable multi-replica billing storage",
-      "settled or invoiced revenue",
+      "independently audited or settlement-reconciled revenue",
       "independent financial audit"
     ],
     "external_action_required": [
-      "set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET to enable charges",
-      "attach a durable ledger store before enabling DSG_REVENUE_ENFORCE",
-      "create the Stripe meter and price that match the published catalog"
+      "configure and verify the Stripe product, price, Payment Link, meter, webhook endpoint, API key, and webhook secret",
+      "attach durable stores and run one writer before enabling DSG_REVENUE_ENFORCE",
+      "set a stable DSG_REVENUE_ADMIN_SECRET for scheduled reconciliation"
     ]
   },
   "channel_delivery": {

@@ -111,6 +111,28 @@ class RateLimiter:
             self._prune(current)
             self._events.append((current, channel))
 
+    def consume(self, channel: str, now: Optional[float] = None) -> Optional[int]:
+        """Atomically reserve one activation slot.
+
+        Keeping the limit check and reservation under the same lock prevents a
+        burst of simultaneous requests from all observing an available slot.
+        """
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            self._prune(current)
+
+            channel_events = [event for event in self._events if event[1] == channel]
+            if len(channel_events) >= self._per_channel:
+                oldest = min(event[0] for event in channel_events)
+                return max(int(self._window - (current - oldest)), 1)
+
+            if len(self._events) >= self._global:
+                oldest = min(event[0] for event in self._events)
+                return max(int(self._window - (current - oldest)), 1)
+
+            self._events.append((current, channel))
+            return None
+
 
 class ActivationService:
     def __init__(
@@ -122,6 +144,10 @@ class ActivationService:
         self.accounts = accounts
         self.limiter = limiter or RateLimiter()
         self.enabled = enabled
+        # Activation lookup, rate-limit reservation, and issuance form one
+        # process-local transaction. Production multi-replica safety still
+        # requires the durable single-writer deployment documented elsewhere.
+        self._lock = threading.Lock()
 
     @classmethod
     def from_env(
@@ -176,32 +202,32 @@ class ActivationService:
                 remediation=remediation_for(ACTIVATION_DISABLED),
             )
 
-        existing = self.find_existing(channel, activation_id)
-        if existing is not None:
-            return ActivationResult(
-                decision=ACTIVATION_EXISTS,
-                account=existing,
-                api_key=None,
-                remediation=remediation_for(ACTIVATION_EXISTS),
-            )
+        with self._lock:
+            existing = self.find_existing(channel, activation_id)
+            if existing is not None:
+                return ActivationResult(
+                    decision=ACTIVATION_EXISTS,
+                    account=existing,
+                    api_key=None,
+                    remediation=remediation_for(ACTIVATION_EXISTS),
+                )
 
-        retry_after = self.limiter.check(channel)
-        if retry_after is not None:
-            return ActivationResult(
-                decision=ACTIVATION_RATE_LIMITED,
-                account=None,
-                api_key=None,
-                remediation=remediation_for(ACTIVATION_RATE_LIMITED),
-                retry_after_seconds=retry_after,
-            )
+            retry_after = self.limiter.consume(channel)
+            if retry_after is not None:
+                return ActivationResult(
+                    decision=ACTIVATION_RATE_LIMITED,
+                    account=None,
+                    api_key=None,
+                    remediation=remediation_for(ACTIVATION_RATE_LIMITED),
+                    retry_after_seconds=retry_after,
+                )
 
-        account, api_key = self.accounts.issue(
-            display_name=display_name,
-            plan=ACTIVATION_PLAN,
-            channel=channel,
-            activation_ref=activation_ref(channel, activation_id),
-        )
-        self.limiter.record(channel)
+            account, api_key = self.accounts.issue(
+                display_name=display_name,
+                plan=ACTIVATION_PLAN,
+                channel=channel,
+                activation_ref=activation_ref(channel, activation_id),
+            )
 
         return ActivationResult(
             decision=ACTIVATED,

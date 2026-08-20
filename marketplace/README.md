@@ -34,7 +34,7 @@ The service does **not** claim SOC 2, ISO, regulatory, or third-party certificat
 | Microsoft Marketplace | submission metadata ready | Start with `Contact me` SaaS listing for enterprise leads | Partner Center publisher enrollment/offer submission |
 | AWS Marketplace | blocked externally | SaaS offer specification only | Seller onboarding plus AWS Marketplace billing/entitlement integration before paid public listing |
 | JetBrains Marketplace | plugin specification ready | Developer-channel concept uses the same `/verify/evaluate` API | Build/sign plugin ZIP, declare trader status, upload for manual review |
-| Direct API | LIVE | Public bounded verification endpoint and API documentation | Add customer authentication and metering before paid self-service |
+| Direct API | LIVE | Public bounded verification endpoint, free activation, and proof-bound metering | Attach durable storage and verified Stripe commerce before enabling paid enforcement |
 
 ## Commercial model by channel
 

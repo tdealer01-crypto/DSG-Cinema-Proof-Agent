@@ -69,7 +69,7 @@ jobs:
 
       - name: Validate the revenue automation claims
         run: |
-          jq -e '.revenue_automation.system == "dsg-revenue-1.0.0"' marketplace/launch-manifest.json >/dev/null
+          jq -e '.revenue_automation.system == "dsg-revenue-1.1.0"' marketplace/launch-manifest.json >/dev/null
           jq -e '.revenue_automation.billable_unit | test("VERIFIED_GLOBAL_OPTIMUM")' marketplace/launch-manifest.json >/dev/null
           # The manifest must not claim a payment link the product does not have.
           jq -e '.revenue_automation.not_claimed | index("an active Stripe checkout link")' marketplace/launch-manifest.json >/dev/null

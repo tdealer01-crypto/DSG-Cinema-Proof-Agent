@@ -6,6 +6,8 @@
 
 **Short description:** Deterministic proof receipts for AI and automated actions using Cinema + exact Z3 verification.
 
+**Product website:** https://dsgoneverifiedweb.z1.web.core.windows.net/
+
 ## Fastest launch path
 
 Start with a **Contact me** SaaS listing. This creates an enterprise discovery/lead channel without requiring the transactable SaaS fulfillment integration on day one.

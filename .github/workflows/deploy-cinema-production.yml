@@ -8,6 +8,7 @@ on:
       - 'cinema_main.py'
       - 'requirements.txt'
       - 'requirements-cinema.txt'
+      - 'revenue/**'
       - 'Dockerfile'
       - 'Dockerfile.cinema'
       - 'tests/**'
@@ -83,21 +84,23 @@ jobs:
           echo "::add-mask::$Z3_SECRET"
           echo "::add-mask::$CINEMA_SECRET"
 
-          # The revenue admin credential is long-lived on purpose: rotating it
-          # on every deployment would break the reconciliation credential the
-          # autopilot uses. A per-revision value is generated only when none is
-          # configured, which leaves admin billing routes reachable but unshared.
+          # Revenue reconciliation must use a stable repository secret. Missing
+          # configuration stays explicitly unavailable; never mint an ephemeral
+          # value that the scheduled workflow cannot know.
           REVENUE_ADMIN_SECRET="${CONFIGURED_REVENUE_ADMIN_SECRET:-}"
           if [[ -z "$REVENUE_ADMIN_SECRET" ]]; then
-            REVENUE_ADMIN_SECRET=$(openssl rand -hex 32)
-            echo 'DSG_REVENUE_ADMIN_SECRET is not configured; using an ephemeral value for this revision.'
+            REVENUE_ADMIN_CONFIGURED=false
+            echo 'DSG_REVENUE_ADMIN_SECRET is not configured; admin reconciliation will remain unavailable.'
+          else
+            REVENUE_ADMIN_CONFIGURED=true
+            echo "::add-mask::$REVENUE_ADMIN_SECRET"
           fi
-          echo "::add-mask::$REVENUE_ADMIN_SECRET"
 
           echo "PULL_IDENTITY_ID=$PULL_IDENTITY_ID" >> "$GITHUB_ENV"
           echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
           echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
           echo "REVENUE_ADMIN_SECRET=$REVENUE_ADMIN_SECRET" >> "$GITHUB_ENV"
+          echo "REVENUE_ADMIN_CONFIGURED=$REVENUE_ADMIN_CONFIGURED" >> "$GITHUB_ENV"
 
       - name: Ensure production Container Apps environment
         shell: bash
@@ -210,20 +213,39 @@ jobs:
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
-            retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" --output none
-            retry az containerapp update \
-              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
-              --image "$CINEMA_IMAGE_REF" \
-              --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
-              --output none
+            if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+              retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" --output none
+              retry az containerapp update \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --image "$CINEMA_IMAGE_REF" \
+                --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
+                --output none
+            else
+              retry az containerapp secret set --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" --output none
+              retry az containerapp update \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --image "$CINEMA_IMAGE_REF" \
+                --set-env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
+                --output none
+            fi
           else
-            retry az containerapp create \
-              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
-              --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
-              --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
-              --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" \
-              --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
-              --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
+            if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+              retry az containerapp create \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
+                --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
+                --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
+                --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" "revenue-admin-secret=$REVENUE_ADMIN_SECRET" \
+                --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ADMIN_SECRET=secretref:revenue-admin-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
+                --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
+            else
+              retry az containerapp create \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --environment "$CONTAINER_ENV" \
+                --image "$CINEMA_IMAGE_REF" --ingress external --target-port 8000 --transport http \
+                --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
+                --secrets "backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET" \
+                --env-vars DSG_BACKEND_BASE_URL="$Z3_URL" DSG_BACKEND_API_KEY=secretref:backend-secret CINEMA_API_SECRET=secretref:cinema-secret DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE" PORT=8000 \
+                --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
+            fi
           fi
 
           retry az containerapp ingress update \
@@ -350,16 +372,21 @@ jobs:
           # Checkout state must match whether Stripe is actually linked, and
           # enforcement must match what this deployment configured.
           jq -e --arg enforce "$REVENUE_ENFORCE" '
-            .billing_version == "dsg-revenue-1.0.0" and
+            .billing_version == "dsg-revenue-1.1.0" and
             .metering_enabled == true and
-            .metering_enforced == ($enforce == "1") and
+            .enforcement_requested == ($enforce == "1") and
+            .metering_enforced == (($enforce == "1") and .enforcement_ready) and
             (.checkout_status == (if .stripe.charges_enabled then "LINKED" else "NOT_VERIFIED_NOT_LINKED" end)) and
             ([.catalog.plans[].plan] | sort == ["enterprise","free","metered","team"])
           ' /tmp/billing-status.json >/dev/null
 
           # Admin billing routes must reject an unauthenticated caller.
           REPORT_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/report")
-          test "$REPORT_CODE" = '401'
+          if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            test "$REPORT_CODE" = '401'
+          else
+            test "$REPORT_CODE" = '503'
+          fi
           USAGE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/usage")
           test "$USAGE_CODE" = '401'
 
@@ -371,17 +398,21 @@ jobs:
             --data @/tmp/marketplace-request.json)
           test "$KEY_CODE" = '401'
 
-          # The admin credential this deployment provisioned must work, and the
-          # usage ledger must verify.
-          curl --fail-with-body --silent --show-error \
-            --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
-            "$CINEMA_URL/billing/ledger/verify" > /tmp/billing-ledger.json
-          jq -e '.verified == true' /tmp/billing-ledger.json >/dev/null
+          # A configured stable admin credential must work. Missing
+          # configuration remains explicitly unavailable in the evidence.
+          if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
+              "$CINEMA_URL/billing/ledger/verify" > /tmp/billing-ledger.json
+            jq -e '.verified == true' /tmp/billing-ledger.json >/dev/null
+          else
+            jq -n '{verified:false,entries:0,head_hash:null,availability:"UNAVAILABLE_ADMIN_SECRET"}' > /tmp/billing-ledger.json
+          fi
 
-          jq -n \
+          jq -n --argjson admin_routes_authenticated "$REVENUE_ADMIN_CONFIGURED" \
             --slurpfile status /tmp/billing-status.json \
             --slurpfile ledger /tmp/billing-ledger.json \
-            '{checkout_status:$status[0].checkout_status,metering_enforced:$status[0].metering_enforced,charges_enabled:$status[0].stripe.charges_enabled,ledger_verified:$ledger[0].verified,ledger_entries:$ledger[0].entries,admin_routes_authenticated:true,invalid_api_key_rejected:true}' \
+            '{checkout_status:$status[0].checkout_status,metering_enforced:$status[0].metering_enforced,enforcement_ready:$status[0].enforcement_ready,charges_enabled:$status[0].stripe.charges_enabled,ledger_verified:$ledger[0].verified,ledger_entries:$ledger[0].entries,admin_routes_authenticated:$admin_routes_authenticated,invalid_api_key_rejected:true}' \
             > /tmp/revenue-e2e.json
           cat /tmp/revenue-e2e.json
 

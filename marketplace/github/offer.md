@@ -12,6 +12,8 @@
 
 Prepared at `marketplace/github-action-v2/`.
 
+Product website for the v2 listing: https://dsgoneverifiedweb.z1.web.core.windows.net/
+
 v2 adds a Verified Execution mode backed by Cinema `/verify/evaluate` and exact Z3 verification while keeping marketplace-side logic bounded. The Action writes `dsg-proof-receipt.json` and exposes `decision`, `proof_hash`, and `context_hash` outputs.
 
 ### v2 positioning

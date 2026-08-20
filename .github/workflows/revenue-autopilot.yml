@@ -66,10 +66,10 @@ jobs:
           echo "reconcile_exit=$RESULT" >> "$GITHUB_OUTPUT"
           cat revenue-report.md >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "$RESULT" == "2" ]]; then
-            echo 'ledger_broken=true' >> "$GITHUB_OUTPUT"
+          if [[ "$RESULT" == "0" ]]; then
+            echo 'reconciliation_failed=false' >> "$GITHUB_OUTPUT"
           else
-            echo 'ledger_broken=false' >> "$GITHUB_OUTPUT"
+            echo 'reconciliation_failed=true' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload reconciliation evidence
@@ -88,6 +88,23 @@ jobs:
             const fs = require('fs');
             const body = fs.readFileSync('revenue-report.md', 'utf8');
             const title = 'Revenue Autopilot — reconciliation log';
+
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: process.env.REPORT_LABEL,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: process.env.REPORT_LABEL,
+                color: '0e8a16',
+                description: 'Automated revenue reconciliation evidence',
+              });
+            }
 
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -124,8 +141,8 @@ jobs:
               body: body + footer,
             });
 
-      - name: Fail the run when the ledger chain is broken
-        if: steps.reconcile.outputs.ledger_broken == 'true'
+      - name: Fail the run when reconciliation is unavailable or invalid
+        if: steps.reconcile.outputs.reconciliation_failed == 'true'
         run: |
-          echo 'The production usage ledger did not verify. Revenue figures from this run are not trustworthy.' >&2
+          echo 'Production revenue reconciliation did not return complete, verified evidence.' >&2
           exit 1

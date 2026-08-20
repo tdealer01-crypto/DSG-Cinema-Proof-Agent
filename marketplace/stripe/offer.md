@@ -7,6 +7,7 @@
 - Distribution: public
 - Runtime: Stripe UI → Cinema `/stripe/evaluate` → server-side Z3 exact proof
 - Client package contains no Z3 credential
+- Product website: https://dsgoneverifiedweb.z1.web.core.windows.net/
 
 ## Listing copy
 

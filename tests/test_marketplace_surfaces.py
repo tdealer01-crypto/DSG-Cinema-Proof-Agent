@@ -45,10 +45,15 @@ def test_landing_contains_live_proof_flow_and_fail_closed_contract():
         "[hidden]{display:none!important}",
         "Verification unavailable — no decision issued.",
         "Checkout status: NOT VERIFIED / NOT LINKED",
+        "const DELIVERY_CHANNEL=HOST.endsWith('.web.core.windows.net')?'azure':HOST.endsWith('.onrender.com')?'render':'api'",
+        "channel:DELIVERY_CHANNEL",
+        "agent_identity:`dsg-${DELIVERY_CHANNEL}-landing`",
     ]
     for value in required:
         assert value in html
     assert "event.currentTarget.textContent" not in html
+    assert "channel:'azure'" not in html
+    assert "channel:'api',activation_id" not in html
 
 
 def test_landing_exposes_every_supported_marketplace_status_truthfully():
@@ -104,6 +109,21 @@ def test_launch_manifest_matches_repository_artifacts():
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
 
+    official_landing = manifest["product"]["public_landing"]
+    assert all(
+        item.get("website_url") == official_landing
+        for item in manifest["channels"]
+    )
+
+    stripe_app = json.loads(
+        (ROOT / "stripe-app" / "stripe-app.template.json").read_text(encoding="utf-8")
+    )
+    assert stripe_app["websiteUrl"] == official_landing
+    openai_listing = (
+        ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md"
+    ).read_text(encoding="utf-8")
+    assert f"**Website:** {official_landing}" in openai_listing
+
     for item in manifest["channels"]:
         package = item.get("package") or item.get("v2_package")
         if package:
@@ -120,6 +140,24 @@ def test_request_flows_warn_against_secrets_and_false_checkout():
     assert "does not create a charge" in paid
     assert "Do not paste credentials" in paid
     assert "no secrets" in enterprise
+
+
+def test_every_prepared_marketplace_uses_the_official_product_website():
+    manifest = json.loads(
+        (ROOT / "marketplace" / "launch-manifest.json").read_text(encoding="utf-8")
+    )
+    official = manifest["product"]["public_landing"]
+    listing_files = [
+        ROOT / "marketplace" / "github" / "offer.md",
+        ROOT / "marketplace" / "stripe" / "offer.md",
+        ROOT / "marketplace" / "azure" / "offer.md",
+        ROOT / "marketplace" / "aws" / "offer.md",
+        ROOT / "marketplace" / "jetbrains" / "offer.md",
+        ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md",
+        ROOT / "stripe-app" / "stripe-app.template.json",
+    ]
+    for path in listing_files:
+        assert official in path.read_text(encoding="utf-8"), path
 
 
 def test_retired_runtime_links_are_absent_from_current_surfaces():

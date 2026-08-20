@@ -160,30 +160,127 @@ class LedgerStore:
             if existing is not None:
                 return existing, False
 
-            recorded = recorded_at or utc_now()
-            body = {
-                "sequence": len(self._entries),
-                "period": period or billing_period(recorded),
-                "account_id": account_id,
-                "channel": channel,
-                "sku": sku,
-                "quantity": quantity,
-                "units_before": units_before,
-                "unit_price_micros": unit_price_micros,
-                "amount_micros": amount_micros,
-                "proof_hash": proof_hash,
-                "context_hash": context_hash,
-                "idempotency_key": idempotency_key,
-                "recorded_at": recorded,
-                "prev_hash": (
-                    self._entries[-1].entry_hash if self._entries else GENESIS_HASH
-                ),
-            }
-            entry = LedgerEntry(**body, entry_hash=compute_entry_hash(body))
-            self._entries.append(entry)
-            self._by_idempotency[idempotency_key] = entry
-            self._persist()
-            return entry, True
+            return self._append_locked(
+                account_id=account_id,
+                channel=channel,
+                sku=sku,
+                quantity=quantity,
+                unit_price_micros=unit_price_micros,
+                amount_micros=amount_micros,
+                proof_hash=proof_hash,
+                context_hash=context_hash,
+                idempotency_key=idempotency_key,
+                units_before=units_before,
+                period=period,
+                recorded_at=recorded_at,
+            )
+
+    def append_metered(
+        self,
+        *,
+        account_id: str,
+        channel: str,
+        sku: str,
+        quantity: int,
+        unit_price_micros: int,
+        included_units: int,
+        hard_cap_units: Optional[int],
+        proof_hash: str,
+        context_hash: str,
+        idempotency_key: str,
+        period: str,
+        recorded_at: Optional[str] = None,
+    ) -> tuple[LedgerEntry, bool]:
+        """Validate quota, price, and append under one ledger lock.
+
+        Authorization happens before solver work, but another request may
+        finish while that proof is being computed.  Rechecking the cap in the
+        same critical section as the append prevents two pre-authorized
+        requests from crossing a hard cap or consuming the same included unit.
+        Idempotent replays are returned before quota evaluation.
+        """
+        if quantity < 1:
+            raise ValueError("quantity must be at least 1")
+
+        with self._lock:
+            existing = self._by_idempotency.get(idempotency_key)
+            if existing is not None:
+                return existing, False
+
+            units_before = sum(
+                entry.quantity
+                for entry in self._entries
+                if entry.account_id == account_id and entry.period == period
+            )
+            if hard_cap_units is not None and units_before + quantity > hard_cap_units:
+                raise QuotaExceededError(
+                    "plan quota was consumed by another request before metering"
+                )
+
+            remaining_included = max(included_units - units_before, 0)
+            billable_quantity = max(quantity - remaining_included, 0)
+            amount_micros = billable_quantity * unit_price_micros
+
+            return self._append_locked(
+                account_id=account_id,
+                channel=channel,
+                sku=sku,
+                quantity=quantity,
+                unit_price_micros=unit_price_micros,
+                amount_micros=amount_micros,
+                proof_hash=proof_hash,
+                context_hash=context_hash,
+                idempotency_key=idempotency_key,
+                units_before=units_before,
+                period=period,
+                recorded_at=recorded_at,
+            )
+
+    def _append_locked(
+        self,
+        *,
+        account_id: str,
+        channel: str,
+        sku: str,
+        quantity: int,
+        unit_price_micros: int,
+        amount_micros: int,
+        proof_hash: str,
+        context_hash: str,
+        idempotency_key: str,
+        units_before: int,
+        period: Optional[str],
+        recorded_at: Optional[str],
+    ) -> tuple[LedgerEntry, bool]:
+        """Append while ``self._lock`` is held."""
+        recorded = recorded_at or utc_now()
+        body = {
+            "sequence": len(self._entries),
+            "period": period or billing_period(recorded),
+            "account_id": account_id,
+            "channel": channel,
+            "sku": sku,
+            "quantity": quantity,
+            "units_before": units_before,
+            "unit_price_micros": unit_price_micros,
+            "amount_micros": amount_micros,
+            "proof_hash": proof_hash,
+            "context_hash": context_hash,
+            "idempotency_key": idempotency_key,
+            "recorded_at": recorded,
+            "prev_hash": (
+                self._entries[-1].entry_hash if self._entries else GENESIS_HASH
+            ),
+        }
+        entry = LedgerEntry(**body, entry_hash=compute_entry_hash(body))
+        self._entries.append(entry)
+        self._by_idempotency[idempotency_key] = entry
+        self._persist()
+        return entry, True
+
+
+class QuotaExceededError(ValueError):
+    """Raised when an atomic ledger append would cross a hard cap."""
 
 
 class ChainError(ValueError):

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import time
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import cinema_main
 from revenue import api as billing
+from scripts import revenue_report
 from revenue.accounts import Account, AccountStore, accounts_from_env, hash_secret
 from revenue.engine import (
     ACCOUNT_SUSPENDED,
@@ -19,7 +22,13 @@ from revenue.engine import (
     UNKNOWN_KEY,
     RevenueEngine,
 )
-from revenue.ledger import ChainError, LedgerStore, verify_chain
+from revenue.ledger import (
+    ChainError,
+    LedgerStore,
+    QuotaExceededError,
+    billing_period,
+    verify_chain,
+)
 from revenue.pricing import (
     get_plan,
     get_sku,
@@ -32,12 +41,25 @@ from revenue.stripe_sync import (
     StripeConfig,
     apply_webhook_event,
     config_from_env,
+    verify_operational_link,
     verify_webhook_signature,
 )
 
 client = TestClient(cinema_main.app)
 
 ADMIN_SECRET = "A" * 48
+
+TEST_STRIPE_CONFIG = StripeConfig(
+    secret_key="sk_test_configured",
+    webhook_secret="whsec_test",
+    meter_event_name="dsg_verified_execution",
+    product_id="prod_dsg",
+    price_id="price_dsg",
+    payment_link_id="plink_dsg",
+    meter_id="mtr_dsg",
+    webhook_endpoint_id="we_dsg",
+    webhook_endpoint_url="https://cinema.example.test/billing/webhook/stripe",
+)
 
 VALID_PROOF = {
     "request_id": "cinema-test",
@@ -70,8 +92,17 @@ VERIFY_BODY = {
 def engine(monkeypatch):
     """A fresh, isolated engine for each test."""
     monkeypatch.setenv("DSG_REVENUE_ADMIN_SECRET", ADMIN_SECRET)
-    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
-    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    for name in (
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_PRODUCT_ID",
+        "STRIPE_PRICE_ID",
+        "STRIPE_PAYMENT_LINK_ID",
+        "STRIPE_METER_ID",
+        "STRIPE_WEBHOOK_ENDPOINT_ID",
+        "STRIPE_WEBHOOK_ENDPOINT_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
     instance = billing.reset_engine(RevenueEngine(enforce=False))
     yield instance
     billing.reset_engine(RevenueEngine(enforce=False))
@@ -331,6 +362,98 @@ def test_free_plan_quota_is_fail_closed_at_the_cap(engine):
     assert engine.usage_summary(account)["total_amount_micros"] == 0
 
 
+def test_atomic_append_prevents_two_pre_authorized_requests_crossing_a_cap(engine):
+    account, api_key = engine.accounts.issue(
+        display_name="Acme",
+        plan="free",
+        hard_cap_units=1,
+    )
+    receipt = {
+        "verified": True,
+        "verification": "VERIFIED_GLOBAL_OPTIMUM",
+        "proof_hash": "a" * 64,
+    }
+
+    first = engine.authorize(api_key, "verified_execution")
+    second = engine.authorize(api_key, "verified_execution")
+    assert first.decision == AUTHORIZED
+    assert second.decision == AUTHORIZED
+
+    engine.record_usage(
+        first,
+        sku="verified_execution",
+        receipt={**receipt, "context_hash": "1" * 64},
+    )
+    with pytest.raises(QuotaExceededError, match="another request"):
+        engine.record_usage(
+            second,
+            sku="verified_execution",
+            receipt={**receipt, "context_hash": "2" * 64},
+        )
+
+    assert engine.ledger.units_used(account.account_id, billing_period()) == 1
+
+
+def test_post_authorization_quota_race_returns_402_instead_of_a_free_proof(engine):
+    _, api_key = engine.accounts.issue(
+        display_name="Acme",
+        plan="free",
+        hard_cap_units=1,
+    )
+    first = engine.authorize(api_key, "verified_execution")
+    second = engine.authorize(api_key, "verified_execution")
+    base_receipt = {
+        "verified": True,
+        "verification": "VERIFIED_GLOBAL_OPTIMUM",
+        "proof_hash": "a" * 64,
+    }
+    asyncio.run(
+        billing.meter(
+            first,
+            sku="verified_execution",
+            receipt={**base_receipt, "context_hash": "1" * 64},
+        )
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            billing.meter(
+                second,
+                sku="verified_execution",
+                receipt={**base_receipt, "context_hash": "2" * 64},
+            )
+        )
+    assert getattr(caught.value, "status_code", None) == 402
+    assert caught.value.detail["error"] == QUOTA_EXCEEDED
+    assert caught.value.detail["remediation"]["code"] == QUOTA_EXCEEDED
+
+
+def test_entitlement_change_after_authorization_never_releases_a_free_proof(
+    engine,
+    monkeypatch,
+):
+    configure_backend(monkeypatch)
+    account, api_key = engine.accounts.issue(display_name="Acme", plan="metered")
+    engine.accounts.update(account.account_id, payment_linked=True)
+
+    async def suspend_during_solver(method, path, payload=None):
+        if path == "/solve":
+            engine.accounts.update(account.account_id, status="suspended")
+        return 200, dict(VALID_PROOF)
+
+    monkeypatch.setattr(cinema_main, "z3_request", suspend_during_solver)
+    response = client.post(
+        "/verify/evaluate",
+        json=VERIFY_BODY,
+        headers={"X-DSG-API-Key": api_key},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == ACCOUNT_SUSPENDED
+    assert response.json()["detail"]["remediation"]["code"] == ACCOUNT_SUSPENDED
+    assert engine.ledger.size() == 0
+
+
 def test_metered_plan_requires_a_linked_payment_method(engine):
     account, api_key = engine.accounts.issue(display_name="Acme", plan="metered")
     denied = engine.authorize(api_key, "verified_execution")
@@ -339,6 +462,21 @@ def test_metered_plan_requires_a_linked_payment_method(engine):
 
     engine.accounts.update(account.account_id, payment_linked=True)
     assert engine.authorize(api_key, "verified_execution").decision == AUTHORIZED
+
+
+def test_team_plan_requires_a_paid_current_period_before_included_use(engine):
+    account, api_key = engine.accounts.issue(display_name="Acme", plan="team")
+    assert engine.authorize(api_key, "verified_execution").decision == PAYMENT_NOT_LINKED
+
+    engine.accounts.update(account.account_id, payment_linked=True)
+    assert engine.authorize(api_key, "verified_execution").decision == PAYMENT_NOT_LINKED
+
+
+def test_unpaid_team_account_is_not_reported_as_recognized_revenue(engine):
+    engine.accounts.issue(display_name="Acme", plan="team")
+    report = engine.period_report()
+    assert report["recognized_amount_micros"] == 0
+    assert report["accounts_billed"] == 0
 
 
 def test_an_unverified_receipt_is_never_metered(engine):
@@ -396,7 +534,8 @@ def test_metered_usage_prices_and_aggregates_deterministically(engine):
 
     report = engine.period_report()
     assert report["billable_units"] == 3
-    assert report["recognized_amount_micros"] == 300_000
+    assert report["recorded_usage_amount_micros"] == 300_000
+    assert report["recognized_amount_micros"] == 0
     assert report["ledger"]["verified"] is True
 
 
@@ -472,6 +611,9 @@ def test_subscription_events_drive_entitlement_state():
 
     result = apply_webhook_event(
         {
+            "id": "evt_subscription_active",
+            "created": 200,
+            "livemode": False,
             "type": "customer.subscription.updated",
             "data": {
                 "object": {
@@ -479,10 +621,21 @@ def test_subscription_events_drive_entitlement_state():
                     "customer": "cus_123",
                     "status": "active",
                     "metadata": {"dsg_plan": "team"},
+                    "items": {
+                        "data": [
+                            {
+                                "price": {
+                                    "id": "price_dsg",
+                                    "product": "prod_dsg",
+                                }
+                            }
+                        ]
+                    },
                 }
             },
         },
         store,
+        TEST_STRIPE_CONFIG,
     )
     assert result["applied"] is True
     updated = store.get(account.account_id)
@@ -491,10 +644,19 @@ def test_subscription_events_drive_entitlement_state():
 
     apply_webhook_event(
         {
+            "id": "evt_invoice_failed",
+            "created": 201,
+            "livemode": False,
             "type": "invoice.payment_failed",
-            "data": {"object": {"customer": "cus_123"}},
+            "data": {
+                "object": {
+                    "customer": "cus_123",
+                    "subscription": "sub_1",
+                }
+            },
         },
         store,
+        TEST_STRIPE_CONFIG,
     )
     assert store.get(account.account_id).status == "suspended"
 
@@ -503,10 +665,23 @@ def test_webhook_for_an_unknown_customer_never_creates_entitlement():
     store = AccountStore()
     result = apply_webhook_event(
         {
+            "id": "evt_unknown",
+            "created": 100,
+            "livemode": False,
             "type": "checkout.session.completed",
-            "data": {"object": {"customer": "cus_unknown"}},
+            "data": {
+                "object": {
+                    "customer": "cus_unknown",
+                    "subscription": "sub_unknown",
+                    "metadata": {
+                        "dsg_product_id": "prod_dsg",
+                        "dsg_price_id": "price_dsg",
+                    },
+                }
+            },
         },
         store,
+        TEST_STRIPE_CONFIG,
     )
     assert result["applied"] is False
     assert store.all() == []
@@ -515,9 +690,542 @@ def test_webhook_for_an_unknown_customer_never_creates_entitlement():
 def test_unlinked_stripe_configuration_reports_not_linked():
     config = config_from_env({})
     assert isinstance(config, StripeConfig)
-    assert config.linked is False
+    assert config.api_configured is False
     assert config.status()["link_state"] == "NOT_LINKED"
     assert config.status()["charges_enabled"] is False
+
+
+def test_operational_link_verifies_product_price_payment_link_and_meter(monkeypatch):
+    bodies = {
+        "products": {"id": "prod_dsg", "active": True, "livemode": False},
+        "prices": {
+            "id": "price_dsg",
+            "active": True,
+            "product": "prod_dsg",
+            "livemode": False,
+        },
+        "payment_links": {
+            "id": "plink_dsg",
+            "active": True,
+            "livemode": False,
+        },
+        "payment_link_items": {"data": [{"price": {"id": "price_dsg"}}]},
+        "meters": {
+            "id": "mtr_dsg",
+            "status": "active",
+            "event_name": "dsg_verified_execution",
+            "livemode": False,
+        },
+        "webhook_endpoints": {
+            "id": "we_dsg",
+            "status": "enabled",
+            "url": "https://cinema.example.test/billing/webhook/stripe",
+            "livemode": False,
+            "enabled_events": [
+                "checkout.session.completed",
+                "customer.subscription.created",
+                "customer.subscription.updated",
+                "customer.subscription.deleted",
+                "invoice.paid",
+                "invoice.payment_failed",
+            ],
+        },
+    }
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **_kwargs):
+            if url.endswith("/line_items"):
+                key = "payment_link_items"
+            else:
+                key = next(name for name in bodies if f"/{name}/" in url)
+            return FakeResponse(bodies[key])
+
+    monkeypatch.setattr("revenue.stripe_sync.httpx.AsyncClient", FakeClient)
+    result = asyncio.run(verify_operational_link(TEST_STRIPE_CONFIG))
+    assert result["verified"] is True
+    assert set(result["checks"].values()) == {"PASS"}
+    assert TEST_STRIPE_CONFIG.status(result)["link_state"] == "TEST_MODE_VERIFIED"
+    assert TEST_STRIPE_CONFIG.status(result)["charges_enabled"] is False
+
+
+def test_unrelated_subscription_and_invoice_cannot_mutate_dsg_entitlement():
+    store = AccountStore()
+    account, _ = store.issue(
+        display_name="Acme",
+        plan="free",
+        stripe_customer_id="cus_123",
+    )
+    unrelated_subscription = apply_webhook_event(
+        {
+            "id": "evt_unrelated_subscription",
+            "created": 100,
+            "livemode": False,
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_other",
+                    "customer": "cus_123",
+                    "status": "active",
+                    "metadata": {"dsg_plan": "team"},
+                    "items": {
+                        "data": [
+                            {"price": {"id": "price_other", "product": "prod_other"}}
+                        ]
+                    },
+                }
+            },
+        },
+        store,
+        TEST_STRIPE_CONFIG,
+    )
+    assert unrelated_subscription["applied"] is False
+    assert store.get(account.account_id).plan == "free"
+
+    store.update(account.account_id, stripe_subscription_id="sub_dsg")
+    unrelated_invoice = apply_webhook_event(
+        {
+            "id": "evt_unrelated_invoice",
+            "created": 101,
+            "livemode": False,
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_unrelated",
+                    "customer": "cus_123",
+                    "subscription": "sub_other",
+                }
+            },
+        },
+        store,
+        TEST_STRIPE_CONFIG,
+    )
+    assert unrelated_invoice["applied"] is False
+    assert store.get(account.account_id).payment_linked is False
+
+
+def test_test_mode_event_cannot_mutate_a_live_mode_entitlement():
+    live_config = StripeConfig(
+        secret_key="sk_" + "live_configured",
+        webhook_secret="whsec_test",
+        meter_event_name="dsg_verified_execution",
+        product_id="prod_dsg",
+        price_id="price_dsg",
+    )
+    store = AccountStore()
+    account, _ = store.issue(
+        display_name="Acme",
+        plan="free",
+        stripe_customer_id="cus_123",
+    )
+    result = apply_webhook_event(
+        {
+            "id": "evt_test_mode",
+            "created": 100,
+            "livemode": False,
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_dsg",
+                    "customer": "cus_123",
+                    "status": "active",
+                    "items": {
+                        "data": [
+                            {"price": {"id": "price_dsg", "product": "prod_dsg"}}
+                        ]
+                    },
+                }
+            },
+        },
+        store,
+        live_config,
+    )
+    assert result["applied"] is False
+    assert result["reason"] == "event mode does not match the DSG Stripe key"
+    assert store.get(account.account_id).payment_linked is False
+
+
+def test_stripe_events_are_idempotent_and_stale_events_are_ignored():
+    store = AccountStore()
+    account, _ = store.issue(
+        display_name="Acme",
+        plan="free",
+        stripe_customer_id="cus_123",
+    )
+    active_event = {
+        "id": "evt_active",
+        "created": 200,
+        "livemode": False,
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": "sub_dsg",
+                "customer": "cus_123",
+                "status": "active",
+                "metadata": {"dsg_plan": "metered"},
+                "items": {
+                    "data": [
+                        {"price": {"id": "price_dsg", "product": "prod_dsg"}}
+                    ]
+                },
+            }
+        },
+    }
+    assert apply_webhook_event(active_event, store, TEST_STRIPE_CONFIG)["applied"] is True
+    duplicate = apply_webhook_event(active_event, store, TEST_STRIPE_CONFIG)
+    assert duplicate["applied"] is False
+    assert duplicate["reason"] == "duplicate"
+
+    stale = apply_webhook_event(
+        {
+            "id": "evt_stale_failure",
+            "created": 199,
+            "livemode": False,
+            "type": "invoice.payment_failed",
+            "data": {
+                "object": {
+                    "id": "in_paid_first",
+                    "customer": "cus_123",
+                    "subscription": "sub_dsg",
+                }
+            },
+        },
+        store,
+        TEST_STRIPE_CONFIG,
+    )
+    assert stale["applied"] is False
+    assert stale["reason"] == "stale"
+    assert store.get(account.account_id).status == "active"
+
+
+def test_stripe_event_idempotency_survives_account_store_restart(tmp_path):
+    path = tmp_path / "accounts.json"
+    store = AccountStore(str(path))
+    store.issue(
+        display_name="Acme",
+        plan="free",
+        stripe_customer_id="cus_123",
+    )
+    event = {
+        "id": "evt_persisted",
+        "created": 200,
+        "livemode": False,
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": "sub_dsg",
+                "customer": "cus_123",
+                "status": "active",
+                "items": {
+                    "data": [
+                        {"price": {"id": "price_dsg", "product": "prod_dsg"}}
+                    ]
+                },
+            }
+        },
+    }
+    assert apply_webhook_event(event, store, TEST_STRIPE_CONFIG)["applied"] is True
+
+    reopened = AccountStore(str(path))
+    duplicate = apply_webhook_event(event, reopened, TEST_STRIPE_CONFIG)
+    assert duplicate["applied"] is False
+    assert duplicate["reason"] == "duplicate"
+
+
+def test_invoice_arriving_before_subscription_event_does_not_lose_plan_state():
+    engine = RevenueEngine()
+    account, api_key = engine.accounts.issue(
+        display_name="Acme",
+        plan="free",
+        stripe_customer_id="cus_123",
+    )
+    period_start = int(time.time())
+    paid = apply_webhook_event(
+        {
+            "id": "evt_paid_first",
+            "created": 201,
+            "livemode": False,
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_paid_first",
+                    "customer": "cus_123",
+                    "subscription": "sub_dsg",
+                    "period_start": period_start,
+                    "amount_paid": 49_000,
+                    "currency": "usd",
+                    "lines": {
+                        "data": [
+                            {
+                                "amount": 49_000,
+                                "price": {
+                                    "id": "price_dsg",
+                                    "product": "prod_dsg",
+                                }
+                            }
+                        ]
+                    },
+                }
+            },
+        },
+        engine.accounts,
+        TEST_STRIPE_CONFIG,
+    )
+    assert paid["applied"] is True
+
+    subscription = apply_webhook_event(
+        {
+            "id": "evt_subscription_late",
+            "created": 200,
+            "livemode": False,
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_dsg",
+                    "customer": "cus_123",
+                    "status": "active",
+                    "metadata": {"dsg_plan": "team"},
+                    "items": {
+                        "data": [
+                            {"price": {"id": "price_dsg", "product": "prod_dsg"}}
+                        ]
+                    },
+                }
+            },
+        },
+        engine.accounts,
+        TEST_STRIPE_CONFIG,
+    )
+    assert subscription["applied"] is True
+    assert engine.accounts.get(account.account_id).plan == "team"
+    assert engine.authorize(api_key, "verified_execution").decision == AUTHORIZED
+
+
+def test_only_a_paid_scoped_invoice_recognizes_team_base_revenue():
+    engine = RevenueEngine()
+    account, _ = engine.accounts.issue(
+        display_name="Acme",
+        plan="team",
+        stripe_customer_id="cus_123",
+    )
+    now = int(time.time())
+    result = apply_webhook_event(
+        {
+            "id": "evt_paid",
+            "created": now,
+            "livemode": False,
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_paid",
+                    "customer": "cus_123",
+                    "subscription": "sub_dsg",
+                    "period_start": now,
+                    "amount_paid": 49_000,
+                    "currency": "usd",
+                    "lines": {
+                        "data": [
+                            {
+                                "amount": 49_000,
+                                "price": {
+                                    "id": "price_dsg",
+                                    "product": "prod_dsg",
+                                }
+                            }
+                        ]
+                    },
+                }
+            },
+        },
+        engine.accounts,
+        TEST_STRIPE_CONFIG,
+    )
+    assert result["applied"] is True
+    assert engine.accounts.get(account.account_id).stripe_subscription_id == "sub_dsg"
+    report = engine.period_report()
+    assert report["recognized_amount_micros"] == 490_000_000
+    assert report["accounts_billed"] == 1
+    assert report["accounts"][0]["paid_invoice_amount_micros"] == 490_000_000
+
+    duplicate_invoice = apply_webhook_event(
+        {
+            "id": "evt_paid_duplicate_object",
+            "created": now + 1,
+            "livemode": False,
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_paid",
+                    "customer": "cus_123",
+                    "subscription": "sub_dsg",
+                    "period_start": now,
+                    "amount_paid": 49_000,
+                    "currency": "usd",
+                }
+            },
+        },
+        engine.accounts,
+        TEST_STRIPE_CONFIG,
+    )
+    assert duplicate_invoice["applied"] is False
+    assert duplicate_invoice["reason"] == "duplicate_invoice"
+    assert engine.period_report()["recognized_amount_micros"] == 490_000_000
+
+
+def test_zero_value_paid_invoice_does_not_grant_or_recognize_team_base():
+    engine = RevenueEngine()
+    account, api_key = engine.accounts.issue(
+        display_name="Acme",
+        plan="team",
+        stripe_customer_id="cus_123",
+    )
+    now = int(time.time())
+    result = apply_webhook_event(
+        {
+            "id": "evt_zero_paid",
+            "created": now,
+            "livemode": False,
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_zero_paid",
+                    "customer": "cus_123",
+                    "subscription": "sub_dsg",
+                    "period_start": now,
+                    "amount_paid": 0,
+                    "currency": "usd",
+                    "lines": {
+                        "data": [
+                            {
+                                "amount": 0,
+                                "price": {
+                                    "id": "price_dsg",
+                                    "product": "prod_dsg",
+                                }
+                            }
+                        ]
+                    },
+                }
+            },
+        },
+        engine.accounts,
+        TEST_STRIPE_CONFIG,
+    )
+    assert result["applied"] is True
+    assert engine.authorize(api_key, "verified_execution").decision == PAYMENT_NOT_LINKED
+    assert engine.period_report()["recognized_amount_micros"] == 0
+    assert engine.accounts.get(account.account_id).payment_linked is True
+
+
+def test_paid_invoice_recognizes_only_the_exact_dsg_line_amount():
+    engine = RevenueEngine()
+    account, api_key = engine.accounts.issue(
+        display_name="Acme",
+        plan="team",
+        stripe_customer_id="cus_123",
+    )
+    now = int(time.time())
+    result = apply_webhook_event(
+        {
+            "id": "evt_mixed_invoice",
+            "created": now,
+            "livemode": False,
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_mixed",
+                    "customer": "cus_123",
+                    "subscription": "sub_dsg",
+                    "period_start": now,
+                    "amount_paid": 149_000,
+                    "currency": "usd",
+                    "lines": {
+                        "data": [
+                            {
+                                "amount": 49_000,
+                                "price": {
+                                    "id": "price_dsg",
+                                    "product": "prod_dsg",
+                                },
+                            },
+                            {
+                                "amount": 100_000,
+                                "price": {
+                                    "id": "price_other",
+                                    "product": "prod_other",
+                                },
+                            },
+                        ]
+                    },
+                }
+            },
+        },
+        engine.accounts,
+        TEST_STRIPE_CONFIG,
+    )
+    assert result["applied"] is True
+    assert engine.period_report()["recognized_amount_micros"] == 490_000_000
+    assert engine.authorize(api_key, "verified_execution").decision == AUTHORIZED
+
+
+def test_paid_invoice_without_scoped_line_amount_grants_no_team_capacity():
+    engine = RevenueEngine()
+    _, api_key = engine.accounts.issue(
+        display_name="Acme",
+        plan="team",
+        stripe_customer_id="cus_123",
+    )
+    now = int(time.time())
+    result = apply_webhook_event(
+        {
+            "id": "evt_missing_line_amount",
+            "created": now,
+            "livemode": False,
+            "type": "invoice.paid",
+            "data": {
+                "object": {
+                    "id": "in_missing_line_amount",
+                    "customer": "cus_123",
+                    "subscription": "sub_dsg",
+                    "period_start": now,
+                    "amount_paid": 49_000,
+                    "currency": "usd",
+                    "lines": {
+                        "data": [
+                            {
+                                "price": {
+                                    "id": "price_dsg",
+                                    "product": "prod_dsg",
+                                }
+                            }
+                        ]
+                    },
+                }
+            },
+        },
+        engine.accounts,
+        TEST_STRIPE_CONFIG,
+    )
+    assert result["applied"] is True
+    assert engine.period_report()["recognized_amount_micros"] == 0
+    assert engine.authorize(api_key, "verified_execution").decision == PAYMENT_NOT_LINKED
 
 
 # ---------------------------------------------------------------- HTTP surface
@@ -536,10 +1244,46 @@ def test_billing_status_is_public_and_declares_the_checkout_truth(engine):
     }
 
 
-def test_billing_status_reports_linked_when_stripe_is_configured(engine, monkeypatch):
+def test_billing_status_does_not_claim_linked_from_a_secret_string(engine, monkeypatch):
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
     body = client.get("/billing/status").json()
+    assert body["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
+    assert body["stripe"]["link_state"] == "CONFIGURED_UNVERIFIED"
+    assert body["stripe"]["charges_enabled"] is False
+
+
+def test_billing_status_links_only_after_operational_verification(
+    engine,
+    monkeypatch,
+):
+    for name, value in {
+        "STRIPE_SECRET_KEY": "sk_test_x",
+        "STRIPE_PRODUCT_ID": "prod_dsg",
+        "STRIPE_PRICE_ID": "price_dsg",
+        "STRIPE_PAYMENT_LINK_ID": "plink_dsg",
+        "STRIPE_METER_ID": "mtr_dsg",
+        "STRIPE_WEBHOOK_SECRET": "whsec_test",
+        "STRIPE_WEBHOOK_ENDPOINT_ID": "we_dsg",
+        "STRIPE_WEBHOOK_ENDPOINT_URL": "https://cinema.example.test/billing/webhook/stripe",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    async def verified(_config):
+        return {
+            "verified": True,
+            "livemode": True,
+            "checks": {
+                "product": "PASS",
+                "price": "PASS",
+                "payment_link": "PASS",
+                "meter": "PASS",
+            },
+        }
+
+    monkeypatch.setattr(billing, "verify_operational_link", verified)
+    body = client.get("/billing/status").json()
     assert body["checkout_status"] == "LINKED"
+    assert body["stripe"]["link_state"] == "LINKED_VERIFIED"
     assert body["stripe"]["charges_enabled"] is True
 
 
@@ -582,7 +1326,10 @@ def test_webhook_is_unavailable_until_a_signing_secret_is_configured(engine):
 
 
 def test_signed_webhook_updates_the_account(engine, monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_configured")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setenv("STRIPE_PRODUCT_ID", "prod_dsg")
+    monkeypatch.setenv("STRIPE_PRICE_ID", "price_dsg")
     account, _ = engine.accounts.issue(
         display_name="Acme",
         plan="free",
@@ -591,8 +1338,20 @@ def test_signed_webhook_updates_the_account(engine, monkeypatch):
     payload = json.dumps(
         {
             "id": "evt_1",
+            "created": 100,
+            "livemode": False,
             "type": "checkout.session.completed",
-            "data": {"object": {"customer": "cus_123", "subscription": "sub_1"}},
+            "data": {
+                "object": {
+                    "customer": "cus_123",
+                    "subscription": "sub_1",
+                    "payment_status": "paid",
+                    "metadata": {
+                        "dsg_product_id": "prod_dsg",
+                        "dsg_price_id": "price_dsg",
+                    },
+                }
+            },
         }
     ).encode("utf-8")
 
@@ -688,6 +1447,23 @@ def test_enforced_metering_requires_a_key(engine, monkeypatch):
     assert response.json()["detail"]["error"] == UNKNOWN_KEY
 
 
+def test_env_enforcement_fails_closed_without_durable_single_writer_storage(
+    engine,
+    monkeypatch,
+):
+    configure_backend(monkeypatch)
+    unsafe = RevenueEngine.from_env({"DSG_REVENUE_ENFORCE": "1"})
+    billing.reset_engine(unsafe)
+
+    response = client.post("/verify/evaluate", json=VERIFY_BODY)
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "BILLING_STORAGE_NOT_READY"
+    assert response.json()["detail"]["remediation"]["code"] == "BILLING_STORAGE_NOT_READY"
+    assert unsafe.enforcement_requested is True
+    assert unsafe.enforcement_ready is False
+    assert unsafe.enforce is False
+
+
 def test_exhausted_quota_blocks_verification_with_402(engine, monkeypatch):
     configure_backend(monkeypatch)
     account, api_key = engine.accounts.issue(display_name="Acme", plan="free")
@@ -750,3 +1526,30 @@ def test_stripe_decision_endpoint_is_metered_on_its_own_sku(engine, monkeypatch)
     assert block["sku"] == "stripe_policy_decision"
     assert block["metered"] is True
     assert engine.ledger.entries()[0].channel == "stripe"
+
+
+def test_reconciliation_returns_nonzero_when_required_probes_are_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        revenue_report,
+        "probe",
+        lambda _base_url, path, *_args, **_kwargs: {
+            "ok": False,
+            "status": None,
+            "error": "unavailable",
+            "path": path,
+        },
+    )
+    result = revenue_report.main(
+        [
+            "--base-url",
+            "https://cinema.invalid",
+            "--admin-secret",
+            ADMIN_SECRET,
+            "--output",
+            str(tmp_path / "report.md"),
+        ]
+    )
+    assert result == 3

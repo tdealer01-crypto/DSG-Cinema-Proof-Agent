@@ -29,6 +29,8 @@ ACTIVATION_DISABLED = "ACTIVATION_DISABLED"
 BACKEND_UNAVAILABLE = "BACKEND_UNAVAILABLE"
 VERIFICATION_NOT_PROVED = "VERIFICATION_NOT_PROVED"
 CONFIGURATION_INCOMPLETE = "CONFIGURATION_INCOMPLETE"
+BILLING_STORAGE_NOT_READY = "BILLING_STORAGE_NOT_READY"
+METERING_REFUSED = "METERING_REFUSED"
 
 OK = "OK"
 
@@ -94,11 +96,14 @@ _CATALOG: dict[str, Remediation] = {
     ),
     PAYMENT_NOT_LINKED: Remediation(
         code=PAYMENT_NOT_LINKED,
-        problem="The plan bills per proof but no payment method is linked.",
-        cause="A metered plan cannot record billable usage until Stripe confirms a payment method.",
+        problem="The account does not have a current paid entitlement.",
+        cause=(
+            "The plan requires a linked payment method and, for a subscription "
+            "with a base price, a scoped paid invoice in the current UTC month."
+        ),
         next_step=(
-            "Complete Stripe checkout for this account. The entitlement opens "
-            "automatically when the checkout.session.completed webhook arrives."
+            "Complete the verified Stripe checkout and pay the current invoice. "
+            "Access opens only after the scoped Stripe webhook evidence arrives."
         ),
         self_service=True,
         endpoint="GET /billing/status",
@@ -165,6 +170,31 @@ _CATALOG: dict[str, Remediation] = {
         next_step="An operator must complete the deployment configuration; see the activation sequence.",
         self_service=False,
         endpoint="GET /health",
+    ),
+    BILLING_STORAGE_NOT_READY: Remediation(
+        code=BILLING_STORAGE_NOT_READY,
+        problem="Paid enforcement is not safe on this deployment yet.",
+        cause=(
+            "Durable account and ledger stores plus a single revenue writer "
+            "have not all been configured and attested."
+        ),
+        next_step=(
+            "An operator must attach the durable stores, attest single-writer "
+            "execution, and redeploy before enabling paid enforcement."
+        ),
+        self_service=False,
+        endpoint="GET /billing/status",
+    ),
+    METERING_REFUSED: Remediation(
+        code=METERING_REFUSED,
+        problem="The verified proof could not be recorded safely.",
+        cause="The billing ledger rejected the proof or its current entitlement state.",
+        next_step=(
+            "Retry once. If the refusal remains, an operator must inspect the "
+            "billing ledger before the proof can be released."
+        ),
+        self_service=False,
+        endpoint="GET /support/diagnose",
     ),
     OK: Remediation(
         code=OK,

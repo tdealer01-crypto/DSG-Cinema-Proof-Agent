@@ -6,6 +6,8 @@
 
 **Purpose:** Add a familiar IDE surface for sending bounded execution facts to the Cinema `/verify/evaluate` API and displaying the resulting Proof Receipt.
 
+**Product website:** https://dsgoneverifiedweb.z1.web.core.windows.net/
+
 ## UX
 
 Keep the plugin thin and familiar to JetBrains users:

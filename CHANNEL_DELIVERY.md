@@ -40,8 +40,9 @@ is told what to do rather than left to decode a status code.
 Returns `201` with a one-time `api_key`, the granted plan, and the next call to
 make. Three properties keep it safe to expose publicly:
 
-- **Idempotent** on `(channel, activation_id)`, case-insensitively. A retry
-  returns `409 ACTIVATION_EXISTS` instead of quietly creating a second account.
+- **Idempotent** on `(channel, activation_id)`, case-insensitively. Concurrent
+  retries are serialized in the running service and return
+  `409 ACTIVATION_EXISTS` instead of quietly creating a second account.
 - **Rate limited** by a sliding window, per channel and overall, with
   `retry_after_seconds` and a `Retry-After` header when limited.
 - **Free tier only.** Activation grants the `free` plan and nothing else. A paid
@@ -65,8 +66,10 @@ apart:
 | `units` / `amount_micros` | Proofs **delivered** through this channel this period |
 | `active_accounts` | Distinct accounts that verified through this channel |
 
-A customer acquired on the landing page (`api`) who then verifies from Azure
-(`azure`) is counted once in each column, not double-counted as revenue.
+A customer acquired through GitHub (`github`) who later verifies through the
+direct API (`api`) is counted once in each column, not double-counted as
+revenue. The browser landing records `azure`, `render`, or `api` from its actual
+host instead of attributing every browser proof to Azure.
 `GET /billing/report` includes the breakdown as `by_channel`.
 
 ## 3. Remediation: every refusal carries its fix
@@ -97,10 +100,11 @@ credential. It returns a checklist and the single blocking problem:
 |---|---|
 | `service_configuration` | Is the deployment configured at all? |
 | `verification_backend` | Is the exact Z3 verifier ready? |
+| `billing_storage` | Is paid enforcement backed by durable single-writer storage? |
 | `api_key` | Was a key presented, and does it match an account? |
 | `account_status` | Is the account active? |
 | `quota` | How many proofs are used and how many remain? |
-| `payment_method` | Is a payment method required and linked? |
+| `paid_entitlement` | Is the required payment method linked and the current base invoice paid? |
 
 Overall `status` is `READY`, `ACTION_REQUIRED` (the caller can fix it), or
 `SERVICE_UNAVAILABLE` (the service must). An unrecognised key gets only
@@ -136,7 +140,8 @@ A key adds metering and attribution; it is not a gate until
   still says so.
 - **No durable storage.** Activation records live in the same non-durable store
   as the rest of the revenue system, so an activation can be lost on restart
-  until a durable store is attached. See `REVENUE_AUTOMATION.md`.
+  until a durable store is attached. Cross-replica idempotency is therefore not
+  claimed. See `REVENUE_AUTOMATION.md`.
 - **No marketplace listing status changes.** Wiring a package to the API does
   not publish or approve it; `marketplace/SUBMISSION_QUEUE.md` remains the
   source of truth for each channel's real listing state.

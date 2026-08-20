@@ -395,7 +395,11 @@ async def support_diagnose(
 
     if blocking is None:
         status = "READY"
-    elif blocking in {billing.CONFIGURATION_INCOMPLETE, billing.BACKEND_UNAVAILABLE}:
+    elif blocking in {
+        billing.CONFIGURATION_INCOMPLETE,
+        billing.BACKEND_UNAVAILABLE,
+        billing.BILLING_STORAGE_NOT_READY,
+    }:
         status = "SERVICE_UNAVAILABLE"
     else:
         status = "ACTION_REQUIRED"

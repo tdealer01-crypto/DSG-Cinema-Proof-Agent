@@ -96,7 +96,17 @@ report_remediation() {
     return 1
   fi
 
-  echo "remediation=$next_step" >> "$GITHUB_OUTPUT"
+  # The endpoint is configurable by the workflow author. Keep response text to
+  # one line before writing the GitHub output protocol so a hostile or broken
+  # endpoint cannot inject additional output keys.
+  code="${code//$'\r'/ }"
+  code="${code//$'\n'/ }"
+  problem="${problem//$'\r'/ }"
+  problem="${problem//$'\n'/ }"
+  next_step="${next_step//$'\r'/ }"
+  next_step="${next_step//$'\n'/ }"
+
+  printf 'remediation=%s\n' "$next_step" >> "$GITHUB_OUTPUT"
   {
     echo "### DSG Verified Execution — action required"
     echo

@@ -33,7 +33,6 @@ from .pricing import (
     get_sku,
     micros_to_usd_string,
     resolve_unit_price_micros,
-    unit_amount_micros,
 )
 from .remediation import Remediation, remediation_for
 
@@ -56,8 +55,17 @@ _DENIAL_DETAIL = {
     UNKNOWN_KEY: "a valid X-DSG-API-Key header is required",
     ACCOUNT_SUSPENDED: "account is not active",
     QUOTA_EXCEEDED: "plan quota for this billing period is exhausted",
-    PAYMENT_NOT_LINKED: "plan requires a linked payment method before metered use",
+    PAYMENT_NOT_LINKED: "plan requires a current paid entitlement before any use",
 }
+
+
+class EntitlementChangedError(ValueError):
+    """Raised when entitlement changes after authorization but before metering."""
+
+    def __init__(self, decision: str, detail: Optional[str] = None) -> None:
+        self.decision = decision
+        self.http_status = _HTTP_STATUS.get(decision, 403)
+        super().__init__(detail or _DENIAL_DETAIL.get(decision, decision))
 
 
 @dataclass(frozen=True)
@@ -115,10 +123,16 @@ class RevenueEngine:
         accounts: Optional[AccountStore] = None,
         ledger: Optional[LedgerStore] = None,
         enforce: bool = False,
+        *,
+        enforcement_ready: bool = True,
+        enforcement_blockers: tuple[str, ...] = (),
     ) -> None:
         self.accounts = accounts or AccountStore()
         self.ledger = ledger or LedgerStore()
-        self.enforce = enforce
+        self.enforcement_requested = enforce
+        self.enforcement_ready = enforcement_ready
+        self.enforcement_blockers = enforcement_blockers
+        self.enforce = enforce and enforcement_ready
 
     # ----------------------------------------------------------- construction
     @classmethod
@@ -138,7 +152,29 @@ class RevenueEngine:
             "yes",
             "on",
         }
-        return cls(accounts=accounts, ledger=ledger, enforce=enforce)
+        durable_attested = (
+            source.get("DSG_REVENUE_STORAGE_DURABLE") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        single_writer = (
+            source.get("DSG_REVENUE_SINGLE_WRITER") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        blockers: list[str] = []
+        if not source.get("DSG_REVENUE_ACCOUNT_STORE"):
+            blockers.append("DSG_REVENUE_ACCOUNT_STORE is not configured")
+        if not source.get("DSG_REVENUE_LEDGER_STORE"):
+            blockers.append("DSG_REVENUE_LEDGER_STORE is not configured")
+        if not durable_attested:
+            blockers.append("durable revenue storage is not attested")
+        if not single_writer:
+            blockers.append("single-writer revenue execution is not attested")
+
+        return cls(
+            accounts=accounts,
+            ledger=ledger,
+            enforce=enforce,
+            enforcement_ready=not blockers,
+            enforcement_blockers=tuple(blockers),
+        )
 
     # ------------------------------------------------------------ entitlement
     def authorize(
@@ -188,10 +224,13 @@ class RevenueEngine:
             return denial(ACCOUNT_SUSPENDED)
         if cap is not None and units_used >= cap:
             return denial(QUOTA_EXCEEDED)
+        if plan.requires_linked_payment and not account.payment_linked:
+            return denial(PAYMENT_NOT_LINKED)
         if (
             plan.requires_linked_payment
-            and not account.payment_linked
-            and units_used >= plan.included_units
+            and plan.base_price_micros > 0
+            and account.stripe_paid_amounts_micros.get(current_period, 0)
+            < plan.base_price_micros
         ):
             return denial(PAYMENT_NOT_LINKED)
 
@@ -234,26 +273,50 @@ class RevenueEngine:
         if not isinstance(context_hash, str) or len(context_hash) != 64:
             raise ValueError("receipt context_hash is invalid")
 
-        account = authorization.account
-        plan = authorization.plan or get_plan(account.plan)
-        unit_price = authorization.unit_price_micros
-        if unit_price is None:
-            unit_price = resolve_unit_price_micros(plan, get_sku(sku), account.unit_price_micros)
+        account = self.accounts.get(authorization.account.account_id)
+        if account is None:
+            raise EntitlementChangedError(UNKNOWN_KEY, "account no longer exists")
+        plan = get_plan(account.plan)
+        if account.status != STATUS_ACTIVE:
+            raise EntitlementChangedError(
+                ACCOUNT_SUSPENDED,
+                "account became inactive before metering",
+            )
+        if plan.requires_linked_payment and not account.payment_linked:
+            raise EntitlementChangedError(
+                PAYMENT_NOT_LINKED,
+                "payment became unlinked before metering",
+            )
+        if (
+            plan.requires_linked_payment
+            and plan.base_price_micros > 0
+            and account.stripe_paid_amounts_micros.get(authorization.period, 0)
+            < plan.base_price_micros
+        ):
+            raise EntitlementChangedError(
+                PAYMENT_NOT_LINKED,
+                "paid subscription period is not current",
+            )
 
-        units_before = self.ledger.units_used(account.account_id, authorization.period)
-        amount = unit_amount_micros(plan, unit_price, units_before, quantity)
+        unit_price = resolve_unit_price_micros(
+            plan,
+            get_sku(sku),
+            account.unit_price_micros,
+        )
 
-        return self.ledger.append(
+        cap = account.hard_cap_units if account.hard_cap_units is not None else plan.hard_cap_units
+        return self.ledger.append_metered(
             account_id=account.account_id,
             channel=channel,
             sku=sku,
             quantity=quantity,
             unit_price_micros=unit_price,
-            amount_micros=amount,
+            included_units=plan.included_units,
+            hard_cap_units=cap,
             proof_hash=proof_hash,
             context_hash=context_hash,
             idempotency_key=idempotency_key(account.account_id, sku, context_hash),
-            units_before=units_before,
+            period=authorization.period,
         )
 
     # -------------------------------------------------------------- reporting
@@ -264,7 +327,15 @@ class RevenueEngine:
 
         units = sum(entry.quantity for entry in entries)
         usage_micros = sum(entry.amount_micros for entry in entries)
-        total_micros = plan.base_price_micros + usage_micros
+        paid_invoice_micros = account.stripe_paid_amounts_micros.get(
+            current_period,
+            0,
+        )
+        base_recognized = min(
+            plan.base_price_micros,
+            paid_invoice_micros,
+        )
+        total_micros = base_recognized + usage_micros
         cap = account.hard_cap_units if account.hard_cap_units is not None else plan.hard_cap_units
 
         by_sku: dict[str, dict] = {}
@@ -283,10 +354,17 @@ class RevenueEngine:
             "units_included": plan.included_units,
             "units_remaining": None if cap is None else max(cap - units, 0),
             "hard_cap_units": cap,
-            "base_price_micros": plan.base_price_micros,
+            "catalog_base_price_micros": plan.base_price_micros,
+            "paid_invoice_amount_micros": paid_invoice_micros,
+            "base_price_micros": base_recognized,
+            "base_recognition": (
+                "PAID_INVOICE" if base_recognized else "NOT_RECOGNIZED"
+            ),
             "usage_amount_micros": usage_micros,
             "total_amount_micros": total_micros,
             "total_amount_usd": micros_to_usd_string(total_micros),
+            "recognized_amount_micros": paid_invoice_micros,
+            "recognized_amount_usd": micros_to_usd_string(paid_invoice_micros),
             "by_sku": sorted(by_sku.values(), key=lambda item: item["sku"]),
             "ledger_head_hash": self.ledger.head_hash(),
         }
@@ -349,20 +427,29 @@ class RevenueEngine:
 
         summaries = []
         recognized_micros = 0
+        recorded_usage_micros = 0
         billable_units = 0
         for account in accounts:
             summary = self.usage_summary(account, current_period)
-            if summary["units"] == 0 and summary["base_price_micros"] == 0:
+            if summary["units"] == 0 and summary["recognized_amount_micros"] == 0:
                 continue
             summaries.append(summary)
-            recognized_micros += summary["total_amount_micros"]
+            recognized_micros += summary["recognized_amount_micros"]
+            recorded_usage_micros += summary["usage_amount_micros"]
             billable_units += summary["units"]
 
         chain = verify_chain(self.ledger.entries())
         return {
             "period": current_period,
-            "accounts_billed": len(summaries),
+            "accounts_with_activity": len(summaries),
+            "accounts_billed": sum(
+                1
+                for summary in summaries
+                if summary["recognized_amount_micros"] > 0
+            ),
             "billable_units": billable_units,
+            "recorded_usage_amount_micros": recorded_usage_micros,
+            "recorded_usage_amount_usd": micros_to_usd_string(recorded_usage_micros),
             "recognized_amount_micros": recognized_micros,
             "recognized_amount_usd": micros_to_usd_string(recognized_micros),
             "ledger": chain,
