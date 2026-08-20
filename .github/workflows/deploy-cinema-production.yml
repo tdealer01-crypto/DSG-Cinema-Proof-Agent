@@ -53,6 +53,11 @@ jobs:
       KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
       CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       CONFIGURED_STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      # Durable revenue storage. Enforcement stays refused until the ledger and
+      # account registry survive a restart and have a single writer.
+      REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
+      REVENUE_SHARE_NAME: revenue
+      REVENUE_MOUNT_PATH: /revenue
 
     steps:
       - name: Checkout
@@ -121,6 +126,45 @@ jobs:
               --location "$LOCATION" \
               --output none
           fi
+
+      - name: Ensure durable revenue storage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # A file-backed ledger on a container filesystem is lost on restart,
+          # which is why enforcement refuses to turn on without this. An Azure
+          # Files share gives the ledger and the account registry a lifetime
+          # independent of any revision.
+          if ! az storage account show --resource-group "$RESOURCE_GROUP" --name "$REVENUE_STORAGE_ACCOUNT" >/dev/null 2>&1; then
+            az storage account create \
+              --resource-group "$RESOURCE_GROUP" --name "$REVENUE_STORAGE_ACCOUNT" \
+              --location "$LOCATION" --sku Standard_LRS --kind StorageV2 \
+              --min-tls-version TLS1_2 --allow-blob-public-access false \
+              --output none
+          fi
+
+          STORAGE_KEY=$(az storage account keys list \
+            --resource-group "$RESOURCE_GROUP" --account-name "$REVENUE_STORAGE_ACCOUNT" \
+            --query '[0].value' --output tsv)
+          test -n "$STORAGE_KEY"
+          echo "::add-mask::$STORAGE_KEY"
+
+          az storage share-rm create \
+            --resource-group "$RESOURCE_GROUP" --storage-account "$REVENUE_STORAGE_ACCOUNT" \
+            --name "$REVENUE_SHARE_NAME" --quota 16 --output none 2>/dev/null || true
+
+          # Register the share with the Container Apps environment so the app
+          # can mount it. AccessMode ReadWrite is required: the ledger appends.
+          az containerapp env storage set \
+            --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_ENV" \
+            --storage-name "$REVENUE_SHARE_NAME" \
+            --azure-file-account-name "$REVENUE_STORAGE_ACCOUNT" \
+            --azure-file-account-key "$STORAGE_KEY" \
+            --azure-file-share-name "$REVENUE_SHARE_NAME" \
+            --access-mode ReadWrite --output none
+
+          echo 'REVENUE_STORAGE_READY=1' >> "$GITHUB_ENV"
 
       - name: Build immutable production images
         shell: bash
@@ -291,6 +335,30 @@ jobs:
           fi
           echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
+
+          # Point the stores at the mounted share and attest only what this
+          # deployment actually arranged. Single-writer is a property of the
+          # replica ceiling, so it is derived here rather than declared: an
+          # attestation that does not match the deployment would let enforcement
+          # run on a ledger two replicas are racing to rewrite.
+          CINEMA_MAX_REPLICAS=2
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" ]]; then
+            CINEMA_ENV_ARGS+=(
+              DSG_REVENUE_ACCOUNT_STORE="$REVENUE_MOUNT_PATH/accounts.json"
+              DSG_REVENUE_LEDGER_STORE="$REVENUE_MOUNT_PATH/ledger.json"
+              DSG_REVENUE_STORAGE_DURABLE=1
+            )
+            if [[ "$REVENUE_ENFORCE" == "1" ]]; then
+              # Paid gating runs on exactly one writer.
+              CINEMA_MAX_REPLICAS=1
+              CINEMA_ENV_ARGS+=(DSG_REVENUE_SINGLE_WRITER=1)
+            else
+              CINEMA_ENV_ARGS+=(DSG_REVENUE_SINGLE_WRITER=0)
+            fi
+          else
+            CINEMA_ENV_ARGS+=(DSG_REVENUE_STORAGE_DURABLE=0 DSG_REVENUE_SINGLE_WRITER=0)
+          fi
+          echo "CINEMA_MAX_REPLICAS=$CINEMA_MAX_REPLICAS" >> "$GITHUB_ENV"
           echo "Stripe credential source: $STRIPE_SOURCE"
 
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
@@ -301,6 +369,7 @@ jobs:
               --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
               --image "$CINEMA_IMAGE_REF" \
               --set-env-vars "${CINEMA_ENV_ARGS[@]}" \
+              --min-replicas 1 --max-replicas "$CINEMA_MAX_REPLICAS" \
               --output none
           else
             retry az containerapp create \
@@ -309,7 +378,36 @@ jobs:
               --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
               --secrets "${CINEMA_SECRET_ARGS[@]}" \
               --env-vars "${CINEMA_ENV_ARGS[@]}" \
-              --min-replicas 1 --max-replicas 2 --cpu 0.5 --memory 1.0Gi --output none
+              --min-replicas 1 --max-replicas "$CINEMA_MAX_REPLICAS" --cpu 0.5 --memory 1.0Gi --output none
+          fi
+
+          # Mount the durable share. Done after the app exists so the same call
+          # works for both create and update.
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" ]]; then
+            CURRENT=$(mktemp --suffix=.yaml)
+            az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --output yaml > "$CURRENT"
+            python - "$CURRENT" "$REVENUE_SHARE_NAME" "$REVENUE_MOUNT_PATH" <<'PY'
+          import sys, yaml
+
+          path, share, mount = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path, encoding='utf-8') as handle:
+              app = yaml.safe_load(handle)
+
+          template = app['properties']['template']
+          template['volumes'] = [
+              {'name': 'revenue', 'storageType': 'AzureFile', 'storageName': share}
+          ]
+          for container in template['containers']:
+              container['volumeMounts'] = [
+                  {'volumeName': 'revenue', 'mountPath': mount}
+              ]
+
+          with open(path, 'w', encoding='utf-8') as handle:
+              yaml.safe_dump(app, handle)
+          PY
+            retry az containerapp update \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --yaml "$CURRENT" --output none
           fi
 
           retry az containerapp ingress update \
@@ -512,6 +610,47 @@ jobs:
           jq -e --arg source "$STRIPE_SOURCE" '.stripe.configured == ($source != "none")' \
             /tmp/billing-status.json >/dev/null
           echo "Stripe credential source verified as: $STRIPE_SOURCE"
+
+          # Enforcement readiness must reflect the storage this deployment
+          # actually arranged, not an attestation someone set by hand.
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" && "$REVENUE_ENFORCE" == "1" ]]; then
+            jq -e '.enforcement_ready == true' /tmp/billing-status.json >/dev/null
+          else
+            jq -e '.enforcement_ready == false or .metering_enforced == false' /tmp/billing-status.json >/dev/null
+          fi
+
+          # The ledger must live on the mounted share, not the container
+          # filesystem, or it is lost on the next restart.
+          if [[ "${REVENUE_STORAGE_READY:-0}" == "1" && "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
+            curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
+              "$CINEMA_URL/billing/ledger/verify" > /tmp/ledger-before.json
+            jq -e '.verified == true' /tmp/ledger-before.json >/dev/null
+
+            CURRENT_REVISION=$(az containerapp revision list \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query "[?properties.active].name | [0]" --output tsv)
+            az containerapp revision restart \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --revision "$CURRENT_REVISION" --output none
+
+            for attempt in $(seq 1 60); do
+              if curl --silent --fail --show-error \
+                --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
+                "$CINEMA_URL/billing/ledger/verify" > /tmp/ledger-after.json 2>/dev/null; then
+                break
+              fi
+              [[ "$attempt" == "60" ]] && { echo 'Cinema did not return after restart' >&2; exit 1; }
+              sleep 5
+            done
+
+            # A ledger on ephemeral storage comes back empty with a genesis head.
+            BEFORE_HEAD=$(jq -r '.head_hash' /tmp/ledger-before.json)
+            AFTER_HEAD=$(jq -r '.head_hash' /tmp/ledger-after.json)
+            test "$BEFORE_HEAD" = "$AFTER_HEAD"
+            jq -e '.verified == true' /tmp/ledger-after.json >/dev/null
+            echo "Ledger survived a restart with head $AFTER_HEAD"
+          fi
 
           # Admin billing routes must reject an unauthenticated caller.
           REPORT_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' "$CINEMA_URL/billing/report")

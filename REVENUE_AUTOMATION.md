@@ -171,6 +171,49 @@ an unreachable service is not reported as zero revenue.
 | `DSG_REVENUE_STORAGE_DURABLE` | before enforcement | Operator attestation that both stores are durable |
 | `DSG_REVENUE_SINGLE_WRITER` | before enforcement | Operator attestation that exactly one writer serves the stores |
 
+## Durable storage
+
+Enforcement refuses to start until the ledger and the account registry survive a
+restart and have a single writer. The production deployment now arranges both:
+
+- An Azure Files share is created and registered with the Container Apps
+  environment, then mounted at `/revenue`. `DSG_REVENUE_ACCOUNT_STORE` and
+  `DSG_REVENUE_LEDGER_STORE` point at that mount, so the data outlives any
+  revision.
+- `DSG_REVENUE_SINGLE_WRITER` is **derived from the replica ceiling, not
+  declared**. When `DSG_REVENUE_ENFORCE=1` the Cinema app is pinned to one
+  replica; otherwise the attestation stays `0`. An attestation that did not
+  match the deployment would let paid gating run on a ledger two replicas were
+  racing to rewrite.
+- After deploying, the workflow verifies the ledger head, restarts the revision,
+  and requires the same head to come back. A ledger on ephemeral storage returns
+  a genesis head and fails the deployment.
+
+### Why the stores lock across processes
+
+A Container Apps revision switch briefly runs the old and new replica together.
+Persistence rewrites the whole file from memory, so two processes each holding a
+stale view silently drop each other's writes — and the surviving chain still
+verifies, which makes the loss invisible.
+
+Measured on the pre-fix code with four concurrent writers appending 100 entries
+in total: **25 entries survived, 75 were lost, three writers crashed racing the
+same temporary filename, and `verify_chain` still reported `verified: true`.**
+
+Both stores now take an advisory `flock` on a sidecar file and re-read before
+every read-modify-write. The lock is on a sidecar because the data file is
+replaced by rename, which would drop a lock held on the old inode. The same
+scenario now keeps all 100 entries with a dense sequence and an intact chain.
+
+This also fixed a live entitlement bug: a Stripe webhook upgrading a paying
+customer on one replica was reverted to the free plan by an unrelated write on
+another.
+
+**Scale path.** Azure Files with one writer is correct, not fast. A shared JSON
+file rewritten per append is fine at current volume and becomes the bottleneck
+long before it becomes wrong. Postgres remains the answer for concurrency across
+many writers.
+
 ## Truth boundary
 
 **Supported and verified by tests in `tests/test_revenue.py`:**
@@ -192,11 +235,12 @@ an unreachable service is not reported as zero revenue.
 - **No active checkout link.** `checkout_status` stays
   `NOT_VERIFIED_NOT_LINKED` until Stripe independently confirms the configured
   product, price, Payment Link, meter, and webhook endpoint; the landing page continues to say so.
-- **No durable billing storage.** The bundled stores are process memory and a
-  single JSON file. Azure Container Apps filesystems are ephemeral and this
-  deployment runs up to two replicas, so the ledger is **not** durable or
-  single-writer in production today. This is why `DSG_REVENUE_ENFORCE`
-  defaults to off: quota enforcement across restarts would not be reliable.
+- **Durable storage is arranged by the deployment, not by this repository.**
+  The share is created on first deploy; until that deploy has run against the
+  subscription, the stores are memory-only and enforcement stays refused.
+- **One writer, not many.** Correctness comes from pinning to a single replica.
+  This caps throughput and means enforcement and horizontal scale cannot both be
+  on until the stores move to Postgres.
 - **No audited revenue claim.** Recorded usage is not an invoice. The separate
   recognized figure is limited to scoped USD `invoice.paid` amounts and still
   is not an independent financial audit.

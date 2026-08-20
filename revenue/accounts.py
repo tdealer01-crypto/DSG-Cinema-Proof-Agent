@@ -7,6 +7,7 @@ is returned exactly once, at issue time.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
@@ -14,6 +15,7 @@ import os
 import re
 import secrets
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,24 +84,81 @@ class Account:
 
 
 class AccountStore:
-    """Account registry with an optional JSON file mirror."""
+    """Account registry, optionally backed by a shared JSON file.
+
+    Persistence rewrites the whole registry, so a process holding a stale view
+    would erase another replica's changes. A Stripe webhook upgrading a paying
+    customer on one replica would be reverted to the free plan by an unrelated
+    write on another. Every read-modify-write therefore takes an advisory lock
+    on a sidecar file and re-reads the registry first.
+    """
 
     def __init__(self, path: Optional[str] = None) -> None:
         self._lock = threading.Lock()
         self._accounts: dict[str, Account] = {}
         self._by_key_id: dict[str, str] = {}
         self._path = Path(path) if path else None
+        self._loaded_signature: Optional[tuple[int, int]] = None
         if self._path and self._path.exists():
             self._load()
+
+    def _file_signature(self) -> Optional[tuple[int, int]]:
+        if self._path is None:
+            return None
+        try:
+            info = self._path.stat()
+        except FileNotFoundError:
+            return None
+        return (info.st_mtime_ns, info.st_size)
 
     def _load(self) -> None:
         assert self._path is not None
         raw = json.loads(self._path.read_text(encoding="utf-8") or "[]")
+        self._accounts = {}
+        self._by_key_id = {}
         for item in raw:
             account = Account(**item)
             self._accounts[account.account_id] = account
             if account.key_id:
                 self._by_key_id[account.key_id] = account.account_id
+        self._loaded_signature = self._file_signature()
+
+    def _reload_if_changed(self) -> None:
+        """Adopt another replica's changes before trusting our own view."""
+        if self._path is None:
+            return
+        signature = self._file_signature()
+        if signature is None:
+            return
+        if signature != self._loaded_signature:
+            self._load()
+
+    @contextmanager
+    def _file_lock(self):
+        """Advisory exclusive lock shared by every process using this registry.
+
+        The lock lives on a sidecar file because the registry itself is replaced
+        by rename on each write, which would drop a lock held on the old inode.
+        """
+        if self._path is None:
+            yield
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self._path.with_suffix(self._path.suffix + ".lock")
+        with open(lock_path, "a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def _critical_section(self):
+        """Serialize against other threads and other processes, then refresh."""
+        with self._lock:
+            with self._file_lock():
+                self._reload_if_changed()
+                yield
 
     def _persist(self) -> None:
         if self._path is None:
@@ -111,18 +170,19 @@ class AccountStore:
             encoding="utf-8",
         )
         os.replace(temporary, self._path)
+        self._loaded_signature = self._file_signature()
 
     # ---------------------------------------------------------------- lookups
     def get(self, account_id: str) -> Optional[Account]:
-        with self._lock:
+        with self._critical_section():
             return self._accounts.get(account_id)
 
     def all(self) -> list[Account]:
-        with self._lock:
+        with self._critical_section():
             return list(self._accounts.values())
 
     def find_by_stripe_customer(self, customer_id: str) -> Optional[Account]:
-        with self._lock:
+        with self._critical_section():
             for account in self._accounts.values():
                 if account.stripe_customer_id == customer_id:
                     return account
@@ -162,7 +222,7 @@ class AccountStore:
         if "status" in changes and changes["status"] not in _VALID_STATUSES:
             raise ValueError(f"invalid status: {changes['status']}")
 
-        with self._lock:
+        with self._critical_section():
             account = next(
                 (
                     candidate
@@ -250,7 +310,7 @@ class AccountStore:
             return None
         mode, key_id, secret = match.groups()
 
-        with self._lock:
+        with self._critical_section():
             account_id = self._by_key_id.get(key_id)
             account = self._accounts.get(account_id) if account_id else None
 
@@ -295,7 +355,7 @@ class AccountStore:
             activation_ref=activation_ref,
         )
 
-        with self._lock:
+        with self._critical_section():
             self._accounts[account.account_id] = account
             self._by_key_id[key_id] = account.account_id
             self._persist()
@@ -320,7 +380,7 @@ class AccountStore:
         if "status" in changes and changes["status"] not in _VALID_STATUSES:
             raise ValueError(f"invalid status: {changes['status']}")
 
-        with self._lock:
+        with self._critical_section():
             account = self._accounts.get(account_id)
             if account is None:
                 raise KeyError(account_id)
@@ -336,7 +396,7 @@ class AccountStore:
         get_plan(account.plan)
         if account.status not in _VALID_STATUSES:
             raise ValueError(f"invalid status: {account.status}")
-        with self._lock:
+        with self._critical_section():
             self._accounts[account.account_id] = account
             if account.key_id:
                 self._by_key_id[account.key_id] = account.account_id

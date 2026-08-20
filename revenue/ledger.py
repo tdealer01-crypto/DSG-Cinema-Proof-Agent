@@ -12,10 +12,12 @@ REVENUE_AUTOMATION.md.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,17 +76,35 @@ def compute_entry_hash(body: dict) -> str:
 
 
 class LedgerStore:
-    """In-memory ledger with an optional JSON file mirror."""
+    """Ledger held in memory, optionally backed by a shared JSON file.
+
+    When a path is configured the file — not this process — is authoritative.
+    A thread lock alone would not be enough: a Container Apps revision switch
+    briefly runs the old and new replica together, and two processes each
+    rewriting the whole file from their own memory would silently drop entries
+    and break the hash chain. Every read-modify-write therefore takes an
+    advisory lock on a sidecar file and re-reads the ledger first.
+    """
 
     def __init__(self, path: Optional[str] = None) -> None:
         self._lock = threading.Lock()
         self._entries: list[LedgerEntry] = []
         self._by_idempotency: dict[str, LedgerEntry] = {}
         self._path = Path(path) if path else None
+        self._loaded_signature: Optional[tuple[int, int]] = None
         if self._path and self._path.exists():
             self._load()
 
     # ---------------------------------------------------------------- loading
+    def _file_signature(self) -> Optional[tuple[int, int]]:
+        if self._path is None:
+            return None
+        try:
+            info = self._path.stat()
+        except FileNotFoundError:
+            return None
+        return (info.st_mtime_ns, info.st_size)
+
     def _load(self) -> None:
         assert self._path is not None
         raw = json.loads(self._path.read_text(encoding="utf-8") or "[]")
@@ -92,6 +112,44 @@ class LedgerStore:
         verify_chain(entries)
         self._entries = entries
         self._by_idempotency = {entry.idempotency_key: entry for entry in entries}
+        self._loaded_signature = self._file_signature()
+
+    def _reload_if_changed(self) -> None:
+        """Adopt another writer's entries before trusting our own view."""
+        if self._path is None:
+            return
+        signature = self._file_signature()
+        if signature is None:
+            return
+        if signature != self._loaded_signature:
+            self._load()
+
+    @contextmanager
+    def _file_lock(self):
+        """Advisory exclusive lock shared by every process using this ledger.
+
+        The lock lives on a sidecar file because the ledger itself is replaced
+        by rename on each write, which would drop a lock held on the old inode.
+        """
+        if self._path is None:
+            yield
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self._path.with_suffix(self._path.suffix + ".lock")
+        with open(lock_path, "a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def _critical_section(self):
+        """Serialize against other threads and other processes, then refresh."""
+        with self._lock:
+            with self._file_lock():
+                self._reload_if_changed()
+                yield
 
     def _persist(self) -> None:
         if self._path is None:
@@ -103,26 +161,27 @@ class LedgerStore:
             encoding="utf-8",
         )
         os.replace(temporary, self._path)
+        self._loaded_signature = self._file_signature()
 
     # ---------------------------------------------------------------- queries
     def head_hash(self) -> str:
-        with self._lock:
+        with self._critical_section():
             return self._entries[-1].entry_hash if self._entries else GENESIS_HASH
 
     def size(self) -> int:
-        with self._lock:
+        with self._critical_section():
             return len(self._entries)
 
     def entries(self) -> list[LedgerEntry]:
-        with self._lock:
+        with self._critical_section():
             return list(self._entries)
 
     def find_by_idempotency_key(self, key: str) -> Optional[LedgerEntry]:
-        with self._lock:
+        with self._critical_section():
             return self._by_idempotency.get(key)
 
     def units_used(self, account_id: str, period: str) -> int:
-        with self._lock:
+        with self._critical_section():
             return sum(
                 entry.quantity
                 for entry in self._entries
@@ -130,7 +189,7 @@ class LedgerStore:
             )
 
     def period_entries(self, account_id: str, period: str) -> list[LedgerEntry]:
-        with self._lock:
+        with self._critical_section():
             return [
                 entry
                 for entry in self._entries
@@ -155,7 +214,7 @@ class LedgerStore:
         recorded_at: Optional[str] = None,
     ) -> tuple[LedgerEntry, bool]:
         """Append one entry. Returns (entry, created)."""
-        with self._lock:
+        with self._critical_section():
             existing = self._by_idempotency.get(idempotency_key)
             if existing is not None:
                 return existing, False
@@ -202,7 +261,7 @@ class LedgerStore:
         if quantity < 1:
             raise ValueError("quantity must be at least 1")
 
-        with self._lock:
+        with self._critical_section():
             existing = self._by_idempotency.get(idempotency_key)
             if existing is not None:
                 return existing, False

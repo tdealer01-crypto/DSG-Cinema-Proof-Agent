@@ -13,6 +13,7 @@ on:
       - 'tests/test_channel_delivery.py'
       - 'tests/test_cinema_main.py'
       - 'tests/test_z3_main.py'
+      - 'tests/test_durable_store.py'
       - 'z3_main.py'
       - 'AZURE_BOOTSTRAP_KEY_VAULT.sh'
       - '.github/workflows/deploy-cinema-production.yml'
@@ -83,7 +84,8 @@ jobs:
             tests/test_revenue.py \
             tests/test_channel_delivery.py \
             tests/test_cinema_main.py \
-            tests/test_z3_main.py
+            tests/test_z3_main.py \
+            tests/test_durable_store.py
 
       - name: Assert every channel package can reach the live contract
         shell: bash
@@ -194,6 +196,42 @@ jobs:
           for forbidden in ('echo "$CONFIGURED_STRIPE_SECRET_KEY"', 'echo $CONFIGURED_STRIPE_SECRET_KEY'):
               assert forbidden not in deploy, 'a Stripe credential is echoed'
           print('deployment rotation and Key Vault contract verified')
+          PY
+
+      - name: Assert a shared revenue store cannot lose writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A ledger or registry rewritten from a stale in-memory view silently
+          # destroys billing records, and the surviving chain still verifies, so
+          # the loss is invisible. Both stores must lock across processes.
+          for module in revenue/ledger.py revenue/accounts.py; do
+            grep -q 'fcntl.flock' "$module" || {
+              echo "$module has no cross-process lock" >&2; exit 1; }
+            grep -q '_reload_if_changed' "$module" || {
+              echo "$module never refreshes before writing" >&2; exit 1; }
+          done
+
+          python - <<'PY'
+          import inspect
+
+          from revenue.accounts import AccountStore
+          from revenue.ledger import LedgerStore
+
+          for store in (LedgerStore, AccountStore):
+              section = inspect.getsource(store._critical_section)
+              assert '_file_lock' in section, f'{store.__name__} skips the file lock'
+              assert '_reload_if_changed' in section, f'{store.__name__} skips the reload'
+
+              # Every mutating path must go through the critical section.
+              for name in ('_persist',):
+                  assert hasattr(store, name), f'{store.__name__}.{name} is missing'
+
+          # The lock must live beside the data file, not on it: the data file is
+          # replaced by rename, which drops a lock held on the old inode.
+          source = inspect.getsource(LedgerStore._file_lock)
+          assert 'with_suffix' in source and '.lock' in source
+          print('shared-store locking contract verified')
           PY
 
       - name: Assert no credential material is committed
