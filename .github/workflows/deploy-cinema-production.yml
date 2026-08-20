@@ -241,19 +241,28 @@ jobs:
           for attempt in $(seq 1 72); do
             CODE=$(curl --silent --show-error --output /tmp/cinema-health.json --write-out '%{http_code}' "$CINEMA_URL/health" || true)
             if [[ "$CODE" == "200" ]] && jq -e '.status == "ready" and .backend == "ready"' /tmp/cinema-health.json >/dev/null 2>&1; then
-              break
+              SOLVE_CODE=$(curl --silent --show-error --output /tmp/cinema-proof-1.json --write-out '%{http_code}' \
+                --request POST "$CINEMA_URL/solve" \
+                --header "Authorization: Bearer $CINEMA_SECRET" \
+                --header 'Content-Type: application/json' \
+                --data @/tmp/payload.json || true)
+              if [[ "$SOLVE_CODE" == "200" ]]; then
+                break
+              fi
             fi
-            [[ "$attempt" == "72" ]] && exit 1
+            if [[ "$attempt" == "72" ]]; then
+              echo 'Cinema production did not converge to the new authenticated revision' >&2
+              cat /tmp/cinema-proof-1.json 2>/dev/null || true
+              exit 1
+            fi
             sleep 5
           done
 
-          for out in /tmp/cinema-proof-1.json /tmp/cinema-proof-2.json; do
-            curl --fail-with-body --silent --show-error \
-              --request POST "$CINEMA_URL/solve" \
-              --header "Authorization: Bearer $CINEMA_SECRET" \
-              --header 'Content-Type: application/json' \
-              --data @/tmp/payload.json > "$out"
-          done
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/solve" \
+            --header "Authorization: Bearer $CINEMA_SECRET" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/payload.json > /tmp/cinema-proof-2.json
 
           jq -e '.cinema_status == "VERIFIED" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and .z3_proof.witness == [1,0,0] and .z3_proof.energy_exact == "-4"' /tmp/cinema-proof-1.json >/dev/null
 
@@ -273,7 +282,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          AZURE_ORIGIN='https://dsgone3dc2d94861e332.z23.web.core.windows.net'
+          AZURE_ORIGIN=$(jq -er '.product.public_landing | rtrimstr("/")' marketplace/launch-manifest.json)
           RENDER_ORIGIN='https://dsg-one-verified-execution.onrender.com'
           VERIFY_URL="$CINEMA_URL/verify/evaluate"
 

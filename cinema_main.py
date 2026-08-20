@@ -41,7 +41,7 @@ app.add_middleware(
     allow_origins=[
         "https://dashboard.stripe.com",
         "https://dashboard-test.stripe.com",
-        "https://dsgone3dc2d94861e332.z23.web.core.windows.net",
+        "https://dsgoneverifiedweb.z1.web.core.windows.net",
         "https://dsg-one-verified-execution.onrender.com",
     ],
     allow_origin_regex=r"https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net",

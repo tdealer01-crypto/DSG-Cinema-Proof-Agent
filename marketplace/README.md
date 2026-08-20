@@ -81,7 +81,7 @@ A marketplace package is considered submission-ready only when all of these are 
 
 ## Verified production surfaces
 
-- Landing: `https://dsgone3dc2d94861e332.z23.web.core.windows.net/`
+- Landing: `https://dsgoneverifiedweb.z1.web.core.windows.net/`
 - Cinema API: `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io`
 - API documentation: `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs`
 

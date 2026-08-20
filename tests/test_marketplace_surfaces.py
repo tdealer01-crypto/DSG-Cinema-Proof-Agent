@@ -40,11 +40,15 @@ def test_landing_contains_live_proof_flow_and_fail_closed_contract():
         "VERIFIED_GLOBAL_OPTIMUM",
         "validReceipt",
         "Download receipt JSON",
+        "const button=event.currentTarget",
+        "button.textContent='Proof hash copied'",
+        "[hidden]{display:none!important}",
         "Verification unavailable — no decision issued.",
         "Checkout status: NOT VERIFIED / NOT LINKED",
     ]
     for value in required:
         assert value in html
+    assert "event.currentTarget.textContent" not in html
 
 
 def test_landing_exposes_every_supported_marketplace_status_truthfully():
@@ -83,6 +87,9 @@ def test_launch_manifest_matches_repository_artifacts():
     manifest = json.loads(
         (ROOT / "marketplace" / "launch-manifest.json").read_text(encoding="utf-8")
     )
+    deployment = json.loads(
+        (ROOT / ".deployment" / "azure-3d-landing.json").read_text(encoding="utf-8")
+    )
     statuses = {item["channel"]: item["status"] for item in manifest["channels"]}
     assert statuses == {
         "GitHub Marketplace Action": "LIVE_V1",
@@ -94,6 +101,8 @@ def test_launch_manifest_matches_repository_artifacts():
         "Direct API": "LIVE",
     }
     assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
+    assert manifest["product"]["public_landing"] == deployment["site_url"]
+    assert deployment["status"] == "PASS"
 
     for item in manifest["channels"]:
         package = item.get("package") or item.get("v2_package")
@@ -134,9 +143,14 @@ def test_production_deployments_have_one_coordinated_owner():
     azure = (ROOT / ".github" / "workflows" / "deploy-azure-3d-landing.yml").read_text(
         encoding="utf-8"
     )
+    cinema = (ROOT / ".github" / "workflows" / "deploy-cinema-production.yml").read_text(
+        encoding="utf-8"
+    )
     z3 = (ROOT / ".github" / "workflows" / "deploy-z3-azure.yml").read_text(
         encoding="utf-8"
     )
     assert "    environment: production" in azure
+    assert "SOLVE_CODE=$(curl" in cinema
+    assert "Cinema production did not converge to the new authenticated revision" in cinema
     assert "  push:\n    branches: [main]" not in z3
     assert "deploy-cinema-production.yml" in z3
