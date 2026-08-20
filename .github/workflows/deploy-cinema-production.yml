@@ -53,6 +53,17 @@ jobs:
       KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
       CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       CONFIGURED_STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      # Stripe catalog identity. These are object ids, not credentials, so they
+      # belong in repository variables. Supplying one is only a claim: the app
+      # verifies every id against Stripe before it will report that checkout
+      # works, so a wrong id fails loudly instead of charging nothing.
+      CONFIGURED_STRIPE_PRODUCT_ID: ${{ vars.DSG_STRIPE_PRODUCT_ID }}
+      CONFIGURED_STRIPE_PRICE_ID: ${{ vars.DSG_STRIPE_PRICE_ID }}
+      CONFIGURED_STRIPE_PAYMENT_LINK_ID: ${{ vars.DSG_STRIPE_PAYMENT_LINK_ID }}
+      CONFIGURED_STRIPE_METER_ID: ${{ vars.DSG_STRIPE_METER_ID }}
+      CONFIGURED_STRIPE_METER_EVENT_NAME: ${{ vars.DSG_STRIPE_METER_EVENT_NAME || 'dsg_verified_execution' }}
+      CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_ID }}
+      CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_URL }}
       # Durable revenue storage. Enforcement stays refused until the ledger and
       # account registry survive a restart and have a single writer.
       REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
@@ -333,7 +344,36 @@ jobs:
               STRIPE_WEBHOOK_CONFIGURED='true'
             fi
           fi
+          # The catalog ids decide whether the credentials can reach money at
+          # all: without a product and price the app has nothing to charge
+          # against, so it scopes webhooks closed no matter what secrets it
+          # holds. Pass through only the ids that are actually configured.
+          STRIPE_CATALOG_SCOPED='false'
+          if [[ -n "$CONFIGURED_STRIPE_PRODUCT_ID" && -n "$CONFIGURED_STRIPE_PRICE_ID" ]]; then
+            STRIPE_CATALOG_SCOPED='true'
+          fi
+          for catalog_pair in \
+            "STRIPE_PRODUCT_ID=$CONFIGURED_STRIPE_PRODUCT_ID" \
+            "STRIPE_PRICE_ID=$CONFIGURED_STRIPE_PRICE_ID" \
+            "STRIPE_PAYMENT_LINK_ID=$CONFIGURED_STRIPE_PAYMENT_LINK_ID" \
+            "STRIPE_METER_ID=$CONFIGURED_STRIPE_METER_ID" \
+            "STRIPE_METER_EVENT_NAME=$CONFIGURED_STRIPE_METER_EVENT_NAME" \
+            "STRIPE_WEBHOOK_ENDPOINT_ID=$CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID" \
+            "STRIPE_WEBHOOK_ENDPOINT_URL=$CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL"; do
+            if [[ -n "${catalog_pair#*=}" ]]; then
+              CINEMA_ENV_ARGS+=("$catalog_pair")
+            fi
+          done
+
+          # The app accepts webhooks only with the signing secret AND the
+          # catalog scope, so treating the secret alone as "configured" makes
+          # the post-deploy check assert a state the app will never report.
+          if [[ "$STRIPE_CATALOG_SCOPED" != "true" ]]; then
+            STRIPE_WEBHOOK_CONFIGURED='false'
+          fi
+
           echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
+          echo "STRIPE_CATALOG_SCOPED=$STRIPE_CATALOG_SCOPED" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
 
           # Point the stores at the mounted share and attest only what this
@@ -638,7 +678,15 @@ jobs:
           fi
           jq -e --arg source "$STRIPE_SOURCE" '.stripe.configured == ($source != "none")' \
             /tmp/billing-status.json >/dev/null
-          echo "Stripe credential source verified as: $STRIPE_SOURCE"
+
+          # Holding a key is not the same as having something to charge for.
+          # The catalog scope the app reports must match the ids this
+          # deployment passed, or checkout readiness is being claimed on
+          # credentials alone.
+          jq -e --arg scoped "$STRIPE_CATALOG_SCOPED" \
+            '.stripe.catalog_scope_configured == ($scoped == "true")' \
+            /tmp/billing-status.json >/dev/null
+          echo "Stripe credential source verified as: $STRIPE_SOURCE (catalog scoped: $STRIPE_CATALOG_SCOPED)"
 
           # Enforcement readiness must reflect the storage this deployment
           # actually arranged, not an attestation someone set by hand.
