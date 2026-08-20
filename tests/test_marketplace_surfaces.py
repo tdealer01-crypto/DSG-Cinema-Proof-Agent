@@ -142,9 +142,14 @@ def test_production_deployments_have_one_coordinated_owner():
     azure = (ROOT / ".github" / "workflows" / "deploy-azure-3d-landing.yml").read_text(
         encoding="utf-8"
     )
+    cinema = (ROOT / ".github" / "workflows" / "deploy-cinema-production.yml").read_text(
+        encoding="utf-8"
+    )
     z3 = (ROOT / ".github" / "workflows" / "deploy-z3-azure.yml").read_text(
         encoding="utf-8"
     )
     assert "    environment: production" in azure
+    assert "SOLVE_CODE=$(curl" in cinema
+    assert "Cinema production did not converge to the new authenticated revision" in cinema
     assert "  push:\n    branches: [main]" not in z3
     assert "deploy-cinema-production.yml" in z3
