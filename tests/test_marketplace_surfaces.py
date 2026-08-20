@@ -42,6 +42,7 @@ def test_landing_contains_live_proof_flow_and_fail_closed_contract():
         "Download receipt JSON",
         "const button=event.currentTarget",
         "button.textContent='Proof hash copied'",
+        "[hidden]{display:none!important}",
         "Verification unavailable — no decision issued.",
         "Checkout status: NOT VERIFIED / NOT LINKED",
     ]
