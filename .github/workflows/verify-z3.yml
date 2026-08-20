@@ -1,0 +1,51 @@
+name: Verify Z3 Contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - 'z3_main.py'
+      - 'cinema_main.py'
+      - 'cinema_z3_integration.py'
+      - 'requirements.txt'
+      - 'tests/**'
+      - 'AZURE_BOOTSTRAP_GITHUB_OIDC.sh'
+      - '.github/workflows/verify-z3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Compile Python
+        run: python -m py_compile z3_main.py cinema_main.py cinema_z3_integration.py tests/test_z3_main.py tests/test_cinema_main.py
+
+      - name: Check Bash syntax
+        run: |
+          bash -n CINEMA_Z3_AUTO_INTEGRATION.sh
+          bash -n AZURE_BOOTSTRAP_GITHUB_OIDC.sh
+
+      - name: Run deterministic verification tests
+        env:
+          DSG_SOLVER_SHARED_SECRET: ci-test-secret
+          Z3_DETERMINISTIC_SEED: '42'
+        run: python -m pytest -q tests/test_z3_main.py tests/test_cinema_main.py

@@ -1,0 +1,398 @@
+name: Cinema Azure E2E Proof
+
+on:
+  pull_request:
+    paths:
+      - 'cinema_main.py'
+      - 'requirements-cinema.txt'
+      - 'Dockerfile.cinema'
+      - 'tests/test_cinema_main.py'
+      - '.github/workflows/cinema-e2e-azure.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cinema-azure-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      ACR_NAME: tdealer01acr
+      CONTAINER_ENV: dsg-z3-env-staging
+      ACR_PULL_IDENTITY: dsg-z3-acr-pull-staging
+      Z3_IMAGE_NAME: z3-solver-service
+      Z3_CONTAINER_APP: dsg-z3-verifier-cinema-e2e
+      CINEMA_IMAGE_NAME: cinema-proof-agent
+      CINEMA_CONTAINER_APP: dsg-cinema-e2e
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve isolated E2E secrets and identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+
+          PULL_IDENTITY_ID=$(az identity show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$ACR_PULL_IDENTITY" \
+            --query id \
+            --output tsv)
+          test -n "$PULL_IDENTITY_ID"
+
+          Z3_SECRET=$(openssl rand -hex 32)
+          CINEMA_SECRET=$(openssl rand -hex 32)
+          echo "::add-mask::$Z3_SECRET"
+          echo "::add-mask::$CINEMA_SECRET"
+          echo "PULL_IDENTITY_ID=$PULL_IDENTITY_ID" >> "$GITHUB_ENV"
+          echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
+          echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
+
+      - name: Build isolated Z3 E2E image
+        shell: bash
+        run: |
+          set -euo pipefail
+          Z3_IMAGE_TAG="cinema-e2e-${GITHUB_SHA}"
+          Z3_IMAGE_REF="$ACR_NAME.azurecr.io/$Z3_IMAGE_NAME:$Z3_IMAGE_TAG"
+          echo "Z3_IMAGE_REF=$Z3_IMAGE_REF" >> "$GITHUB_ENV"
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$Z3_IMAGE_NAME:$Z3_IMAGE_TAG" \
+            --file Dockerfile \
+            .
+
+      - name: Deploy isolated Z3 E2E Container App
+        shell: bash
+        run: |
+          set -euo pipefail
+          if az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" >/dev/null 2>&1; then
+            az containerapp identity assign \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --user-assigned "$PULL_IDENTITY_ID" \
+              --output none
+            az containerapp registry set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --server "$ACR_NAME.azurecr.io" \
+              --identity "$PULL_IDENTITY_ID" \
+              --output none
+            az containerapp secret set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --secrets "solver-secret=$Z3_SECRET" \
+              --output none
+            az containerapp update \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --image "$Z3_IMAGE_REF" \
+              --set-env-vars \
+                DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
+                Z3_DETERMINISTIC_SEED=42 \
+                Z3_TIMEOUT_MS=30000 \
+                E2E_REVISION="$GITHUB_SHA" \
+                PORT=8080 \
+              --output none
+          else
+            az containerapp create \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$Z3_CONTAINER_APP" \
+              --environment "$CONTAINER_ENV" \
+              --image "$Z3_IMAGE_REF" \
+              --ingress external \
+              --target-port 8080 \
+              --transport http \
+              --user-assigned "$PULL_IDENTITY_ID" \
+              --registry-server "$ACR_NAME.azurecr.io" \
+              --registry-identity "$PULL_IDENTITY_ID" \
+              --secrets "solver-secret=$Z3_SECRET" \
+              --env-vars \
+                DSG_SOLVER_SHARED_SECRET=secretref:solver-secret \
+                Z3_DETERMINISTIC_SEED=42 \
+                Z3_TIMEOUT_MS=30000 \
+                E2E_REVISION="$GITHUB_SHA" \
+                PORT=8080 \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --output none
+          fi
+
+          az containerapp ingress update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" \
+            --type external \
+            --target-port 8080 \
+            --transport http \
+            --allow-insecure false \
+            --output none
+
+          Z3_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$Z3_CONTAINER_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$Z3_FQDN"
+          echo "Z3_SERVICE_URL=https://$Z3_FQDN" >> "$GITHUB_ENV"
+
+      - name: Verify direct Z3 exact proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          PAYLOAD='{"request_id":"cinema-azure-e2e","preset_name":"cinema-e2e","problem_type":"qubo","linear":[-4,-3,1],"quadratic":[[0,1,5],[1,2,2]],"proveOptimality":true,"z3TimeoutMs":30000}'
+          echo "$PAYLOAD" > /tmp/e2e-payload.json
+
+          for attempt in $(seq 1 72); do
+            READY_CODE=$(curl --silent --show-error \
+              --output /tmp/z3-ready.json \
+              --write-out '%{http_code}' \
+              "$Z3_SERVICE_URL/ready" || true)
+            if [[ "$READY_CODE" == "200" ]] && jq -e '.status == "ready"' /tmp/z3-ready.json >/dev/null 2>&1; then
+              SOLVE_CODE=$(curl --silent --show-error \
+                --output /tmp/z3-proof.json \
+                --write-out '%{http_code}' \
+                --request POST "$Z3_SERVICE_URL/solve" \
+                --header "Authorization: Bearer $Z3_SECRET" \
+                --header 'Content-Type: application/json' \
+                --data @/tmp/e2e-payload.json || true)
+              if [[ "$SOLVE_CODE" == "200" ]]; then
+                break
+              fi
+            fi
+            if [[ "$attempt" == "72" ]]; then
+              cat /tmp/z3-ready.json 2>/dev/null || true
+              cat /tmp/z3-proof.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          jq -e '
+            .verified == true and
+            .verification == "VERIFIED_GLOBAL_OPTIMUM" and
+            .witness == [1,0,0] and
+            .energy_exact == "-4" and
+            (.proof_hash | type == "string" and length == 64) and
+            (.request_hash | type == "string" and length == 64)
+          ' /tmp/z3-proof.json >/dev/null
+
+      - name: Build isolated Cinema E2E image
+        shell: bash
+        run: |
+          set -euo pipefail
+          CINEMA_IMAGE_TAG="cinema-e2e-${GITHUB_SHA}"
+          CINEMA_IMAGE_REF="$ACR_NAME.azurecr.io/$CINEMA_IMAGE_NAME:$CINEMA_IMAGE_TAG"
+          echo "CINEMA_IMAGE_REF=$CINEMA_IMAGE_REF" >> "$GITHUB_ENV"
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$CINEMA_IMAGE_NAME:$CINEMA_IMAGE_TAG" \
+            --file Dockerfile.cinema \
+            .
+
+      - name: Deploy isolated Cinema E2E Container App
+        shell: bash
+        run: |
+          set -euo pipefail
+          if az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_CONTAINER_APP" >/dev/null 2>&1; then
+            az containerapp identity assign \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$CINEMA_CONTAINER_APP" \
+              --user-assigned "$PULL_IDENTITY_ID" \
+              --output none
+            az containerapp registry set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$CINEMA_CONTAINER_APP" \
+              --server "$ACR_NAME.azurecr.io" \
+              --identity "$PULL_IDENTITY_ID" \
+              --output none
+            az containerapp secret set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$CINEMA_CONTAINER_APP" \
+              --secrets \
+                "backend-secret=$Z3_SECRET" \
+                "cinema-secret=$CINEMA_SECRET" \
+              --output none
+            az containerapp update \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$CINEMA_CONTAINER_APP" \
+              --image "$CINEMA_IMAGE_REF" \
+              --set-env-vars \
+                DSG_BACKEND_BASE_URL="$Z3_SERVICE_URL" \
+                DSG_BACKEND_API_KEY=secretref:backend-secret \
+                CINEMA_API_SECRET=secretref:cinema-secret \
+                E2E_REVISION="$GITHUB_SHA" \
+                PORT=8000 \
+              --output none
+          else
+            az containerapp create \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$CINEMA_CONTAINER_APP" \
+              --environment "$CONTAINER_ENV" \
+              --image "$CINEMA_IMAGE_REF" \
+              --ingress external \
+              --target-port 8000 \
+              --transport http \
+              --user-assigned "$PULL_IDENTITY_ID" \
+              --registry-server "$ACR_NAME.azurecr.io" \
+              --registry-identity "$PULL_IDENTITY_ID" \
+              --secrets \
+                "backend-secret=$Z3_SECRET" \
+                "cinema-secret=$CINEMA_SECRET" \
+              --env-vars \
+                DSG_BACKEND_BASE_URL="$Z3_SERVICE_URL" \
+                DSG_BACKEND_API_KEY=secretref:backend-secret \
+                CINEMA_API_SECRET=secretref:cinema-secret \
+                E2E_REVISION="$GITHUB_SHA" \
+                PORT=8000 \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --output none
+          fi
+
+          az containerapp ingress update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_CONTAINER_APP" \
+            --type external \
+            --target-port 8000 \
+            --transport http \
+            --allow-insecure false \
+            --output none
+
+          CINEMA_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_CONTAINER_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$CINEMA_FQDN"
+          echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
+
+      - name: Verify Cinema health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 72); do
+            CODE=$(curl --silent --show-error \
+              --output /tmp/cinema-health.json \
+              --write-out '%{http_code}' \
+              --max-time 20 \
+              "$CINEMA_URL/health" || true)
+            if [[ "$CODE" == "200" ]] && jq -e '.status == "ready" and .backend == "ready"' /tmp/cinema-health.json >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [[ "$attempt" == "72" ]]; then
+              cat /tmp/cinema-health.json 2>/dev/null || true
+              echo "Cinema E2E Container App did not become ready" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Verify Cinema to Z3 exact proof and replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          for output in /tmp/cinema-proof-1.json /tmp/cinema-proof-2.json; do
+            curl --fail-with-body --silent --show-error \
+              --request POST "$CINEMA_URL/solve" \
+              --header "Authorization: Bearer $CINEMA_SECRET" \
+              --header 'Content-Type: application/json' \
+              --data @/tmp/e2e-payload.json > "$output"
+          done
+
+          jq -e '
+            .cinema_status == "VERIFIED" and
+            .verified == true and
+            .verification == "VERIFIED_GLOBAL_OPTIMUM" and
+            .z3_proof.verified == true and
+            .z3_proof.verification == "VERIFIED_GLOBAL_OPTIMUM" and
+            .z3_proof.witness == [1,0,0] and
+            .z3_proof.energy_exact == "-4"
+          ' /tmp/cinema-proof-1.json >/dev/null
+
+          CINEMA_HASH_1=$(jq -r '.proof_hash' /tmp/cinema-proof-1.json)
+          CINEMA_HASH_2=$(jq -r '.proof_hash' /tmp/cinema-proof-2.json)
+          CINEMA_REQUEST_1=$(jq -r '.request_hash' /tmp/cinema-proof-1.json)
+          CINEMA_REQUEST_2=$(jq -r '.request_hash' /tmp/cinema-proof-2.json)
+          DIRECT_HASH=$(jq -r '.proof_hash' /tmp/z3-proof.json)
+          DIRECT_REQUEST=$(jq -r '.request_hash' /tmp/z3-proof.json)
+
+          test "$CINEMA_HASH_1" = "$CINEMA_HASH_2"
+          test "$CINEMA_REQUEST_1" = "$CINEMA_REQUEST_2"
+          test "$CINEMA_HASH_1" = "$DIRECT_HASH"
+          test "$CINEMA_REQUEST_1" = "$DIRECT_REQUEST"
+
+      - name: Write non-secret Cinema E2E evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg z3_url "$Z3_SERVICE_URL" \
+            --arg z3_image "$Z3_IMAGE_REF" \
+            --arg cinema_url "$CINEMA_URL" \
+            --arg cinema_image "$CINEMA_IMAGE_REF" \
+            --slurpfile direct /tmp/z3-proof.json \
+            --slurpfile cinema /tmp/cinema-proof-1.json \
+            '{
+              commit: $commit,
+              environment: "staging",
+              isolation: "dedicated-z3-and-cinema-container-apps",
+              transport: "https",
+              z3_service_url: $z3_url,
+              z3_image_ref: $z3_image,
+              cinema_service_url: $cinema_url,
+              cinema_image_ref: $cinema_image,
+              direct_z3: {
+                verification: $direct[0].verification,
+                verified: $direct[0].verified,
+                witness: $direct[0].witness,
+                energy_exact: $direct[0].energy_exact,
+                proof_hash: $direct[0].proof_hash,
+                request_hash: $direct[0].request_hash
+              },
+              cinema_e2e: {
+                cinema_status: $cinema[0].cinema_status,
+                verification: $cinema[0].verification,
+                verified: $cinema[0].verified,
+                proof_hash: $cinema[0].proof_hash,
+                request_hash: $cinema[0].request_hash,
+                replay_match: true,
+                direct_proof_match: true
+              }
+            }' > cinema_e2e_evidence.json
+          cat cinema_e2e_evidence.json
+
+      - name: Upload Cinema E2E evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-e2e-evidence-${{ github.sha }}
+          path: cinema_e2e_evidence.json
+          retention-days: 30

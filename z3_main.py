@@ -1,256 +1,460 @@
 #!/usr/bin/env python3
-"""
-Z3 Solver Service for DSG ONE Platform
-- Real Z3 SMT solver (deterministic, seed=42)
-- Endpoint: POST /solve with QUBO/SAT problems
-- Output: proof_hash, z3_status, audit event_hash
-- Auth: DSG_SOLVER_SHARED_SECRET env var
+"""Deterministic Z3 verification service for DSG ONE.
+
+QUBO contract:
+- linear: [c0, c1, ...]
+- quadratic: [[i, j, coefficient], ...]
+- binary variables x_i in {0,1}
+- objective: sum(c_i*x_i) + sum(q_ij*x_i*x_j)
+
+For QUBO requests the service finds a minimum candidate and then performs an
+independent lower-bound check. The result is only marked VERIFIED_GLOBAL_OPTIMUM
+when the verifier proves that no assignment has lower energy.
 """
 
-import os
-import json
+from __future__ import annotations
+
 import hashlib
+import hmac
+import json
+import os
 import time
-from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import JSONResponse
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Literal, Optional
+
 import uvicorn
-from z3 import *
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+from z3 import And, Bool, If, Not, Optimize, Or, RealVal, Solver, get_version_string, is_true, sat, unsat
 
-# ============ CONFIG ============
-SHARED_SECRET = os.getenv("DSG_SOLVER_SHARED_SECRET", "dev-secret-unsafe")
 Z3_TIMEOUT_MS = int(os.getenv("Z3_TIMEOUT_MS", "30000"))
-Z3_SEED = 42  # Deterministic
-DETERMINISTIC = True
+Z3_SEED = int(os.getenv("Z3_DETERMINISTIC_SEED", "42"))
+SHARED_SECRET = os.getenv("DSG_SOLVER_SHARED_SECRET")
 
-# ============ MODELS ============
-class QuboInput(BaseModel):
-    preset_name: str  # e.g., "aimo_sealed_test_v1"
-    linear: list[float]  # [-4, -3, 1]
-    quadratic: list[list[float]]  # [[5, 2]]
-    witness: Optional[list[int]] = None  # [1, 0, 0]
-    proveOptimality: bool = True
-    z3TimeoutMs: int = 30000
+app = FastAPI(title="DSG ONE Z3 Verification Service", version="2.0.0")
+
 
 class SolveRequest(BaseModel):
-    request_id: str  # Client-provided request ID
-    preset_name: str
-    problem_type: str  # "qubo" or "sat"
-    linear: Optional[list[float]] = None
-    quadratic: Optional[list[list[float]]] = None
+    request_id: str
+    preset_name: str = "default"
+    problem_type: Literal["qubo", "sat", "QUBO", "SAT"]
+    linear: Optional[list[Decimal]] = None
+    quadratic: Optional[list[tuple[int, int, Decimal]]] = None
     witness: Optional[list[int]] = None
-    clauses: Optional[list[list[int]]] = None  # For SAT
+    clauses: Optional[list[list[int]]] = None
     proveOptimality: bool = True
-    z3TimeoutMs: int = 30000
+    z3TimeoutMs: int = Z3_TIMEOUT_MS
+
 
 class SolveResponse(BaseModel):
     request_id: str
-    z3_status: str  # "SAT" or "UNSAT" or "TIMEOUT" or "ERROR"
+    z3_status: str
+    verification: str
+    verified: bool
     witness: Optional[list[int]] = None
     energy: Optional[float] = None
-    proof_hash: str  # SHA256(request_id:z3_status:witness:energy:seed)
+    energy_exact: Optional[str] = None
+    proof_hash: str
+    request_hash: str
     compute_ms: int
     timestamp: str
-    audit: dict  # {event_hash, preset_name, z3_status}
+    audit: dict
 
-# ============ APP ============
-app = FastAPI(title="Z3 Solver Service", version="1.0.0")
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def decimal_string(value: Decimal) -> str:
+    if value == 0:
+        return "0"
+    normalized = value.normalize()
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def z3_decimal(value: Decimal):
+    return RealVal(decimal_string(value))
+
+
+def require_auth(authorization: Optional[str]) -> None:
+    if not SHARED_SECRET:
+        raise HTTPException(status_code=503, detail="solver secret is not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer authorization required")
+    token = authorization[7:].strip()
+    if not token or not hmac.compare_digest(token, SHARED_SECRET):
+        raise HTTPException(status_code=403, detail="invalid bearer token")
+
+
+def canonical_request(req: SolveRequest) -> dict:
+    return {
+        "request_id": req.request_id,
+        "preset_name": req.preset_name,
+        "problem_type": req.problem_type.lower(),
+        "linear": [decimal_string(v) for v in (req.linear or [])],
+        "quadratic": [
+            [i, j, decimal_string(coefficient)]
+            for i, j, coefficient in (req.quadratic or [])
+        ],
+        "witness": req.witness,
+        "clauses": req.clauses,
+        "proveOptimality": req.proveOptimality,
+        "z3TimeoutMs": req.z3TimeoutMs,
+        "seed": Z3_SEED,
+    }
+
+
+def sha256_json(value: dict) -> str:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def build_qubo_objective(
+    linear: list[Decimal],
+    quadratic: list[tuple[int, int, Decimal]],
+    variables,
+):
+    objective = RealVal("0")
+    for i, coefficient in enumerate(linear):
+        objective = objective + If(variables[i], z3_decimal(coefficient), RealVal("0"))
+    for i, j, coefficient in quadratic:
+        objective = objective + If(
+            And(variables[i], variables[j]),
+            z3_decimal(coefficient),
+            RealVal("0"),
+        )
+    return objective
+
+
+def validate_qubo(
+    linear: Optional[list[Decimal]],
+    quadratic: Optional[list[tuple[int, int, Decimal]]],
+) -> None:
+    if linear is None or not linear:
+        raise HTTPException(
+            status_code=422,
+            detail="QUBO linear must contain at least one coefficient",
+        )
+    n = len(linear)
+    for i, j, _ in quadratic or []:
+        if i < 0 or j < 0 or i >= n or j >= n:
+            raise HTTPException(
+                status_code=422,
+                detail=f"quadratic index out of range: [{i}, {j}]",
+            )
+        if i > j:
+            raise HTTPException(
+                status_code=422,
+                detail=f"quadratic term must use i <= j: [{i}, {j}]",
+            )
+
+
+def energy_decimal(
+    linear: list[Decimal],
+    quadratic: list[tuple[int, int, Decimal]],
+    witness: list[int],
+) -> Decimal:
+    total = Decimal("0")
+    for i, coefficient in enumerate(linear):
+        total += coefficient * witness[i]
+    for i, j, coefficient in quadratic:
+        total += coefficient * witness[i] * witness[j]
+    return total
+
+
+def solve_qubo_exact(
+    linear: list[Decimal],
+    quadratic: list[tuple[int, int, Decimal]],
+    timeout_ms: int,
+    candidate_witness: Optional[list[int]] = None,
+):
+    validate_qubo(linear, quadratic)
+    n = len(linear)
+
+    if candidate_witness is not None:
+        if len(candidate_witness) != n or any(
+            bit not in (0, 1) for bit in candidate_witness
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="witness must contain exactly one binary value per QUBO variable",
+            )
+        witness = list(candidate_witness)
+    else:
+        variables = [Bool(f"x_{i}") for i in range(n)]
+        objective = build_qubo_objective(linear, quadratic, variables)
+        optimizer = Optimize()
+        optimizer.set(timeout=timeout_ms, priority="lex")
+        optimizer.minimize(objective)
+
+        # Deterministic tie-break: lexicographically smallest binary witness.
+        tie_break = sum(
+            If(variables[i], 1 << (n - i - 1), 0)
+            for i in range(n)
+        )
+        optimizer.minimize(tie_break)
+
+        status = optimizer.check()
+        if status != sat:
+            return {
+                "z3_status": "TIMEOUT" if str(status) == "unknown" else "ERROR",
+                "verification": "NOT_VERIFIED",
+                "verified": False,
+                "witness": None,
+                "energy": None,
+                "energy_exact": None,
+            }
+
+        model = optimizer.model()
+        witness = [
+            1 if is_true(model.eval(v, model_completion=True)) else 0
+            for v in variables
+        ]
+
+    candidate_energy = energy_decimal(linear, quadratic, witness)
+    candidate_exact = decimal_string(candidate_energy)
+
+    # Independent proof obligation: a better assignment must not exist.
+    verifier_vars = [Bool(f"verify_x_{i}") for i in range(n)]
+    verifier_objective = build_qubo_objective(
+        linear,
+        quadratic,
+        verifier_vars,
+    )
+    verifier = Solver()
+    verifier.set(timeout=timeout_ms)
+    verifier.add(verifier_objective < z3_decimal(candidate_energy))
+    lower_status = verifier.check()
+
+    if lower_status == unsat:
+        verification = "VERIFIED_GLOBAL_OPTIMUM"
+        verified = True
+    elif lower_status == sat:
+        verification = "COUNTEREXAMPLE_FOUND"
+        verified = False
+    else:
+        verification = "VERIFICATION_TIMEOUT"
+        verified = False
+
+    return {
+        "z3_status": "SAT",
+        "verification": verification,
+        "verified": verified,
+        "witness": witness,
+        "energy": float(candidate_energy),
+        "energy_exact": candidate_exact,
+    }
+
+
+def solve_sat_deterministic(clauses: list[list[int]], timeout_ms: int):
+    max_var = 0
+    for clause in clauses:
+        if not clause:
+            return {
+                "z3_status": "UNSAT",
+                "verification": "UNSATISFIABLE",
+                "verified": True,
+                "witness": None,
+                "energy": None,
+                "energy_exact": None,
+            }
+        max_var = max(max_var, max(abs(literal) for literal in clause))
+
+    if max_var == 0:
+        return {
+            "z3_status": "SAT",
+            "verification": "SATISFIABLE",
+            "verified": True,
+            "witness": [],
+            "energy": None,
+            "energy_exact": None,
+        }
+
+    variables = {i: Bool(f"sat_x_{i}") for i in range(1, max_var + 1)}
+    solver = Solver()
+    solver.set(timeout=timeout_ms)
+    for clause in clauses:
+        solver.add(
+            Or(
+                [
+                    variables[abs(lit)]
+                    if lit > 0
+                    else Not(variables[-lit])
+                    for lit in clause
+                ]
+            )
+        )
+
+    status = solver.check()
+    if status == unsat:
+        return {
+            "z3_status": "UNSAT",
+            "verification": "UNSATISFIABLE",
+            "verified": True,
+            "witness": None,
+            "energy": None,
+            "energy_exact": None,
+        }
+    if status != sat:
+        return {
+            "z3_status": "TIMEOUT",
+            "verification": "NOT_VERIFIED",
+            "verified": False,
+            "witness": None,
+            "energy": None,
+            "energy_exact": None,
+        }
+
+    # Deterministically choose the lexicographically smallest satisfying witness.
+    for i in range(1, max_var + 1):
+        solver.push()
+        solver.add(Not(variables[i]))
+        trial = solver.check()
+        solver.pop()
+        if trial == sat:
+            solver.add(Not(variables[i]))
+        elif trial == unsat:
+            solver.add(variables[i])
+        else:
+            return {
+                "z3_status": "TIMEOUT",
+                "verification": "NOT_VERIFIED",
+                "verified": False,
+                "witness": None,
+                "energy": None,
+                "energy_exact": None,
+            }
+
+    if solver.check() != sat:
+        return {
+            "z3_status": "ERROR",
+            "verification": "NOT_VERIFIED",
+            "verified": False,
+            "witness": None,
+            "energy": None,
+            "energy_exact": None,
+        }
+
+    model = solver.model()
+    witness = [
+        1 if is_true(model.eval(variables[i], model_completion=True)) else 0
+        for i in range(1, max_var + 1)
+    ]
+    return {
+        "z3_status": "SAT",
+        "verification": "SATISFIABLE",
+        "verified": True,
+        "witness": witness,
+        "energy": None,
+        "energy_exact": None,
+    }
+
 
 @app.get("/health")
 def health():
-    """Liveness check for Cloud Run"""
-    return {"status": "alive", "z3_version": get_version()}
+    return {
+        "status": "alive",
+        "service": "dsg-z3-verifier",
+        "version": app.version,
+        "z3_version": get_version_string(),
+    }
+
+
+@app.get("/ready")
+def ready():
+    if not SHARED_SECRET:
+        raise HTTPException(
+            status_code=503,
+            detail="solver secret is not configured",
+        )
+    return {"status": "ready", "service": "dsg-z3-verifier"}
+
 
 @app.get("/metrics")
 def metrics():
-    """Basic metrics endpoint"""
     return {
-        "service": "z3-solver",
-        "z3_version": get_version(),
-        "deterministic": DETERMINISTIC,
+        "service": "dsg-z3-verifier",
+        "version": app.version,
+        "z3_version": get_version_string(),
+        "deterministic": True,
         "seed": Z3_SEED,
         "timeout_ms": Z3_TIMEOUT_MS,
+        "secret_configured": bool(SHARED_SECRET),
     }
 
+
 @app.post("/solve", response_model=SolveResponse)
-def solve(
-    req: SolveRequest,
-    authorization: Optional[str] = Header(None),
-):
-    """
-    Solve QUBO or SAT problem using real Z3 SMT solver.
-    
-    Auth: Bearer token (DSG_SOLVER_SHARED_SECRET)
-    """
-    start_time = time.time()
-    
-    # ===== AUTH =====
-    if authorization:
-        token = authorization.replace("Bearer ", "").strip()
-        if token != SHARED_SECRET:
-            raise HTTPException(status_code=403, detail="Invalid token")
-    
-    try:
-        # ===== SOLVE =====
-        if req.problem_type == "qubo":
-            z3_status, witness, energy = solve_qubo(
-                linear=req.linear,
-                quadratic=req.quadratic,
-                witness=req.witness,
-                timeout_ms=req.z3TimeoutMs,
-            )
-        elif req.problem_type == "sat":
-            z3_status, witness, energy = solve_sat(
-                clauses=req.clauses,
-                timeout_ms=req.z3TimeoutMs,
-            )
-        else:
-            raise ValueError(f"Unknown problem_type: {req.problem_type}")
-        
-        # ===== PROOF HASH =====
-        witness_str = ",".join(map(str, witness)) if witness else "none"
-        energy_str = str(energy) if energy is not None else "none"
-        proof_input = f"{req.request_id}:{z3_status}:{witness_str}:{energy_str}:{Z3_SEED}"
-        proof_hash = hashlib.sha256(proof_input.encode()).hexdigest()
-        
-        # ===== AUDIT HASH =====
-        now = datetime.utcnow().isoformat() + "Z"
-        audit_input = f"{now}:{req.request_id}:{req.preset_name}:{z3_status}:{Z3_SEED}"
-        event_hash = hashlib.sha256(audit_input.encode()).hexdigest()
-        
-        compute_ms = int((time.time() - start_time) * 1000)
-        
-        return SolveResponse(
-            request_id=req.request_id,
-            z3_status=z3_status,
-            witness=witness,
-            energy=energy,
-            proof_hash=proof_hash,
-            compute_ms=compute_ms,
-            timestamp=now,
-            audit={
-                "event_hash": event_hash,
-                "preset_name": req.preset_name,
-                "z3_status": z3_status,
-            },
-        )
-    
-    except Exception as e:
-        compute_ms = int((time.time() - start_time) * 1000)
-        now = datetime.utcnow().isoformat() + "Z"
-        
-        error_input = f"{req.request_id}:ERROR:none:none:{Z3_SEED}"
-        proof_hash = hashlib.sha256(error_input.encode()).hexdigest()
-        
-        audit_input = f"{now}:{req.request_id}:{req.preset_name}:ERROR:{Z3_SEED}"
-        event_hash = hashlib.sha256(audit_input.encode()).hexdigest()
-        
-        return SolveResponse(
-            request_id=req.request_id,
-            z3_status="ERROR",
-            witness=None,
-            energy=None,
-            proof_hash=proof_hash,
-            compute_ms=compute_ms,
-            timestamp=now,
-            audit={
-                "event_hash": event_hash,
-                "preset_name": req.preset_name,
-                "z3_status": "ERROR",
-            },
+def solve(req: SolveRequest, authorization: Optional[str] = Header(None)):
+    started = time.monotonic()
+    require_auth(authorization)
+
+    if req.z3TimeoutMs <= 0 or req.z3TimeoutMs > 120000:
+        raise HTTPException(
+            status_code=422,
+            detail="z3TimeoutMs must be between 1 and 120000",
         )
 
-# ============ SOLVERS ============
-
-def solve_qubo(linear, quadratic, witness=None, timeout_ms=30000):
-    """
-    Solve QUBO: min (c^T x + x^T Q x) where x in {0,1}^n
-    
-    Returns: (z3_status, witness, energy)
-    """
-    set_option(sat.auto_config=True)
-    set_param("timeout", timeout_ms)
-    
-    if DETERMINISTIC:
-        set_param("sat.random_seed", Z3_SEED)
-    
-    n = len(linear)
-    ctx = Context()
-    ctx.set("timeout", timeout_ms)
-    
-    solver = Solver(ctx=ctx)
-    x = [Bool(f"x_{i}", ctx=ctx) for i in range(n)]
-    
-    # Objective: minimize linear + quadratic
-    obj = 0
-    for i, c in enumerate(linear):
-        obj += If(x[i], c, 0)
-    
-    for (i, j), q in zip([(i, j) for i in range(n) for j in range(i, n)], quadratic):
-        if i == j:
-            obj += If(x[i], q, 0)
-        else:
-            obj += If(And(x[i], x[j]), q, 0)
-    
-    solver.add(obj >= 0)  # Constraint (optional)
-    
-    status = solver.check()
-    
-    if status == sat:
-        model = solver.model()
-        solution = [1 if model.eval(x[i]) else 0 for i in range(n)]
-        
-        # Compute energy
-        energy = sum(linear[i] * solution[i] for i in range(n))
-        for idx, (i, j) in enumerate([(i, j) for i in range(n) for j in range(i, n)]):
-            energy += quadratic[idx] * solution[i] * solution[j]
-        
-        return ("SAT", solution, energy)
-    elif status == unsat:
-        return ("UNSAT", None, None)
+    problem_type = req.problem_type.lower()
+    if problem_type == "qubo":
+        result = solve_qubo_exact(
+            req.linear or [],
+            req.quadratic or [],
+            req.z3TimeoutMs,
+            req.witness,
+        )
     else:
-        return ("TIMEOUT", None, None)
+        if req.clauses is None:
+            raise HTTPException(status_code=422, detail="SAT clauses are required")
+        result = solve_sat_deterministic(req.clauses, req.z3TimeoutMs)
 
-def solve_sat(clauses, timeout_ms=30000):
-    """
-    Solve SAT problem (list of clauses).
-    
-    Returns: (z3_status, witness, None)
-    """
-    set_param("timeout", timeout_ms)
-    
-    if DETERMINISTIC:
-        set_param("sat.random_seed", Z3_SEED)
-    
-    solver = Solver()
-    
-    # Parse clauses (list of lists of literals)
-    max_var = 0
-    for clause in clauses:
-        max_var = max(max_var, max(abs(lit) for lit in clause))
-    
-    # Create variables
-    vars_dict = {i: Bool(f"x_{i}") for i in range(1, max_var + 1)}
-    
-    # Add clauses
-    for clause in clauses:
-        clause_expr = Or([vars_dict[abs(lit)] if lit > 0 else Not(vars_dict[-lit]) for lit in clause])
-        solver.add(clause_expr)
-    
-    status = solver.check()
-    
-    if status == sat:
-        model = solver.model()
-        solution = [1 if model.eval(vars_dict[i]) else 0 for i in range(1, max_var + 1)]
-        return ("SAT", solution, None)
-    elif status == unsat:
-        return ("UNSAT", None, None)
-    else:
-        return ("TIMEOUT", None, None)
+    request_payload = canonical_request(req)
+    request_hash = sha256_json(request_payload)
+    proof_payload = {
+        "request_hash": request_hash,
+        "z3_status": result["z3_status"],
+        "verification": result["verification"],
+        "verified": result["verified"],
+        "witness": result["witness"],
+        "energy_exact": result["energy_exact"],
+        "z3_version": get_version_string(),
+        "seed": Z3_SEED,
+    }
+    proof_hash = sha256_json(proof_payload)
+    timestamp = utc_now()
+    compute_ms = int((time.monotonic() - started) * 1000)
+    event_hash = sha256_json(
+        {
+            "proof_hash": proof_hash,
+            "timestamp": timestamp,
+            "request_id": req.request_id,
+        }
+    )
 
-# ============ MAIN ============
+    return SolveResponse(
+        request_id=req.request_id,
+        z3_status=result["z3_status"],
+        verification=result["verification"],
+        verified=result["verified"],
+        witness=result["witness"],
+        energy=result["energy"],
+        energy_exact=result["energy_exact"],
+        proof_hash=proof_hash,
+        request_hash=request_hash,
+        compute_ms=compute_ms,
+        timestamp=timestamp,
+        audit={
+            "event_hash": event_hash,
+            "preset_name": req.preset_name,
+            "z3_status": result["z3_status"],
+            "verification": result["verification"],
+        },
+    )
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port)

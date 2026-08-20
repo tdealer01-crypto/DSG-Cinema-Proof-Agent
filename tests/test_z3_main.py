@@ -1,0 +1,124 @@
+import os
+
+os.environ.setdefault("DSG_SOLVER_SHARED_SECRET", "test-secret")
+
+from fastapi.testclient import TestClient
+import z3_main
+
+client = TestClient(z3_main.app)
+AUTH = {"Authorization": "Bearer test-secret"}
+
+
+def qubo_payload():
+    return {
+        "request_id": "qubo-001",
+        "preset_name": "unit-test",
+        "problem_type": "qubo",
+        "linear": [-4, -3, 1],
+        "quadratic": [[0, 1, 5], [1, 2, 2]],
+        "proveOptimality": True,
+        "z3TimeoutMs": 30000,
+    }
+
+
+def test_ready_requires_configured_secret(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", None)
+    assert client.get("/ready").status_code == 503
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    assert client.get("/ready").status_code == 200
+
+
+def test_solve_requires_bearer_token(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    assert client.post("/solve", json=qubo_payload()).status_code == 401
+    assert (
+        client.post(
+            "/solve",
+            json=qubo_payload(),
+            headers={"Authorization": "Bearer wrong"},
+        ).status_code
+        == 403
+    )
+
+
+def test_qubo_exact_global_optimum(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    response = client.post("/solve", json=qubo_payload(), headers=AUTH)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["z3_status"] == "SAT"
+    assert body["verification"] == "VERIFIED_GLOBAL_OPTIMUM"
+    assert body["verified"] is True
+    assert body["witness"] == [1, 0, 0]
+    assert body["energy_exact"] == "-4"
+    assert body["energy"] == -4.0
+
+
+def test_non_optimal_candidate_is_rejected(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    payload = qubo_payload()
+    payload["witness"] = [0, 0, 0]
+    response = client.post("/solve", json=payload, headers=AUTH)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["verification"] == "COUNTEREXAMPLE_FOUND"
+    assert body["verified"] is False
+
+
+def test_deterministic_replay_proof_hash(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    first = client.post("/solve", json=qubo_payload(), headers=AUTH).json()
+    second = client.post("/solve", json=qubo_payload(), headers=AUTH).json()
+    assert first["request_hash"] == second["request_hash"]
+    assert first["proof_hash"] == second["proof_hash"]
+    assert first["witness"] == second["witness"]
+    assert first["energy_exact"] == second["energy_exact"]
+
+
+def test_qubo_rejects_out_of_range_term(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    payload = qubo_payload()
+    payload["quadratic"] = [[0, 9, 1]]
+    response = client.post("/solve", json=payload, headers=AUTH)
+    assert response.status_code == 422
+
+
+def test_qubo_rejects_invalid_witness(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    payload = qubo_payload()
+    payload["witness"] = [1, 2, 0]
+    response = client.post("/solve", json=payload, headers=AUTH)
+    assert response.status_code == 422
+
+
+def test_sat_deterministic_witness(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    payload = {
+        "request_id": "sat-001",
+        "preset_name": "unit-test",
+        "problem_type": "sat",
+        "clauses": [[1, 2], [-1, 2]],
+    }
+    response = client.post("/solve", json=payload, headers=AUTH)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["z3_status"] == "SAT"
+    assert body["verification"] == "SATISFIABLE"
+    assert body["verified"] is True
+    assert body["witness"] == [0, 1]
+
+
+def test_empty_sat_clause_is_unsat(monkeypatch):
+    monkeypatch.setattr(z3_main, "SHARED_SECRET", "test-secret")
+    payload = {
+        "request_id": "sat-unsat",
+        "preset_name": "unit-test",
+        "problem_type": "sat",
+        "clauses": [[]],
+    }
+    response = client.post("/solve", json=payload, headers=AUTH)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["z3_status"] == "UNSAT"
+    assert body["verification"] == "UNSATISFIABLE"
+    assert body["verified"] is True
