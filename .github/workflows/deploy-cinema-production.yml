@@ -318,7 +318,7 @@ jobs:
           # fallback. With neither configured Stripe stays unlinked, and
           # /billing/status keeps reporting NOT_VERIFIED_NOT_LINKED truthfully.
           STRIPE_SOURCE='none'
-          STRIPE_WEBHOOK_CONFIGURED='false'
+          STRIPE_WEBHOOK_SECRET_PROVISIONED='false'
           if [[ -n "$KEY_VAULT_NAME" ]]; then
             VAULT_BASE="https://$KEY_VAULT_NAME.vault.azure.net/secrets"
             CINEMA_SECRET_ARGS+=(
@@ -330,7 +330,7 @@ jobs:
               STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret
             )
             STRIPE_SOURCE='key_vault'
-            STRIPE_WEBHOOK_CONFIGURED='true'
+            STRIPE_WEBHOOK_SECRET_PROVISIONED='true'
           else
             if [[ -n "$CONFIGURED_STRIPE_SECRET_KEY" ]]; then
               CINEMA_SECRET_ARGS+=("stripe-secret-key=$CONFIGURED_STRIPE_SECRET_KEY")
@@ -341,7 +341,7 @@ jobs:
               CINEMA_SECRET_ARGS+=("stripe-webhook-secret=$CONFIGURED_STRIPE_WEBHOOK_SECRET")
               CINEMA_ENV_ARGS+=(STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret)
               STRIPE_SOURCE='repository_secret'
-              STRIPE_WEBHOOK_CONFIGURED='true'
+              STRIPE_WEBHOOK_SECRET_PROVISIONED='true'
             fi
           fi
           # The catalog ids decide whether the credentials can reach money at
@@ -365,15 +365,19 @@ jobs:
             fi
           done
 
-          # The app accepts webhooks only with the signing secret AND the
-          # catalog scope, so treating the secret alone as "configured" makes
-          # the post-deploy check assert a state the app will never report.
-          if [[ "$STRIPE_CATALOG_SCOPED" != "true" ]]; then
-            STRIPE_WEBHOOK_CONFIGURED='false'
+          # Holding the signing secret and being able to act on a webhook are
+          # different facts, and they drive different assertions after the
+          # deployment. The secret alone decides whether the route answers a
+          # forged event with 400 rather than 503; the app only reports webhooks
+          # configured once it also has the catalog scope to apply one against.
+          STRIPE_WEBHOOK_CONFIGURED='false'
+          if [[ "$STRIPE_WEBHOOK_SECRET_PROVISIONED" == "true" && "$STRIPE_CATALOG_SCOPED" == "true" ]]; then
+            STRIPE_WEBHOOK_CONFIGURED='true'
           fi
 
           echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
           echo "STRIPE_CATALOG_SCOPED=$STRIPE_CATALOG_SCOPED" >> "$GITHUB_ENV"
+          echo "STRIPE_WEBHOOK_SECRET_PROVISIONED=$STRIPE_WEBHOOK_SECRET_PROVISIONED" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
 
           # Point the stores at the mounted share and attest only what this
@@ -667,15 +671,21 @@ jobs:
           WEBHOOK_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
             --request POST "$CINEMA_URL/billing/webhook/stripe" \
             --header 'Content-Type: application/json' --data '{"type":"invoice.paid"}')
-          if [[ "$STRIPE_WEBHOOK_CONFIGURED" == "true" ]]; then
-            # Configured: the route now rejects on signature, not on absence.
+          if [[ "$STRIPE_WEBHOOK_SECRET_PROVISIONED" == "true" ]]; then
+            # The signing secret reached the app: the route rejects on the
+            # signature now, not on absence.
             test "$WEBHOOK_CODE" = '400'
-            jq -e '.stripe.webhooks_configured == true' /tmp/billing-status.json >/dev/null
           else
-            # Not configured: unsigned webhooks are refused, never trusted.
+            # No signing secret: unsigned webhooks are refused, never trusted.
             test "$WEBHOOK_CODE" = '503'
-            jq -e '.stripe.webhooks_configured == false' /tmp/billing-status.json >/dev/null
           fi
+
+          # Readiness is the stricter claim. A signing secret without a catalog
+          # to apply the event against is not a working webhook, and the app
+          # says so; assert against that rather than against the secret.
+          jq -e --arg ready "$STRIPE_WEBHOOK_CONFIGURED" \
+            '.stripe.webhooks_configured == ($ready == "true")' \
+            /tmp/billing-status.json >/dev/null
           jq -e --arg source "$STRIPE_SOURCE" '.stripe.configured == ($source != "none")' \
             /tmp/billing-status.json >/dev/null
 
