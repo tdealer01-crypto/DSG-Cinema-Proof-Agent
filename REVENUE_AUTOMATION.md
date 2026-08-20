@@ -171,6 +171,27 @@ an unreachable service is not reported as zero revenue.
 | `DSG_REVENUE_STORAGE_DURABLE` | before enforcement | Operator attestation that both stores are durable |
 | `DSG_REVENUE_SINGLE_WRITER` | before enforcement | Operator attestation that exactly one writer serves the stores |
 
+### Supplying these to production
+
+The production deployment reads the Stripe catalog ids from repository
+*variables*, not secrets: an object id identifies what to charge for, it does
+not authorise a charge. The credentials stay in Key Vault.
+
+| Repository variable | Becomes |
+|---|---|
+| `DSG_STRIPE_PRODUCT_ID` | `STRIPE_PRODUCT_ID` |
+| `DSG_STRIPE_PRICE_ID` | `STRIPE_PRICE_ID` |
+| `DSG_STRIPE_PAYMENT_LINK_ID` | `STRIPE_PAYMENT_LINK_ID` |
+| `DSG_STRIPE_METER_ID` | `STRIPE_METER_ID` |
+| `DSG_STRIPE_METER_EVENT_NAME` | `STRIPE_METER_EVENT_NAME` (defaults to `dsg_verified_execution`) |
+| `DSG_STRIPE_WEBHOOK_ENDPOINT_ID` | `STRIPE_WEBHOOK_ENDPOINT_ID` |
+| `DSG_STRIPE_WEBHOOK_ENDPOINT_URL` | `STRIPE_WEBHOOK_ENDPOINT_URL` |
+
+A product and a price together are the minimum catalog scope. Below that the
+app has nothing to charge against, so it scopes webhooks closed however many
+credentials it holds, and the deployment asserts exactly that rather than
+claiming checkout is ready on the strength of a key.
+
 ## Durable storage
 
 Enforcement refuses to start until the ledger and the account registry survive a

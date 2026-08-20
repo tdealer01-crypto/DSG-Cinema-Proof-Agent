@@ -53,6 +53,17 @@ jobs:
       KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
       CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       CONFIGURED_STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      # Stripe catalog identity. These are object ids, not credentials, so they
+      # belong in repository variables. Supplying one is only a claim: the app
+      # verifies every id against Stripe before it will report that checkout
+      # works, so a wrong id fails loudly instead of charging nothing.
+      CONFIGURED_STRIPE_PRODUCT_ID: ${{ vars.DSG_STRIPE_PRODUCT_ID }}
+      CONFIGURED_STRIPE_PRICE_ID: ${{ vars.DSG_STRIPE_PRICE_ID }}
+      CONFIGURED_STRIPE_PAYMENT_LINK_ID: ${{ vars.DSG_STRIPE_PAYMENT_LINK_ID }}
+      CONFIGURED_STRIPE_METER_ID: ${{ vars.DSG_STRIPE_METER_ID }}
+      CONFIGURED_STRIPE_METER_EVENT_NAME: ${{ vars.DSG_STRIPE_METER_EVENT_NAME || 'dsg_verified_execution' }}
+      CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_ID }}
+      CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_URL }}
       # Durable revenue storage. Enforcement stays refused until the ledger and
       # account registry survive a restart and have a single writer.
       REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
@@ -307,7 +318,7 @@ jobs:
           # fallback. With neither configured Stripe stays unlinked, and
           # /billing/status keeps reporting NOT_VERIFIED_NOT_LINKED truthfully.
           STRIPE_SOURCE='none'
-          STRIPE_WEBHOOK_CONFIGURED='false'
+          STRIPE_WEBHOOK_SECRET_PROVISIONED='false'
           if [[ -n "$KEY_VAULT_NAME" ]]; then
             VAULT_BASE="https://$KEY_VAULT_NAME.vault.azure.net/secrets"
             CINEMA_SECRET_ARGS+=(
@@ -319,7 +330,7 @@ jobs:
               STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret
             )
             STRIPE_SOURCE='key_vault'
-            STRIPE_WEBHOOK_CONFIGURED='true'
+            STRIPE_WEBHOOK_SECRET_PROVISIONED='true'
           else
             if [[ -n "$CONFIGURED_STRIPE_SECRET_KEY" ]]; then
               CINEMA_SECRET_ARGS+=("stripe-secret-key=$CONFIGURED_STRIPE_SECRET_KEY")
@@ -330,10 +341,43 @@ jobs:
               CINEMA_SECRET_ARGS+=("stripe-webhook-secret=$CONFIGURED_STRIPE_WEBHOOK_SECRET")
               CINEMA_ENV_ARGS+=(STRIPE_WEBHOOK_SECRET=secretref:stripe-webhook-secret)
               STRIPE_SOURCE='repository_secret'
-              STRIPE_WEBHOOK_CONFIGURED='true'
+              STRIPE_WEBHOOK_SECRET_PROVISIONED='true'
             fi
           fi
+          # The catalog ids decide whether the credentials can reach money at
+          # all: without a product and price the app has nothing to charge
+          # against, so it scopes webhooks closed no matter what secrets it
+          # holds. Pass through only the ids that are actually configured.
+          STRIPE_CATALOG_SCOPED='false'
+          if [[ -n "$CONFIGURED_STRIPE_PRODUCT_ID" && -n "$CONFIGURED_STRIPE_PRICE_ID" ]]; then
+            STRIPE_CATALOG_SCOPED='true'
+          fi
+          for catalog_pair in \
+            "STRIPE_PRODUCT_ID=$CONFIGURED_STRIPE_PRODUCT_ID" \
+            "STRIPE_PRICE_ID=$CONFIGURED_STRIPE_PRICE_ID" \
+            "STRIPE_PAYMENT_LINK_ID=$CONFIGURED_STRIPE_PAYMENT_LINK_ID" \
+            "STRIPE_METER_ID=$CONFIGURED_STRIPE_METER_ID" \
+            "STRIPE_METER_EVENT_NAME=$CONFIGURED_STRIPE_METER_EVENT_NAME" \
+            "STRIPE_WEBHOOK_ENDPOINT_ID=$CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID" \
+            "STRIPE_WEBHOOK_ENDPOINT_URL=$CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL"; do
+            if [[ -n "${catalog_pair#*=}" ]]; then
+              CINEMA_ENV_ARGS+=("$catalog_pair")
+            fi
+          done
+
+          # Holding the signing secret and being able to act on a webhook are
+          # different facts, and they drive different assertions after the
+          # deployment. The secret alone decides whether the route answers a
+          # forged event with 400 rather than 503; the app only reports webhooks
+          # configured once it also has the catalog scope to apply one against.
+          STRIPE_WEBHOOK_CONFIGURED='false'
+          if [[ "$STRIPE_WEBHOOK_SECRET_PROVISIONED" == "true" && "$STRIPE_CATALOG_SCOPED" == "true" ]]; then
+            STRIPE_WEBHOOK_CONFIGURED='true'
+          fi
+
           echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
+          echo "STRIPE_CATALOG_SCOPED=$STRIPE_CATALOG_SCOPED" >> "$GITHUB_ENV"
+          echo "STRIPE_WEBHOOK_SECRET_PROVISIONED=$STRIPE_WEBHOOK_SECRET_PROVISIONED" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
 
           # Point the stores at the mounted share and attest only what this
@@ -491,13 +535,42 @@ jobs:
             --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
             --secret-names solver-previous-secret --output none
 
+          # Revoking the credential creates a new revision, and the old one
+          # keeps serving until the replacement passes its health probes. Wait
+          # for that swap before reading /metrics: polling first reads the
+          # revision that still holds the previous secret, so a rollout slower
+          # than the poll budget fails a revocation that in fact succeeded.
+          for attempt in $(seq 1 60); do
+            REVISION_STATE=$(az containerapp revision list \
+              --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+              --query "[?properties.active].properties.runningState | [0]" \
+              --output tsv 2>/dev/null || true)
+            [[ "$REVISION_STATE" == "Running" ]] && break
+            if [[ "$attempt" == "60" ]]; then
+              echo "Z3 revision carrying the revocation never became active (last state: ${REVISION_STATE:-unknown})" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
           # Prove the revoked credential is actually refused and the current one
           # still works, so a failed revocation cannot pass silently.
-          for attempt in $(seq 1 30); do
-            ROTATING=$(curl --silent --show-error "$Z3_URL/metrics" \
-              | jq -r '.rotation_in_progress // empty' || true)
+          for attempt in $(seq 1 60); do
+            METRICS=$(curl --silent --show-error "$Z3_URL/metrics" || true)
+            ROTATING=$(jq -r '.rotation_in_progress // empty' <<<"$METRICS" 2>/dev/null || true)
             [[ "$ROTATING" == "false" ]] && break
-            [[ "$attempt" == "30" ]] && { echo 'Rotation window did not close' >&2; exit 1; }
+            if [[ "$attempt" == "60" ]]; then
+              # An absent field and a still-open window are different failures:
+              # the first means the running image predates rotation support, so
+              # say which one happened instead of reporting a generic timeout.
+              if [[ -z "$ROTATING" ]]; then
+                echo 'Z3 /metrics does not report rotation_in_progress: the running image predates credential rotation support.' >&2
+              else
+                echo 'Rotation window did not close: the previous credential is still accepted.' >&2
+              fi
+              echo "$METRICS" >&2
+              exit 1
+            fi
             sleep 5
           done
 
@@ -598,18 +671,32 @@ jobs:
           WEBHOOK_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
             --request POST "$CINEMA_URL/billing/webhook/stripe" \
             --header 'Content-Type: application/json' --data '{"type":"invoice.paid"}')
-          if [[ "$STRIPE_WEBHOOK_CONFIGURED" == "true" ]]; then
-            # Configured: the route now rejects on signature, not on absence.
+          if [[ "$STRIPE_WEBHOOK_SECRET_PROVISIONED" == "true" ]]; then
+            # The signing secret reached the app: the route rejects on the
+            # signature now, not on absence.
             test "$WEBHOOK_CODE" = '400'
-            jq -e '.stripe.webhooks_configured == true' /tmp/billing-status.json >/dev/null
           else
-            # Not configured: unsigned webhooks are refused, never trusted.
+            # No signing secret: unsigned webhooks are refused, never trusted.
             test "$WEBHOOK_CODE" = '503'
-            jq -e '.stripe.webhooks_configured == false' /tmp/billing-status.json >/dev/null
           fi
+
+          # Readiness is the stricter claim. A signing secret without a catalog
+          # to apply the event against is not a working webhook, and the app
+          # says so; assert against that rather than against the secret.
+          jq -e --arg ready "$STRIPE_WEBHOOK_CONFIGURED" \
+            '.stripe.webhooks_configured == ($ready == "true")' \
+            /tmp/billing-status.json >/dev/null
           jq -e --arg source "$STRIPE_SOURCE" '.stripe.configured == ($source != "none")' \
             /tmp/billing-status.json >/dev/null
-          echo "Stripe credential source verified as: $STRIPE_SOURCE"
+
+          # Holding a key is not the same as having something to charge for.
+          # The catalog scope the app reports must match the ids this
+          # deployment passed, or checkout readiness is being claimed on
+          # credentials alone.
+          jq -e --arg scoped "$STRIPE_CATALOG_SCOPED" \
+            '.stripe.catalog_scope_configured == ($scoped == "true")' \
+            /tmp/billing-status.json >/dev/null
+          echo "Stripe credential source verified as: $STRIPE_SOURCE (catalog scoped: $STRIPE_CATALOG_SCOPED)"
 
           # Enforcement readiness must reflect the storage this deployment
           # actually arranged, not an attestation someone set by hand.
