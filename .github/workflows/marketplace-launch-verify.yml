@@ -8,6 +8,7 @@ on:
       - 'marketplace_verification.py'
       - 'tests/test_cinema_main.py'
       - 'marketplace/**'
+      - 'landing/**'
       - '.github/workflows/marketplace-launch-verify.yml'
   push:
     branches: [main]
@@ -16,6 +17,7 @@ on:
       - 'marketplace_verification.py'
       - 'tests/test_cinema_main.py'
       - 'marketplace/**'
+      - 'landing/**'
       - '.github/workflows/marketplace-launch-verify.yml'
   workflow_dispatch:
 
@@ -58,10 +60,13 @@ jobs:
             exit 1
           }
 
+      - name: Validate DSG ONE landing page
+        run: bash landing/validate.sh
+
       - name: Reject retired Control Plane runtime references
         run: |
           if grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
-            marketplace marketplace_verification.py; then
+            marketplace marketplace_verification.py landing; then
             echo 'Retired Control Plane runtime reference found in launch package' >&2
             exit 1
           fi
