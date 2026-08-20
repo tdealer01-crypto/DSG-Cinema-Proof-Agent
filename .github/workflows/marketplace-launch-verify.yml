@@ -1,0 +1,67 @@
+name: Verify Multi-Marketplace Launch Pack
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cinema_main.py'
+      - 'marketplace_verification.py'
+      - 'tests/test_cinema_main.py'
+      - 'marketplace/**'
+      - '.github/workflows/marketplace-launch-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cinema_main.py'
+      - 'marketplace_verification.py'
+      - 'tests/test_cinema_main.py'
+      - 'marketplace/**'
+      - '.github/workflows/marketplace-launch-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+
+      - name: Compile marketplace backend
+        run: python -m py_compile cinema_main.py marketplace_verification.py
+
+      - name: Run Cinema verification tests
+        run: python -m pytest -q tests/test_cinema_main.py
+
+      - name: Validate launch manifest
+        run: |
+          jq -e '.product.receipt_version == "dsg-proof-receipt-1.0.0"' marketplace/launch-manifest.json >/dev/null
+          jq -e '.product.policy_version == "dsg-verified-execution-1.0.0"' marketplace/launch-manifest.json >/dev/null
+
+      - name: Validate GitHub Action v2 package
+        run: |
+          test -f marketplace/github-action-v2/action.yml
+          bash -n marketplace/github-action-v2/scripts/verified-execution.sh
+          grep -q '/verify/evaluate' marketplace/github-action-v2/action.yml || {
+            echo 'Verified Execution endpoint is not documented in GitHub Action package' >&2
+            exit 1
+          }
+
+      - name: Reject retired Control Plane runtime references
+        run: |
+          if grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
+            marketplace marketplace_verification.py; then
+            echo 'Retired Control Plane runtime reference found in launch package' >&2
+            exit 1
+          fi
