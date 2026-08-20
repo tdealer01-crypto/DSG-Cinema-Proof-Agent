@@ -491,13 +491,42 @@ jobs:
             --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
             --secret-names solver-previous-secret --output none
 
+          # Revoking the credential creates a new revision, and the old one
+          # keeps serving until the replacement passes its health probes. Wait
+          # for that swap before reading /metrics: polling first reads the
+          # revision that still holds the previous secret, so a rollout slower
+          # than the poll budget fails a revocation that in fact succeeded.
+          for attempt in $(seq 1 60); do
+            REVISION_STATE=$(az containerapp revision list \
+              --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
+              --query "[?properties.active].properties.runningState | [0]" \
+              --output tsv 2>/dev/null || true)
+            [[ "$REVISION_STATE" == "Running" ]] && break
+            if [[ "$attempt" == "60" ]]; then
+              echo "Z3 revision carrying the revocation never became active (last state: ${REVISION_STATE:-unknown})" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
           # Prove the revoked credential is actually refused and the current one
           # still works, so a failed revocation cannot pass silently.
-          for attempt in $(seq 1 30); do
-            ROTATING=$(curl --silent --show-error "$Z3_URL/metrics" \
-              | jq -r '.rotation_in_progress // empty' || true)
+          for attempt in $(seq 1 60); do
+            METRICS=$(curl --silent --show-error "$Z3_URL/metrics" || true)
+            ROTATING=$(jq -r '.rotation_in_progress // empty' <<<"$METRICS" 2>/dev/null || true)
             [[ "$ROTATING" == "false" ]] && break
-            [[ "$attempt" == "30" ]] && { echo 'Rotation window did not close' >&2; exit 1; }
+            if [[ "$attempt" == "60" ]]; then
+              # An absent field and a still-open window are different failures:
+              # the first means the running image predates rotation support, so
+              # say which one happened instead of reporting a generic timeout.
+              if [[ -z "$ROTATING" ]]; then
+                echo 'Z3 /metrics does not report rotation_in_progress: the running image predates credential rotation support.' >&2
+              else
+                echo 'Rotation window did not close: the previous credential is still accepted.' >&2
+              fi
+              echo "$METRICS" >&2
+              exit 1
+            fi
             sleep 5
           done
 
