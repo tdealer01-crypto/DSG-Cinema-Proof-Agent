@@ -1,0 +1,171 @@
+name: Copilot CLI Authenticated DSG MCP E2E
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/copilot-cli-mcp-auth-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CI: '1'
+      NO_COLOR: '1'
+      CINEMA_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      MCP_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp
+      MARKETPLACE_REPO: tdealer01-crypto/DSG-Cinema-Proof-Agent
+      MARKETPLACE_NAME: dsg-agent-plugins
+      PLUGIN_NAME: dsg-governance
+      MCP_SERVER_NAME: dsg-one-auth
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Install DSG plugin from public marketplace
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME" "$COPILOT_HOME"
+          copilot plugin marketplace add "$MARKETPLACE_REPO"
+          copilot plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME"
+          copilot plugin list | grep -F "$PLUGIN_NAME@$MARKETPLACE_NAME"
+
+      - name: Activate ephemeral free DSG key
+        shell: bash
+        run: |
+          set -euo pipefail
+          activation_id="copilot-cli-mcp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          payload=$(jq -cn \
+            --arg channel 'copilot_cli' \
+            --arg activation_id "$activation_id" \
+            --arg display_name 'Copilot CLI authenticated MCP E2E' \
+            '{channel:$channel,activation_id:$activation_id,display_name:$display_name}')
+
+          code=$(curl --silent --show-error \
+            --output /tmp/dsg-activate.json \
+            --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data "$payload" || true)
+
+          if [[ "$code" != '200' && "$code" != '201' ]]; then
+            echo "DSG activation failed with HTTP $code" >&2
+            jq 'del(.api_key)' /tmp/dsg-activate.json 2>/dev/null || true
+            exit 1
+          fi
+
+          DSG_API_KEY=$(jq -r '.api_key // empty' /tmp/dsg-activate.json)
+          test -n "$DSG_API_KEY"
+          echo "::add-mask::$DSG_API_KEY"
+          jq -e '.plan.plan == "free" and .activated == true' /tmp/dsg-activate.json >/dev/null
+
+          printf 'DSG_API_KEY=%s\n' "$DSG_API_KEY" >> "$GITHUB_ENV"
+          printf 'DSG_ACTIVATION_ID=%s\n' "$activation_id" >> "$GITHUB_ENV"
+          rm -f /tmp/dsg-activate.json
+
+      - name: Add authenticated DSG MCP server to Copilot CLI
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+        run: |
+          set -euo pipefail
+          copilot mcp add \
+            --transport http \
+            --header "X-DSG-API-Key: $DSG_API_KEY" \
+            --tools '*' \
+            "$MCP_SERVER_NAME" "$MCP_URL" >/tmp/mcp-add.txt
+          rm -f /tmp/mcp-add.txt
+
+      - name: Discover authenticated DSG tools through Copilot CLI
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+        run: |
+          set -euo pipefail
+          copilot mcp get "$MCP_SERVER_NAME" --json >/tmp/dsg-mcp-get.json
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = Path('/tmp/dsg-mcp-get.json').read_text(encoding='utf-8')
+          key = os.environ['DSG_API_KEY']
+          assert key not in raw, 'API key leaked into Copilot MCP JSON output'
+          data = json.loads(raw)
+          serialized = json.dumps(data)
+          expected = [
+              'dsg_status',
+              'dsg_create_plan',
+              'dsg_approve_plan',
+              'dsg_verify_plan_alignment',
+              'dsg_verify_constraints',
+              'dsg_record_execution',
+              'dsg_submit_evidence',
+              'dsg_verify_execution',
+              'dsg_get_proof',
+          ]
+          missing = [name for name in expected if name not in serialized]
+          assert not missing, f'Missing authenticated DSG MCP tools: {missing}'
+          Path('/tmp/dsg-tools.json').write_text(json.dumps(expected), encoding='utf-8')
+          PY
+
+          rm -f /tmp/dsg-mcp-get.json
+
+      - name: Build sanitized authenticated-MCP evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          copilot_version=$(copilot --version | head -n 1 | sed 's/[[:space:]]*$//')
+          export COPILOT_VERSION="$copilot_version"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          tools = json.loads(Path('/tmp/dsg-tools.json').read_text(encoding='utf-8'))
+          evidence = {
+              'schema_version': '1.0',
+              'client': 'GitHub Copilot CLI',
+              'client_version': os.environ['COPILOT_VERSION'],
+              'marketplace_repository': os.environ['MARKETPLACE_REPO'],
+              'marketplace_name': os.environ['MARKETPLACE_NAME'],
+              'plugin_name': os.environ['PLUGIN_NAME'],
+              'mcp_server_name': os.environ['MCP_SERVER_NAME'],
+              'mcp_url': os.environ['MCP_URL'],
+              'authentication': 'X-DSG-API-Key (ephemeral free activation; value not retained)',
+              'activation_plan': 'free',
+              'mcp_authenticated_discovery': 'PASS',
+              'discovered_tools': tools,
+              'agent_initiated_tool_call': 'NOT_RUN',
+              'truth_boundary': 'Proves Copilot CLI authenticated remote MCP connection and tool discovery. A model-driven Copilot agent tool invocation remains a separate gate requiring Copilot authentication.'
+          }
+          Path('copilot-cli-mcp-auth-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
+          PY
+          cat copilot-cli-mcp-auth-e2e.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized authenticated-MCP evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-cli-mcp-auth-e2e
+          path: copilot-cli-mcp-auth-e2e.json
+          if-no-files-found: error
