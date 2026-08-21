@@ -137,15 +137,17 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Keep the prompt narrow and read-only. The session is allowed to use
-          # only the registered DSG MCP server; it is not given shell/file tools.
+          # GitHub Copilot CLI MCP permission patterns use ServerName(tool_name),
+          # not glob syntax such as ServerName/*. Keep this conformance session
+          # restricted to the read-only dsg_status tool.
           copilot -sp \
-            'Use the DSG MCP server to call the dsg_status tool. Return only a compact JSON object containing the tool name and whether DSG reported ready.' \
-            --allow-tool="$MCP_SERVER_NAME/*" \
+            'Use the DSG MCP server to call the dsg_status tool exactly once. Return only a compact JSON object with {"tool":"dsg_status","ready":true} when DSG itself reports ready. Do not infer readiness if the tool call fails.' \
+            --allow-tool="$MCP_SERVER_NAME(dsg_status)" \
             >/tmp/copilot-dsg-status.out
 
           test -s /tmp/copilot-dsg-status.out
           grep -Fq 'dsg_status' /tmp/copilot-dsg-status.out
+          grep -Eqi '"?ready"?[[:space:]]*:[[:space:]]*true' /tmp/copilot-dsg-status.out
           echo 'AGENT_TOOL_CALL_STATUS=PASS' >> "$GITHUB_ENV"
 
       - name: Build sanitized E2E evidence
