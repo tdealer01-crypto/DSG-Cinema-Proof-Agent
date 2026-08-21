@@ -25,7 +25,7 @@ jobs:
       MARKETPLACE_NAME: dsg-agent-plugins
       PLUGIN_NAME: dsg-governance
       MCP_SERVER_NAME: dsg-one
-      DSG_AVAILABLE_TOOLS: skill,dsg-one-dsg_status,dsg-one-dsg_create_plan,dsg-one-dsg_read_plan,dsg-one-dsg_approve_plan,dsg-one-dsg_verify_plan_alignment,dsg-one-dsg_verify_constraints,dsg-one-dsg_record_execution,dsg-one-dsg_submit_evidence,dsg-one-dsg_verify_execution,dsg-one-dsg_get_proof
+      COPILOT_EXCLUDED_BUILTINS: bash,list_bash,read_bash,stop_bash,write_bash,powershell,list_powershell,read_powershell,stop_powershell,write_powershell,apply_patch,create,edit,view,list_agents,read_agent,task,write_agent,ask_user,glob,grep,rg,web_fetch,web_search
       EXPECTED_OUTPUT: DSG_COPILOT_E2E_OK
       EXPECTED_OUTPUT_SHA256: b6811fb2f0dba5fd7b6c6f5946ef362c995e93259cf884deb13b939036cdaee5
 
@@ -151,7 +151,8 @@ jobs:
           copilot -sp \
             'Use only the MCP server named dsg-one. Call dsg_status exactly once. Return one compact JSON object with keys tool and ready.' \
             --additional-mcp-config=@/tmp/dsg-auth-mcp.json \
-            --available-tools='dsg-one-dsg_status' \
+            --disable-builtin-mcps \
+            --excluded-tools="$COPILOT_EXCLUDED_BUILTINS" \
             --allow-tool="$MCP_SERVER_NAME" \
             >/tmp/copilot-dsg-status.out
           test -s /tmp/copilot-dsg-status.out
@@ -170,7 +171,7 @@ jobs:
         run: |
           set -euo pipefail
           prompt=$(cat <<'PROMPT'
-          Follow the installed dsg-governed-execution skill. Use only MCP tools from the server named dsg-one. No shell, web, file, or sub-agent tools are available in this session.
+          Follow the installed dsg-governed-execution skill. Use only MCP tools from the server named dsg-one. Do not use shell, web, file, GitHub, or sub-agent tools.
 
           This CI workflow is the operator authorization for exactly one synthetic bounded test action: emit the literal text DSG_COPILOT_E2E_OK. Do not perform or claim any other action.
 
@@ -205,7 +206,8 @@ jobs:
 
           copilot -sp "$prompt" \
             --additional-mcp-config=@/tmp/dsg-auth-mcp.json \
-            --available-tools="$DSG_AVAILABLE_TOOLS" \
+            --disable-builtin-mcps \
+            --excluded-tools="$COPILOT_EXCLUDED_BUILTINS" \
             --allow-tool="$MCP_SERVER_NAME" \
             >/tmp/copilot-governed.out
 
