@@ -54,6 +54,7 @@ jobs:
           test -n "$HOST"
           : > /tmp/cinema-health-body
           : > /tmp/billing-status-body
+          : > /tmp/marketplace-status-body
 
           set +e
           HEALTH_CODE=$(curl --silent --show-error \
@@ -68,10 +69,17 @@ jobs:
             --max-time 30 \
             "https://$HOST/billing/status")
           BILLING_RC=$?
+          MARKETPLACE_CODE=$(curl --silent --show-error \
+            --output /tmp/marketplace-status-body \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://$HOST/marketplace/github/status")
+          MARKETPLACE_RC=$?
           set -e
 
           if [[ "$HEALTH_RC" != "0" ]]; then HEALTH_CODE=0; fi
           if [[ "$BILLING_RC" != "0" ]]; then BILLING_CODE=0; fi
+          if [[ "$MARKETPLACE_RC" != "0" ]]; then MARKETPLACE_CODE=0; fi
 
           HEALTH_READY=false
           if [[ "$HEALTH_CODE" == "200" ]] && \
@@ -86,11 +94,19 @@ jobs:
             BILLING_READABLE=true
           fi
 
+          MARKETPLACE_READABLE=false
+          if [[ "$MARKETPLACE_CODE" == "200" ]] && \
+             jq -e '.status and .checks' /tmp/marketplace-status-body >/dev/null 2>&1; then
+            MARKETPLACE_READABLE=true
+          fi
+
           CHECKOUT_STATUS=$(jq -r '.checkout_status // "UNAVAILABLE"' /tmp/billing-status-body 2>/dev/null || echo UNAVAILABLE)
           STRIPE_CHARGES_ENABLED=$(jq -r '.stripe.charges_enabled // false' /tmp/billing-status-body 2>/dev/null || echo false)
           METERING_ENFORCED=$(jq -r '.metering_enforced // false' /tmp/billing-status-body 2>/dev/null || echo false)
           ENFORCEMENT_READY=$(jq -r '.enforcement_ready // false' /tmp/billing-status-body 2>/dev/null || echo false)
           LEDGER_ENTRIES=$(jq -r '.ledger.entries // 0' /tmp/billing-status-body 2>/dev/null || echo 0)
+          STRIPE_JSON=$(jq -c '.stripe // {}' /tmp/billing-status-body 2>/dev/null || echo '{}')
+          MARKETPLACE_JSON=$(jq -c '.' /tmp/marketplace-status-body 2>/dev/null || echo '{}')
 
           jq -n \
             --arg app_name "$CINEMA_APP" \
@@ -108,6 +124,10 @@ jobs:
             --argjson metering_enforced "$METERING_ENFORCED" \
             --argjson enforcement_ready "$ENFORCEMENT_READY" \
             --argjson ledger_entries "$LEDGER_ENTRIES" \
+            --argjson stripe "$STRIPE_JSON" \
+            --argjson marketplace_http_status "$MARKETPLACE_CODE" \
+            --argjson marketplace_readable "$MARKETPLACE_READABLE" \
+            --argjson marketplace "$MARKETPLACE_JSON" \
             '{
               target: "azure_container_app",
               app_name: $app_name,
@@ -127,7 +147,13 @@ jobs:
                 stripe_charges_enabled: $stripe_charges_enabled,
                 metering_enforced: $metering_enforced,
                 enforcement_ready: $enforcement_ready,
-                ledger_entries: $ledger_entries
+                ledger_entries: $ledger_entries,
+                stripe: $stripe
+              },
+              github_marketplace: {
+                http_status: $marketplace_http_status,
+                readable: $marketplace_readable,
+                status: $marketplace
               }
             }' > cinema_runtime_probe.json
 
@@ -141,6 +167,11 @@ jobs:
           if [[ "$BILLING_READABLE" != "true" ]]; then
             echo 'Current production billing/status is unavailable or malformed.' >&2
             cat /tmp/billing-status-body >&2 || true
+            exit 1
+          fi
+          if [[ "$MARKETPLACE_READABLE" != "true" ]]; then
+            echo 'Current production marketplace/github/status is unavailable or malformed.' >&2
+            cat /tmp/marketplace-status-body >&2 || true
             exit 1
           fi
 
