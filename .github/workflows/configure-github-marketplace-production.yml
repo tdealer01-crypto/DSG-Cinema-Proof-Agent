@@ -28,9 +28,12 @@ jobs:
       AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
-      CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET: ${{ secrets.GITHUB_MARKETPLACE_WEBHOOK_SECRET }}
-      CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_ID: ${{ vars.GITHUB_MARKETPLACE_OAUTH_CLIENT_ID || secrets.GITHUB_MARKETPLACE_OAUTH_CLIENT_ID }}
-      CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET: ${{ secrets.GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET }}
+      # GitHub reserves the GITHUB_ prefix for built-in configuration.
+      # Read user-managed production credentials from DSG_MARKETPLACE_* and
+      # map them to the GITHUB_MARKETPLACE_* runtime names only inside Azure.
+      CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET: ${{ secrets.DSG_MARKETPLACE_WEBHOOK_SECRET }}
+      CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_ID: ${{ vars.DSG_MARKETPLACE_OAUTH_CLIENT_ID || secrets.DSG_MARKETPLACE_OAUTH_CLIENT_ID }}
+      CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET: ${{ secrets.DSG_MARKETPLACE_OAUTH_CLIENT_SECRET }}
 
     steps:
       - name: Refuse incomplete Marketplace credentials
@@ -39,9 +42,9 @@ jobs:
           set -euo pipefail
 
           missing=()
-          [[ ${#CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET} -ge 32 ]] || missing+=(GITHUB_MARKETPLACE_WEBHOOK_SECRET)
-          [[ -n "$CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_ID" ]] || missing+=(GITHUB_MARKETPLACE_OAUTH_CLIENT_ID)
-          [[ ${#CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET} -ge 32 ]] || missing+=(GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET)
+          [[ ${#CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET} -ge 32 ]] || missing+=(DSG_MARKETPLACE_WEBHOOK_SECRET)
+          [[ -n "$CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_ID" ]] || missing+=(DSG_MARKETPLACE_OAUTH_CLIENT_ID)
+          [[ ${#CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET} -ge 32 ]] || missing+=(DSG_MARKETPLACE_OAUTH_CLIENT_SECRET)
 
           if (( ${#missing[@]} > 0 )); then
             echo 'GitHub Marketplace production is ACTION_REQUIRED.' >&2
@@ -52,7 +55,7 @@ jobs:
               echo
               echo "Missing/invalid: \`${missing[*]}\`"
               echo
-              echo 'The paid App is not claimed live until these values are configured and this workflow passes.'
+              echo 'Configure the DSG_MARKETPLACE_* values in the production environment. The paid App is not claimed live until this workflow passes.'
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -148,8 +151,9 @@ jobs:
             --data '{"action":"purchased"}' || true)
           test "$forged_code" = '401'
 
-          # Setup must be able to sign OAuth state and target GitHub. Do not
-          # follow the redirect, and never put a client secret in output.
+          # Setup URL starts OAuth explicitly. GitHub App registration must keep
+          # "Request user authorization (OAuth) during installation" OFF so the
+          # Marketplace Setup URL remains available.
           setup_headers=$(mktemp)
           setup_code=$(curl --silent --show-error \
             --dump-header "$setup_headers" \
@@ -165,8 +169,9 @@ jobs:
             echo "- Cinema: \`$CINEMA_URL\`"
             echo "- Webhook: \`$CINEMA_URL/marketplace/github/webhook\`"
             echo "- OAuth callback: \`$CINEMA_URL/marketplace/github/callback\`"
+            echo "- Setup URL: \`$CINEMA_URL/marketplace/github/setup\`"
             echo "- Product console: \`$CINEMA_URL/app\`"
             echo '- Signed-webhook configuration: PASS'
-            echo '- OAuth setup configuration: PASS'
+            echo '- Setup URL → OAuth configuration: PASS'
             echo '- GitHub-paid → Stripe rebilling: DISABLED by entitlement design'
           } >> "$GITHUB_STEP_SUMMARY"
