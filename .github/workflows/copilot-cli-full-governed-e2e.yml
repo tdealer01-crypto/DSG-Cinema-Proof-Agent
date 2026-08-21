@@ -78,20 +78,17 @@ jobs:
             --arg activation_id "$activation_id" \
             --arg display_name 'Copilot CLI full governed E2E' \
             '{channel:$channel,activation_id:$activation_id,display_name:$display_name}')
-
           code=$(curl --silent --show-error \
             --output /tmp/dsg-activate.json \
             --write-out '%{http_code}' \
             --request POST "$CINEMA_URL/billing/activate" \
             --header 'Content-Type: application/json' \
             --data "$payload" || true)
-
           if [[ "$code" != '200' && "$code" != '201' ]]; then
             echo "DSG activation failed with HTTP $code" >&2
             jq 'del(.api_key)' /tmp/dsg-activate.json 2>/dev/null || true
             exit 1
           fi
-
           DSG_API_KEY=$(jq -r '.api_key // empty' /tmp/dsg-activate.json)
           test -n "$DSG_API_KEY"
           echo "::add-mask::$DSG_API_KEY"
@@ -123,11 +120,7 @@ jobs:
             --header "X-DSG-API-Key: $DSG_API_KEY" \
             --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dsg_status","arguments":{}}}' \
             > /tmp/direct-status.json
-          jq -e '
-            .result.isError == false and
-            .result.structuredContent.status == "READY" and
-            .result.structuredContent.verification_backend.ready == true
-          ' /tmp/direct-status.json >/dev/null
+          jq -e '.result.isError == false and .result.structuredContent.status == "READY" and .result.structuredContent.verification_backend.ready == true' /tmp/direct-status.json >/dev/null
           rm -f /tmp/direct-status.json
 
       - name: Ask Copilot agent to complete the full governed flow
@@ -144,34 +137,32 @@ jobs:
           EVIDENCE_CONTENT=$(jq -cn --arg run "$GITHUB_RUN_ID" '{result:"copilot-cli-governed-e2e-pass",run_id:$run}')
           EVIDENCE_SHA=$(printf '%s' "$EVIDENCE_CONTENT" | sha256sum | awk '{print $1}')
           TRACE_ID="copilot-full-${RUN_TAG}"
-          export EVIDENCE_CONTENT EVIDENCE_SHA TRACE_ID RUN_TAG
 
           cat > /tmp/copilot-full.prompt <<EOF
           Perform one benign DSG governance conformance run using only the MCP server named dsg-one-auth. Do not use shell, filesystem, browser, network, or any non-DSG tool. Do not invent any DSG verdict or identifier. Every identifier/hash used after a tool call must come from the DSG tool response.
 
           Execute these steps in order and stop immediately if any DSG tool reports an error or a non-PASS condition:
-
           1. Call dsg_status. Require status READY.
           2. Call dsg_create_plan with exactly this raw plan:
              {"title":"Copilot CLI full governed conformance ${RUN_TAG}","agent_identity":"github-copilot","channel":"github","steps":[{"step_id":"conformance","action":"record_conformance","target":"dsg/copilot-cli-e2e","parameters":{"run_tag":"${RUN_TAG}"},"requires_evidence":true,"optional":false}],"constraints":[{"constraint_id":"environment","field":"environment","op":"eq","value":"ci"},{"constraint_id":"cost_cap","field":"cost_microunits","op":"lte","value":0}],"metadata":{"e2e_run_id":"${GITHUB_RUN_ID}","purpose":"copilot-cli-full-governed-e2e"}}
-          3. From the create-plan response, take the returned plan_id and plan_hash. Call dsg_approve_plan with that plan_id, approver "copilot-cli-e2e@dsg.pics", the exact returned plan_hash, and approval_note "benign CI conformance run".
-          4. Call dsg_verify_plan_alignment for that plan_id with this exact observed action:
+          3. Use the returned plan_id and exact returned plan_hash to call dsg_approve_plan with approver "copilot-cli-e2e@dsg.pics" and approval_note "benign CI conformance run".
+          4. Call dsg_verify_plan_alignment for that plan_id with exactly this action:
              {"step_id":"conformance","action":"record_conformance","target":"dsg/copilot-cli-e2e","parameters":{"run_tag":"${RUN_TAG}"},"status":"succeeded","output_sha256":"${EVIDENCE_SHA}"}
              Require plan_aligned true.
-          5. Call dsg_verify_constraints for that plan_id with facts {"environment":"ci","cost_microunits":0}. Require constraints_pass true, decision ALLOW, and verification VERIFIED_GLOBAL_OPTIMUM.
-          6. Call dsg_record_execution with that plan_id, agent_identity "github-copilot", environment "ci", channel "github", cost_microunits 0, trace_id "${TRACE_ID}", and exactly the same observed action from step 4.
-          7. From the record-execution response take execution_id. Call dsg_submit_evidence for that execution_id with exactly one artifact:
-             {"artifact_id":"conformance-log","source":"copilot-cli-e2e","step_id":"conformance","media_type":"application/json","content":${EVIDENCE_CONTENT}}
+          5. Call dsg_verify_constraints for that plan_id with facts {"environment":"ci","cost_microunits":0}. Require constraints_pass true, decision ALLOW and verification VERIFIED_GLOBAL_OPTIMUM.
+          6. Call dsg_record_execution with that plan_id, agent_identity "github-copilot", environment "ci", channel "github", cost_microunits 0, trace_id "${TRACE_ID}", and exactly the same action from step 4.
+          7. Use the returned execution_id to call dsg_submit_evidence with exactly one artifact. IMPORTANT: content is a STRING containing JSON, not an object:
+             {"artifact_id":"conformance-log","source":"copilot-cli-e2e","step_id":"conformance","media_type":"application/json","content":"{\"result\":\"copilot-cli-governed-e2e-pass\",\"run_id\":\"${GITHUB_RUN_ID}\"}"}
              Require evidence_complete true and replay_match true.
-          8. Call dsg_verify_execution for that execution_id with require_content_evidence true and note "Copilot CLI full governed E2E". Require decision ALLOW, verification VERIFIED_GLOBAL_OPTIMUM, and every boolean in computed (authorized, plan_aligned, constraints_pass, execution_succeeded, replay_match, evidence_complete) to be true.
-          9. From the verify-execution response take proof_id. Call dsg_get_proof with that proof_id. Require decision ALLOW, verification VERIFIED_GLOBAL_OPTIMUM, and receipt_hash_verified true.
+          8. Call dsg_verify_execution for that execution_id with require_content_evidence true and note "Copilot CLI full governed E2E". Require decision ALLOW, verification VERIFIED_GLOBAL_OPTIMUM, and computed.authorized, computed.plan_aligned, computed.constraints_pass, computed.execution_succeeded, computed.replay_match and computed.evidence_complete all true.
+          9. Use the returned proof_id to call dsg_get_proof. Require decision ALLOW, verification VERIFIED_GLOBAL_OPTIMUM and receipt_hash_verified true.
 
-          If and only if all nine steps succeed, return exactly one line in this format using the real DSG identifiers:
+          If and only if all nine steps succeed, return exactly one line using real DSG identifiers:
           DSG_E2E_RESULT proof_id=<proof_id> execution_id=<execution_id> plan_id=<plan_id> decision=ALLOW verification=VERIFIED_GLOBAL_OPTIMUM receipt_hash_verified=true
-
           Otherwise return exactly one line beginning DSG_E2E_FAILED and do not claim PASS.
           EOF
 
+          set +e
           copilot -sp "$(cat /tmp/copilot-full.prompt)" \
             --allow-tool="$MCP_SERVER_NAME(dsg_status)" \
             --allow-tool="$MCP_SERVER_NAME(dsg_create_plan)" \
@@ -182,16 +173,23 @@ jobs:
             --allow-tool="$MCP_SERVER_NAME(dsg_submit_evidence)" \
             --allow-tool="$MCP_SERVER_NAME(dsg_verify_execution)" \
             --allow-tool="$MCP_SERVER_NAME(dsg_get_proof)" \
-            > /tmp/copilot-full.out
+            > /tmp/copilot-full.out 2>/tmp/copilot-full.err
+          rc=$?
+          set -e
 
-          grep -Fq 'DSG_E2E_RESULT' /tmp/copilot-full.out
-          ! grep -Fq 'DSG_E2E_FAILED' /tmp/copilot-full.out
+          if [[ "$rc" != '0' ]] || ! grep -Fq 'DSG_E2E_RESULT' /tmp/copilot-full.out || grep -Fq 'DSG_E2E_FAILED' /tmp/copilot-full.out; then
+            echo 'Copilot governed flow did not complete. Sanitized client output follows:' >&2
+            sed -n '1,80p' /tmp/copilot-full.out >&2 || true
+            sed -n '1,40p' /tmp/copilot-full.err >&2 || true
+            exit 1
+          fi
+
           PROOF_ID=$(grep -Eo 'proof_[0-9a-z]+' /tmp/copilot-full.out | tail -n 1)
           test -n "$PROOF_ID"
           printf 'PROOF_ID=%s\n' "$PROOF_ID" >> "$GITHUB_ENV"
           printf 'EVIDENCE_SHA=%s\n' "$EVIDENCE_SHA" >> "$GITHUB_ENV"
           printf 'TRACE_ID=%s\n' "$TRACE_ID" >> "$GITHUB_ENV"
-          rm -f /tmp/copilot-full.prompt /tmp/copilot-full.out
+          rm -f /tmp/copilot-full.prompt /tmp/copilot-full.out /tmp/copilot-full.err
 
       - name: Independently verify proof, plan, execution, evidence and replay
         shell: bash
@@ -200,7 +198,6 @@ jobs:
           curl --silent --show-error --fail-with-body \
             --header "X-DSG-API-Key: $DSG_API_KEY" \
             "$CINEMA_URL/api/v1/proofs/$PROOF_ID" > /tmp/proof.json
-
           jq -e '
             .decision == "ALLOW" and
             .verification == "VERIFIED_GLOBAL_OPTIMUM" and
@@ -226,37 +223,23 @@ jobs:
           EXECUTION_ID=$(jq -r '.execution_id' /tmp/proof.json)
           test -n "$PLAN_ID"
           test -n "$EXECUTION_ID"
-
-          curl --silent --show-error --fail-with-body \
-            --header "X-DSG-API-Key: $DSG_API_KEY" \
-            "$CINEMA_URL/api/v1/plans/$PLAN_ID" > /tmp/plan.json
-          curl --silent --show-error --fail-with-body \
-            --header "X-DSG-API-Key: $DSG_API_KEY" \
-            "$CINEMA_URL/api/v1/executions/$EXECUTION_ID" > /tmp/execution.json
+          curl --silent --show-error --fail-with-body --header "X-DSG-API-Key: $DSG_API_KEY" "$CINEMA_URL/api/v1/plans/$PLAN_ID" > /tmp/plan.json
+          curl --silent --show-error --fail-with-body --header "X-DSG-API-Key: $DSG_API_KEY" "$CINEMA_URL/api/v1/executions/$EXECUTION_ID" > /tmp/execution.json
 
           jq -e --arg run "$GITHUB_RUN_ID" '
-            .status == "APPROVED" and
-            .plan_hash_verified == true and
-            .document.agent_identity == "github-copilot" and
-            .document.channel == "github" and
+            .status == "APPROVED" and .plan_hash_verified == true and
+            .document.agent_identity == "github-copilot" and .document.channel == "github" and
             .document.metadata.e2e_run_id == $run and
             .document.metadata.purpose == "copilot-cli-full-governed-e2e" and
             .document.steps[0].step_id == "conformance"
           ' /tmp/plan.json >/dev/null
-
-          jq -e --arg sha "$EVIDENCE_SHA" --arg trace "$TRACE_ID" '
-            .status == "VERIFIED" and
-            .trace_id == $trace and
-            .agent_identity == "github-copilot" and
-            .environment == "ci" and
-            .cost_microunits == 0 and
-            .actions[0].status == "succeeded" and
-            .actions[0].output_sha256 == $sha and
-            .evidence[0].verification == "CONTENT_VERIFIED" and
-            .evidence[0].sha256 == $sha and
-            .proof_id == env.PROOF_ID
+          jq -e --arg sha "$EVIDENCE_SHA" --arg trace "$TRACE_ID" --arg proof "$PROOF_ID" '
+            .status == "VERIFIED" and .trace_id == $trace and
+            .agent_identity == "github-copilot" and .environment == "ci" and .cost_microunits == 0 and
+            .actions[0].status == "succeeded" and .actions[0].output_sha256 == $sha and
+            .evidence[0].verification == "CONTENT_VERIFIED" and .evidence[0].sha256 == $sha and
+            .proof_id == $proof
           ' /tmp/execution.json >/dev/null
-
           printf 'PLAN_ID=%s\n' "$PLAN_ID" >> "$GITHUB_ENV"
           printf 'EXECUTION_ID=%s\n' "$EXECUTION_ID" >> "$GITHUB_ENV"
           echo 'FULL_GOVERNED_FLOW_STATUS=PASS' >> "$GITHUB_ENV"
@@ -275,7 +258,6 @@ jobs:
           import json
           import os
           from pathlib import Path
-
           evidence = {
               'schema_version': '1.0',
               'client': 'GitHub Copilot CLI',
