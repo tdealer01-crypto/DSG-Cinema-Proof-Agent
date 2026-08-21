@@ -7,8 +7,9 @@ VERIFIED_GLOBAL_OPTIMUM.
 
 GitHub Marketplace subscription plans are entitlement-only inside Cinema. GitHub
 collects their subscription payment, so these plans deliberately carry a zero
-Cinema unit price and never require a Stripe payment link. This prevents a
-Marketplace buyer from being charged again by the direct Stripe meter.
+Cinema unit price and never require a Stripe payment link. They are kept out of
+the public direct-billing catalog to prevent a Marketplace entitlement from
+being mistaken for a Stripe checkout plan.
 """
 
 from __future__ import annotations
@@ -50,6 +51,8 @@ SKU_CATALOG: dict[str, Sku] = {
     ),
 }
 
+# Direct/Stripe-visible plans only. ``catalog_snapshot`` intentionally exposes
+# this dictionary and not the Marketplace entitlement catalog below.
 PLAN_CATALOG: dict[str, Plan] = {
     "free": Plan(
         plan="free",
@@ -87,9 +90,12 @@ PLAN_CATALOG: dict[str, Plan] = {
         hard_cap_units=None,
         requires_linked_payment=False,
     ),
-    # Migrated from the retired Control Plane Marketplace entitlement policy.
-    # Price is not duplicated here: GitHub is the merchant of record for these
-    # subscriptions. Only usage entitlement belongs in the Cinema catalog.
+}
+
+# Migrated from the retired Control Plane Marketplace entitlement policy.
+# Prices are deliberately absent here: GitHub is the merchant of record. Only
+# bounded proof entitlement belongs inside Cinema.
+GITHUB_MARKETPLACE_PLAN_CATALOG: dict[str, Plan] = {
     "github_free": Plan(
         plan="github_free",
         title="GitHub Marketplace Free",
@@ -132,10 +138,10 @@ DEFAULT_PLAN = "free"
 
 
 def get_plan(plan: str) -> Plan:
-    try:
-        return PLAN_CATALOG[plan]
-    except KeyError as exc:
-        raise ValueError(f"unknown plan: {plan}") from exc
+    found = PLAN_CATALOG.get(plan) or GITHUB_MARKETPLACE_PLAN_CATALOG.get(plan)
+    if found is None:
+        raise ValueError(f"unknown plan: {plan}")
+    return found
 
 
 def get_sku(sku: str) -> Sku:
