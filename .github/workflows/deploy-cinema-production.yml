@@ -120,6 +120,18 @@ jobs:
             echo "::add-mask::$REVENUE_ADMIN_SECRET"
           fi
 
+          # Enforcement charges against the ledger's contents, and the only
+          # proof the ledger survives a restart runs through the admin route.
+          # Without that secret the proof later in this workflow is skipped, so
+          # enforcement would go live having never been shown that a paid
+          # customer's usage outlives a revision. Refuse here, before anything
+          # in production has been touched, rather than turning on unproven.
+          if [[ "$REVENUE_ENFORCE" == "1" && "$REVENUE_ADMIN_CONFIGURED" != "true" ]]; then
+            echo 'DSG_REVENUE_ENFORCE=1 requires DSG_REVENUE_ADMIN_SECRET.' >&2
+            echo 'Without it the ledger restart-survival proof is skipped and paid gating would run unproven.' >&2
+            exit 1
+          fi
+
           echo "PULL_IDENTITY_ID=$PULL_IDENTITY_ID" >> "$GITHUB_ENV"
           echo "Z3_SECRET=$Z3_SECRET" >> "$GITHUB_ENV"
           echo "CINEMA_SECRET=$CINEMA_SECRET" >> "$GITHUB_ENV"
