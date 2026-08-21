@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "marketplace" / "agent-plugin"
 MARKETPLACE = ROOT / ".github" / "plugin" / "marketplace.json"
 COPILOT_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-plugin-e2e-2026-08-21.json"
+COPILOT_AUTH_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-agent-auth-preflight-2026-08-21.json"
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 PLUGIN_FIELDS = {
@@ -124,13 +125,17 @@ def test_plugin_truth_boundary_tracks_client_surfaces_separately():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     assert "VS Code / GitHub Copilot client install" in readme
     assert "Copilot CLI client install" in readme
+    assert "Copilot CLI agent authentication in CI" in readme
     assert "Copilot CLI authenticated DSG MCP tool call" in readme
     assert readme.count("NOT VERIFIED") >= 3
+    assert "ACTION_REQUIRED" in readme
     assert "Package conformance is not client compatibility" in readme
     assert "copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent" in readme
     assert "copilot plugin install dsg-governance@dsg-agent-plugins" in readme
     assert "32482954936" in readme
-    assert "1.0.80" in readme
+    assert "32484042904" in readme
+    assert "COPILOT_CLI_TOKEN" in readme
+    assert "Copilot Requests" in readme
 
 
 def test_copilot_cli_install_evidence_is_specific_and_does_not_claim_mcp():
@@ -144,6 +149,23 @@ def test_copilot_cli_install_evidence_is_specific_and_does_not_claim_mcp():
     assert evidence["plugin_version"] == "1.0.0"
     assert all(value == "PASS" for value in evidence["results"].values())
     assert evidence["authenticated_mcp_tool_call"] == "NOT_RUN"
+    assert evidence["artifact"]["digest"].startswith("sha256:")
+
+
+def test_copilot_agent_auth_evidence_blocks_tool_call_without_creating_dsg_key():
+    evidence = _json(COPILOT_AUTH_EVIDENCE)
+    assert evidence["client"] == "GitHub Copilot CLI"
+    assert evidence["client_version"] == "1.0.80"
+    assert evidence["workflow_run_id"] == 32484042904
+    assert evidence["workflow_job_id"] == 96776469143
+    assert evidence["plugin_install"] == "PASS"
+    assert evidence["copilot_agent_authentication"] == "ACTION_REQUIRED"
+    assert evidence["github_actions_token_result"] == "AUTHENTICATION_FAILED_REQUIRED_PERMISSIONS"
+    assert evidence["required_ci_secret"] == "COPILOT_CLI_TOKEN"
+    assert evidence["required_account_permission"] == "Copilot Requests"
+    assert evidence["dsg_key_created"] is False
+    assert evidence["agent_initiated_dsg_status_tool_call"] == "NOT_RUN"
+    assert evidence["credentials_retained"] is False
     assert evidence["artifact"]["digest"].startswith("sha256:")
 
 

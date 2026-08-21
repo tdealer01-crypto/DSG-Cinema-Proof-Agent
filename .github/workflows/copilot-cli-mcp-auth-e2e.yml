@@ -1,0 +1,191 @@
+name: Copilot CLI Authenticated DSG MCP E2E
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/copilot-cli-mcp-auth-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CI: '1'
+      NO_COLOR: '1'
+      CINEMA_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      MCP_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp
+      MARKETPLACE_REPO: tdealer01-crypto/DSG-Cinema-Proof-Agent
+      MARKETPLACE_NAME: dsg-agent-plugins
+      PLUGIN_NAME: dsg-governance
+      MCP_SERVER_NAME: dsg-one-auth
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Install DSG plugin from public marketplace
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME" "$COPILOT_HOME"
+          copilot plugin marketplace add "$MARKETPLACE_REPO"
+          copilot plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME"
+          copilot plugin list | grep -F "$PLUGIN_NAME@$MARKETPLACE_NAME"
+
+      - name: Probe Copilot agent authentication before DSG activation
+        id: copilot_auth
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+          # User-managed fine-grained PAT with the Copilot Requests account
+          # permission takes precedence when configured. The Actions token is
+          # tested only as a fallback and is never assumed to have that scope.
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          set +e
+          copilot -sp 'Reply exactly: COPILOT_AUTH_OK' >/tmp/copilot-auth.out 2>/tmp/copilot-auth.err
+          rc=$?
+          set -e
+
+          if [[ "$rc" == '0' ]] && grep -Fq 'COPILOT_AUTH_OK' /tmp/copilot-auth.out; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'COPILOT_AUTH_STATUS=PASS' >> "$GITHUB_ENV"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'COPILOT_AUTH_STATUS=ACTION_REQUIRED' >> "$GITHUB_ENV"
+            echo 'Copilot agent authentication is not available to this workflow.' >&2
+            echo 'A user-owned fine-grained token with the Copilot Requests permission is required for headless agent/tool-call E2E.' >&2
+            # Print only the CLI diagnostic. GitHub masks workflow tokens; no
+            # token values are ever intentionally echoed by this workflow.
+            sed -n '1,20p' /tmp/copilot-auth.err >&2 || true
+          fi
+          rm -f /tmp/copilot-auth.out /tmp/copilot-auth.err
+
+      - name: Activate ephemeral free DSG key
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          activation_id="copilot-cli-mcp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          payload=$(jq -cn \
+            --arg channel 'copilot_cli' \
+            --arg activation_id "$activation_id" \
+            --arg display_name 'Copilot CLI authenticated MCP E2E' \
+            '{channel:$channel,activation_id:$activation_id,display_name:$display_name}')
+
+          code=$(curl --silent --show-error \
+            --output /tmp/dsg-activate.json \
+            --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data "$payload" || true)
+
+          if [[ "$code" != '200' && "$code" != '201' ]]; then
+            echo "DSG activation failed with HTTP $code" >&2
+            jq 'del(.api_key)' /tmp/dsg-activate.json 2>/dev/null || true
+            exit 1
+          fi
+
+          DSG_API_KEY=$(jq -r '.api_key // empty' /tmp/dsg-activate.json)
+          test -n "$DSG_API_KEY"
+          echo "::add-mask::$DSG_API_KEY"
+          jq -e '.plan.plan == "free" and .activated == true' /tmp/dsg-activate.json >/dev/null
+          printf 'DSG_API_KEY=%s\n' "$DSG_API_KEY" >> "$GITHUB_ENV"
+          rm -f /tmp/dsg-activate.json
+
+      - name: Add authenticated DSG MCP server to Copilot CLI
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+        run: |
+          set -euo pipefail
+          copilot mcp add \
+            --transport http \
+            --header "X-DSG-API-Key: $DSG_API_KEY" \
+            --tools '*' \
+            "$MCP_SERVER_NAME" "$MCP_URL" >/tmp/mcp-add.txt
+          rm -f /tmp/mcp-add.txt
+
+      - name: Ask Copilot agent to use DSG status tool
+        id: agent_call
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Keep the prompt narrow and read-only. The session is allowed to use
+          # only the registered DSG MCP server; it is not given shell/file tools.
+          copilot -sp \
+            'Use the DSG MCP server to call the dsg_status tool. Return only a compact JSON object containing the tool name and whether DSG reported ready.' \
+            --allow-tool="$MCP_SERVER_NAME/*" \
+            >/tmp/copilot-dsg-status.out
+
+          test -s /tmp/copilot-dsg-status.out
+          grep -Fq 'dsg_status' /tmp/copilot-dsg-status.out
+          echo 'AGENT_TOOL_CALL_STATUS=PASS' >> "$GITHUB_ENV"
+
+      - name: Build sanitized E2E evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COPILOT_AUTH_STATUS="${COPILOT_AUTH_STATUS:-ACTION_REQUIRED}"
+          export AGENT_TOOL_CALL_STATUS="${AGENT_TOOL_CALL_STATUS:-NOT_RUN}"
+          copilot_version=$(copilot --version | head -n 1 | sed 's/[[:space:]]*$//')
+          export COPILOT_VERSION="$copilot_version"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = {
+              'schema_version': '1.0',
+              'client': 'GitHub Copilot CLI',
+              'client_version': os.environ['COPILOT_VERSION'],
+              'marketplace_repository': os.environ['MARKETPLACE_REPO'],
+              'marketplace_name': os.environ['MARKETPLACE_NAME'],
+              'plugin_name': os.environ['PLUGIN_NAME'],
+              'mcp_url': os.environ['MCP_URL'],
+              'copilot_agent_authentication': os.environ['COPILOT_AUTH_STATUS'],
+              'agent_initiated_dsg_status_tool_call': os.environ['AGENT_TOOL_CALL_STATUS'],
+              'dsg_key_created_only_after_copilot_auth': True,
+              'credentials_retained': False,
+              'required_ci_secret_when_action_required': 'COPILOT_CLI_TOKEN (user-owned fine-grained token with Copilot Requests permission)',
+              'truth_boundary': 'Copilot CLI marketplace installation is already PASS. This workflow claims an agent-driven authenticated DSG MCP call only when Copilot authentication and the dsg_status invocation both pass.'
+          }
+          Path('copilot-cli-mcp-auth-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
+          PY
+          cat copilot-cli-mcp-auth-e2e.json >> "$GITHUB_STEP_SUMMARY"
+          rm -f /tmp/copilot-dsg-status.out
+
+      - name: Upload sanitized E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-cli-mcp-auth-e2e
+          path: copilot-cli-mcp-auth-e2e.json
+          if-no-files-found: error

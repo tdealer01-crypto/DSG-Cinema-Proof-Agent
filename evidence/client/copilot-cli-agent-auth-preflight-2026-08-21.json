@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "observed_at_utc": "2026-08-21T12:53:32Z",
+  "client": "GitHub Copilot CLI",
+  "client_version": "1.0.80",
+  "workflow_run_id": 32484042904,
+  "workflow_job_id": 96776469143,
+  "artifact": {
+    "id": 9447155139,
+    "digest": "sha256:2818282dc4bd62fdeaf50e48851da476a7bf27dfd35270661d88f0da33de0ad9"
+  },
+  "marketplace_repository": "tdealer01-crypto/DSG-Cinema-Proof-Agent",
+  "marketplace_name": "dsg-agent-plugins",
+  "plugin_name": "dsg-governance",
+  "plugin_install": "PASS",
+  "copilot_agent_authentication": "ACTION_REQUIRED",
+  "github_actions_token_result": "AUTHENTICATION_FAILED_REQUIRED_PERMISSIONS",
+  "required_ci_secret": "COPILOT_CLI_TOKEN",
+  "required_token_type": "user-owned fine-grained GitHub token",
+  "required_account_permission": "Copilot Requests",
+  "dsg_key_created": false,
+  "agent_initiated_dsg_status_tool_call": "NOT_RUN",
+  "credentials_retained": false,
+  "truth_boundary": "The public DSG plugin installs in Copilot CLI, but the GitHub Actions token cannot authenticate Copilot agent requests. No DSG key was created in this run. Agent-driven authenticated MCP/tool-call E2E remains pending until a user-owned fine-grained token with Copilot Requests permission is configured as COPILOT_CLI_TOKEN."
+}
