@@ -14,6 +14,7 @@ import cinema_main
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "marketplace" / "agent-plugin"
 MARKETPLACE = ROOT / ".github" / "plugin" / "marketplace.json"
+COPILOT_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-plugin-e2e-2026-08-21.json"
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 PLUGIN_FIELDS = {
@@ -119,14 +120,31 @@ def test_agent_skill_frontmatter_conforms_and_name_matches_directory():
     assert body.lstrip().startswith("# DSG Governed Execution")
 
 
-def test_plugin_truth_boundary_does_not_claim_unrun_client_compatibility():
+def test_plugin_truth_boundary_tracks_client_surfaces_separately():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     assert "VS Code / GitHub Copilot client install" in readme
     assert "Copilot CLI client install" in readme
+    assert "Copilot CLI authenticated DSG MCP tool call" in readme
     assert readme.count("NOT VERIFIED") >= 3
     assert "Package conformance is not client compatibility" in readme
     assert "copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent" in readme
     assert "copilot plugin install dsg-governance@dsg-agent-plugins" in readme
+    assert "32482954936" in readme
+    assert "1.0.80" in readme
+
+
+def test_copilot_cli_install_evidence_is_specific_and_does_not_claim_mcp():
+    evidence = _json(COPILOT_EVIDENCE)
+    assert evidence["client"] == "GitHub Copilot CLI"
+    assert evidence["client_version"] == "1.0.80"
+    assert evidence["workflow_run_id"] == 32482954936
+    assert evidence["workflow_job_id"] == 96773122774
+    assert evidence["marketplace_name"] == "dsg-agent-plugins"
+    assert evidence["plugin_name"] == "dsg-governance"
+    assert evidence["plugin_version"] == "1.0.0"
+    assert all(value == "PASS" for value in evidence["results"].values())
+    assert evidence["authenticated_mcp_tool_call"] == "NOT_RUN"
+    assert evidence["artifact"]["digest"].startswith("sha256:")
 
 
 def test_dsg_mcp_endpoint_performs_initialize_and_exposes_governance_tools():
