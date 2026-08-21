@@ -1225,12 +1225,27 @@ def test_billing_status_is_public_and_declares_the_checkout_truth(engine):
     assert body["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
     assert body["stripe"]["charges_enabled"] is False
     assert body["metering_enforced"] is False
-    assert {plan["plan"] for plan in body["catalog"]["plans"]} == {
+    plans = {plan["plan"]: plan for plan in body["catalog"]["plans"]}
+    assert set(plans) == {
         "free",
         "metered",
         "team",
         "enterprise",
+        "github_free",
+        "github_pro",
+        "github_business",
+        "github_enterprise",
     }
+
+    # GitHub is the merchant of record for the Marketplace plans, so the public
+    # catalog has to show them as entitlement-only. A non-zero price or a payment
+    # requirement here would be Cinema quietly claiming a second charge.
+    for name in ("github_free", "github_pro", "github_business", "github_enterprise"):
+        marketplace_plan = plans[name]
+        assert marketplace_plan["base_price_micros"] == 0
+        assert marketplace_plan["unit_price_micros"] == 0
+        assert marketplace_plan["requires_linked_payment"] is False
+        assert marketplace_plan["hard_cap_units"] == marketplace_plan["included_units"]
 
 
 def test_billing_status_does_not_claim_linked_from_a_secret_string(engine, monkeypatch):
