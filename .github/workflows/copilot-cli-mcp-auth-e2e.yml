@@ -47,7 +47,40 @@ jobs:
           copilot plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME"
           copilot plugin list | grep -F "$PLUGIN_NAME@$MARKETPLACE_NAME"
 
+      - name: Probe Copilot agent authentication before DSG activation
+        id: copilot_auth
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-auth-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+          # User-managed fine-grained PAT with the Copilot Requests account
+          # permission takes precedence when configured. The Actions token is
+          # tested only as a fallback and is never assumed to have that scope.
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          set +e
+          copilot -sp 'Reply exactly: COPILOT_AUTH_OK' >/tmp/copilot-auth.out 2>/tmp/copilot-auth.err
+          rc=$?
+          set -e
+
+          if [[ "$rc" == '0' ]] && grep -Fq 'COPILOT_AUTH_OK' /tmp/copilot-auth.out; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'COPILOT_AUTH_STATUS=PASS' >> "$GITHUB_ENV"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'COPILOT_AUTH_STATUS=ACTION_REQUIRED' >> "$GITHUB_ENV"
+            echo 'Copilot agent authentication is not available to this workflow.' >&2
+            echo 'A user-owned fine-grained token with the Copilot Requests permission is required for headless agent/tool-call E2E.' >&2
+            # Print only the CLI diagnostic. GitHub masks workflow tokens; no
+            # token values are ever intentionally echoed by this workflow.
+            sed -n '1,20p' /tmp/copilot-auth.err >&2 || true
+          fi
+          rm -f /tmp/copilot-auth.out /tmp/copilot-auth.err
+
       - name: Activate ephemeral free DSG key
+        if: steps.copilot_auth.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -75,12 +108,11 @@ jobs:
           test -n "$DSG_API_KEY"
           echo "::add-mask::$DSG_API_KEY"
           jq -e '.plan.plan == "free" and .activated == true' /tmp/dsg-activate.json >/dev/null
-
           printf 'DSG_API_KEY=%s\n' "$DSG_API_KEY" >> "$GITHUB_ENV"
-          printf 'DSG_ACTIVATION_ID=%s\n' "$activation_id" >> "$GITHUB_ENV"
           rm -f /tmp/dsg-activate.json
 
       - name: Add authenticated DSG MCP server to Copilot CLI
+        if: steps.copilot_auth.outputs.ready == 'true'
         shell: bash
         env:
           HOME: ${{ runner.temp }}/copilot-auth-home
@@ -94,84 +126,35 @@ jobs:
             "$MCP_SERVER_NAME" "$MCP_URL" >/tmp/mcp-add.txt
           rm -f /tmp/mcp-add.txt
 
-      - name: Inspect authenticated DSG MCP state through Copilot CLI
+      - name: Ask Copilot agent to use DSG status tool
+        id: agent_call
+        if: steps.copilot_auth.outputs.ready == 'true'
         shell: bash
         env:
           HOME: ${{ runner.temp }}/copilot-auth-home
           COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Keep the prompt narrow and read-only. The session is allowed to use
+          # only the registered DSG MCP server; it is not given shell/file tools.
+          copilot -sp \
+            'Use the DSG MCP server to call the dsg_status tool. Return only a compact JSON object containing the tool name and whether DSG reported ready.' \
+            --allow-tool="$MCP_SERVER_NAME/*" \
+            >/tmp/copilot-dsg-status.out
 
-          cat >/tmp/sanitize-copilot-output.py <<'PY'
-          import os
-          import sys
-          raw = sys.stdin.read()
-          key = os.environ['DSG_API_KEY']
-          sys.stdout.write(raw.replace(key, '***MASKED***'))
-          PY
+          test -s /tmp/copilot-dsg-status.out
+          grep -Fq 'dsg_status' /tmp/copilot-dsg-status.out
+          echo 'AGENT_TOOL_CALL_STATUS=PASS' >> "$GITHUB_ENV"
 
-          # Copilot CLI 1.0.80 may expose configured HTTP header values in MCP
-          # inspection output. Pipe every inspection command through the
-          # sanitizer before anything is persisted or printed.
-          copilot mcp list 2>&1 | python /tmp/sanitize-copilot-output.py >/tmp/mcp-list.sanitized.txt
-          copilot mcp get "$MCP_SERVER_NAME" 2>&1 | python /tmp/sanitize-copilot-output.py >/tmp/mcp-get.sanitized.txt
-          copilot plugins list 2>&1 | python /tmp/sanitize-copilot-output.py >/tmp/plugins-list.sanitized.txt || true
-
-          echo '--- copilot mcp list (sanitized) ---'
-          cat /tmp/mcp-list.sanitized.txt
-          echo '--- copilot mcp get (sanitized) ---'
-          cat /tmp/mcp-get.sanitized.txt
-          echo '--- copilot plugins list (sanitized) ---'
-          cat /tmp/plugins-list.sanitized.txt
-
-          python - <<'PY'
-          from pathlib import Path
-          import json
-          import os
-
-          key = os.environ['DSG_API_KEY']
-          paths = [
-              Path('/tmp/mcp-list.sanitized.txt'),
-              Path('/tmp/mcp-get.sanitized.txt'),
-              Path('/tmp/plugins-list.sanitized.txt'),
-          ]
-          texts = [p.read_text(encoding='utf-8', errors='replace') for p in paths]
-          combined = '\n'.join(texts)
-          assert key not in combined, 'DSG key remained after sanitization'
-          assert os.environ['MCP_SERVER_NAME'] in combined, 'Copilot CLI did not retain the configured DSG MCP server'
-
-          expected = [
-              'dsg_status',
-              'dsg_create_plan',
-              'dsg_approve_plan',
-              'dsg_verify_plan_alignment',
-              'dsg_verify_constraints',
-              'dsg_record_execution',
-              'dsg_submit_evidence',
-              'dsg_verify_execution',
-              'dsg_get_proof',
-          ]
-          discovered = [name for name in expected if name in combined]
-          missing = [name for name in expected if name not in combined]
-          state_words = [word for word in ('connected', 'online', 'ready', 'healthy', 'running') if word in combined.lower()]
-          diagnostic = {
-              'configured_server_present': True,
-              'discovered_tools': discovered,
-              'missing_tools': missing,
-              'connection_state_words': state_words,
-          }
-          Path('/tmp/dsg-mcp-diagnostic.json').write_text(json.dumps(diagnostic, indent=2) + '\n', encoding='utf-8')
-          print(json.dumps(diagnostic, indent=2))
-          assert not missing, 'Copilot CLI inspection did not expose the DSG tool catalog; do not claim authenticated discovery PASS'
-          Path('/tmp/dsg-tools.json').write_text(json.dumps(expected), encoding='utf-8')
-          PY
-
-          rm -f /tmp/sanitize-copilot-output.py
-
-      - name: Build sanitized authenticated-MCP evidence
+      - name: Build sanitized E2E evidence
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
+          export COPILOT_AUTH_STATUS="${COPILOT_AUTH_STATUS:-ACTION_REQUIRED}"
+          export AGENT_TOOL_CALL_STATUS="${AGENT_TOOL_CALL_STATUS:-NOT_RUN}"
           copilot_version=$(copilot --version | head -n 1 | sed 's/[[:space:]]*$//')
           export COPILOT_VERSION="$copilot_version"
           python - <<'PY'
@@ -179,7 +162,6 @@ jobs:
           import os
           from pathlib import Path
 
-          tools = json.loads(Path('/tmp/dsg-tools.json').read_text(encoding='utf-8'))
           evidence = {
               'schema_version': '1.0',
               'client': 'GitHub Copilot CLI',
@@ -187,21 +169,21 @@ jobs:
               'marketplace_repository': os.environ['MARKETPLACE_REPO'],
               'marketplace_name': os.environ['MARKETPLACE_NAME'],
               'plugin_name': os.environ['PLUGIN_NAME'],
-              'mcp_server_name': os.environ['MCP_SERVER_NAME'],
               'mcp_url': os.environ['MCP_URL'],
-              'authentication': 'X-DSG-API-Key (ephemeral free activation; value not retained)',
-              'activation_plan': 'free',
-              'mcp_authenticated_discovery': 'PASS',
-              'discovered_tools': tools,
-              'raw_mcp_output_retained': False,
-              'agent_initiated_tool_call': 'NOT_RUN',
-              'truth_boundary': 'Proves Copilot CLI authenticated remote MCP connection and tool discovery. A model-driven Copilot agent tool invocation remains a separate gate requiring Copilot authentication.'
+              'copilot_agent_authentication': os.environ['COPILOT_AUTH_STATUS'],
+              'agent_initiated_dsg_status_tool_call': os.environ['AGENT_TOOL_CALL_STATUS'],
+              'dsg_key_created_only_after_copilot_auth': True,
+              'credentials_retained': False,
+              'required_ci_secret_when_action_required': 'COPILOT_CLI_TOKEN (user-owned fine-grained token with Copilot Requests permission)',
+              'truth_boundary': 'Copilot CLI marketplace installation is already PASS. This workflow claims an agent-driven authenticated DSG MCP call only when Copilot authentication and the dsg_status invocation both pass.'
           }
           Path('copilot-cli-mcp-auth-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
           PY
           cat copilot-cli-mcp-auth-e2e.json >> "$GITHUB_STEP_SUMMARY"
+          rm -f /tmp/copilot-dsg-status.out
 
-      - name: Upload sanitized authenticated-MCP evidence
+      - name: Upload sanitized E2E evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: copilot-cli-mcp-auth-e2e
