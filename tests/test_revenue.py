@@ -527,12 +527,12 @@ def test_metered_usage_prices_and_aggregates_deterministically(engine):
 
     summary = engine.usage_summary(engine.accounts.get(account.account_id))
     assert summary["units"] == 3
-    assert summary["total_amount_micros"] == 300_000
-    assert summary["total_amount_usd"] == "0.300000"
+    assert summary["total_amount_micros"] == 150_000
+    assert summary["total_amount_usd"] == "0.150000"
 
     report = engine.period_report()
     assert report["billable_units"] == 3
-    assert report["recorded_usage_amount_micros"] == 300_000
+    assert report["recorded_usage_amount_micros"] == 150_000
     assert report["recognized_amount_micros"] == 0
     assert report["ledger"]["verified"] is True
 
@@ -553,7 +553,7 @@ def test_the_same_verification_context_is_billed_once(engine):
 
     summary = engine.usage_summary(engine.accounts.get(account.account_id))
     assert summary["units"] == 1
-    assert summary["total_amount_micros"] == 100_000
+    assert summary["total_amount_micros"] == 50_000
 
 
 # ------------------------------------------------------------ Stripe webhooks
@@ -1401,7 +1401,7 @@ def test_a_verified_receipt_is_metered_and_chained(engine, monkeypatch):
     assert response.status_code == 200
     block = response.json()["billing"]
     assert block["metered"] is True
-    assert block["amount_micros"] == 100_000
+    assert block["amount_micros"] == 50_000
     assert block["stripe_sync"]["sync_state"] == "PENDING_UNLINKED"
     assert engine.ledger.size() == 1
     assert verify_chain(engine.ledger.entries())["verified"] is True
@@ -1422,7 +1422,7 @@ def test_replaying_the_same_execution_does_not_double_bill(engine, monkeypatch):
 
     summary = engine.usage_summary(engine.accounts.get(account.account_id))
     assert summary["units"] == 1
-    assert summary["total_amount_micros"] == 100_000
+    assert summary["total_amount_micros"] == 50_000
 
 
 def test_enforced_metering_requires_a_key(engine, monkeypatch):

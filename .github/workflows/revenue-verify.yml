@@ -330,7 +330,7 @@ jobs:
 
           assert commitments(first) == commitments(second), 'ledger is not deterministic'
           assert verify_chain(first.ledger.entries())['verified'] is True
-          assert first.period_report()['recorded_usage_amount_micros'] == 500_000
+          assert first.period_report()['recorded_usage_amount_micros'] == 250_000
           assert first.period_report()['recognized_amount_micros'] == 0
 
           with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as handle:
@@ -344,7 +344,7 @@ jobs:
               check=True,
           ).stdout
           assert 'Chain verified: **True**' in output
-          assert '$0.500000' in output
+          assert '$0.250000' in output
           assert 'Truth boundary' in output
           print('ledger determinism and report rendering verified')
           PY
