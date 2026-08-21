@@ -6,9 +6,11 @@
 
 **Short description:** Deterministic proof receipts for AI and automated actions using Cinema + exact Z3 verification.
 
-**Product / customer landing:** https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/app
+**Official product website:** https://dsgoneverifiedweb.z1.web.core.windows.net/
 
-The static Azure landing remains a discovery surface, but `/app` is the current product and conversion surface because it is served by the same Cinema runtime that owns verification and revenue status.
+**Interactive product / customer conversion surface:** https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/app
+
+The static Azure landing remains the repository's official public product website and discovery surface. The Cinema `/app` route is the interactive product and conversion surface because it is served by the runtime that owns verification and revenue status. Marketplace material should preserve both roles rather than replacing one with the other.
 
 ## Fastest launch path
 
@@ -42,7 +44,7 @@ External Partner Center actions:
 5. Configure lead handling in Partner Center.
 6. Submit the offer for certification/review.
 
-The lead CTA should point buyers to the current `/app` customer surface wherever Partner Center permits a product/trial URL.
+Use the official product website wherever Partner Center requests the product website. Use the Cinema `/app` URL wherever Partner Center permits a demo, trial, or conversion URL.
 
 ## Phase 2 — Transactable SaaS
 
