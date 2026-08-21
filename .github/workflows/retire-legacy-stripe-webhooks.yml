@@ -1,0 +1,242 @@
+name: Retire Legacy Stripe Webhooks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/retire-legacy-stripe-webhooks.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/retire-legacy-stripe-webhooks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: retire-legacy-stripe-webhooks-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      AZURE_WEBHOOK_ID: we_1U6qZQAZNzhgTUPVdYAhGRqR
+      LEGACY_RENDER_ID: we_1U3fHTAZNzhgTUPVnt7KLytq
+      LEGACY_RENDER_URL: https://tdealer01-crypto-dsg-control-plane.onrender.com/api/billing/webhook
+      LEGACY_VERCEL_ID_1: we_1TkexTAZNzhgTUPVJdHrGPGo
+      LEGACY_VERCEL_ID_2: we_1TkepEAZNzhgTUPVxdLUUJLK
+      LEGACY_VERCEL_URL: https://tdealer01-crypto-dsg-control-plane.vercel.app/api/stripe/webhook
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve masked live Stripe credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+
+          SECRET_META=$(az containerapp secret show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --secret-name stripe-secret-key \
+            --output json)
+          STRIPE_KEY=$(jq -r '.value // empty' <<<"$SECRET_META")
+          if [[ -z "$STRIPE_KEY" ]]; then
+            KEY_VAULT_URL=$(jq -r '.keyVaultUrl // empty' <<<"$SECRET_META")
+            [[ -n "$KEY_VAULT_URL" ]] || { echo 'Stripe live key source unavailable.' >&2; exit 1; }
+            STRIPE_KEY=$(az keyvault secret show --id "$KEY_VAULT_URL" --query value --output tsv)
+          fi
+          echo "::add-mask::$STRIPE_KEY"
+          [[ "$STRIPE_KEY" == sk_live_* ]] || { echo 'Refusing cleanup: resolved key is not live.' >&2; exit 1; }
+          echo "STRIPE_KEY=$STRIPE_KEY" >> "$GITHUB_ENV"
+
+          HOST=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$HOST"
+          echo "AZURE_WEBHOOK_URL=https://$HOST/billing/webhook/stripe" >> "$GITHUB_ENV"
+
+      - name: Verify Azure webhook and exact legacy identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stripe_read() {
+            local id="$1"
+            local out="$2"
+            local code
+            code=$(curl --silent --show-error \
+              --output "$out" \
+              --write-out '%{http_code}' \
+              --get "https://api.stripe.com/v1/webhook_endpoints/$id" \
+              --header "Authorization: Bearer $STRIPE_KEY" || true)
+            [[ "$code" == '200' ]] || {
+              echo "Webhook $id returned HTTP $code; refusing cleanup." >&2
+              exit 1
+            }
+          }
+
+          stripe_read "$AZURE_WEBHOOK_ID" /tmp/azure.json
+          jq -e --arg id "$AZURE_WEBHOOK_ID" --arg url "$AZURE_WEBHOOK_URL" '
+            .id == $id and .livemode == true and .status == "enabled" and .url == $url and
+            ([
+              "checkout.session.completed",
+              "customer.subscription.created",
+              "customer.subscription.updated",
+              "customer.subscription.deleted",
+              "invoice.paid",
+              "invoice.payment_failed"
+            ] - (.enabled_events // []) | length == 0)
+          ' /tmp/azure.json >/dev/null || {
+            echo 'Azure production webhook is not exactly the verified target; refusing legacy cleanup.' >&2
+            exit 1
+          }
+
+          stripe_read "$LEGACY_RENDER_ID" /tmp/render.json
+          jq -e --arg id "$LEGACY_RENDER_ID" --arg url "$LEGACY_RENDER_URL" \
+            '.id == $id and .livemode == true and .url == $url' /tmp/render.json >/dev/null || {
+              echo 'Render legacy ID/URL guard failed; refusing cleanup.' >&2
+              exit 1
+            }
+
+          stripe_read "$LEGACY_VERCEL_ID_1" /tmp/vercel1.json
+          jq -e --arg id "$LEGACY_VERCEL_ID_1" --arg url "$LEGACY_VERCEL_URL" \
+            '.id == $id and .livemode == true and .url == $url' /tmp/vercel1.json >/dev/null || {
+              echo 'Vercel legacy webhook #1 ID/URL guard failed; refusing cleanup.' >&2
+              exit 1
+            }
+
+          stripe_read "$LEGACY_VERCEL_ID_2" /tmp/vercel2.json
+          jq -e --arg id "$LEGACY_VERCEL_ID_2" --arg url "$LEGACY_VERCEL_URL" \
+            '.id == $id and .livemode == true and .url == $url' /tmp/vercel2.json >/dev/null || {
+              echo 'Vercel legacy webhook #2 ID/URL guard failed; refusing cleanup.' >&2
+              exit 1
+            }
+
+          jq -n \
+            --arg azure_id "$AZURE_WEBHOOK_ID" \
+            --arg azure_url "$AZURE_WEBHOOK_URL" \
+            --arg render_id "$LEGACY_RENDER_ID" \
+            --arg render_url "$LEGACY_RENDER_URL" \
+            --arg vercel_id_1 "$LEGACY_VERCEL_ID_1" \
+            --arg vercel_id_2 "$LEGACY_VERCEL_ID_2" \
+            --arg vercel_url "$LEGACY_VERCEL_URL" \
+            '{status:"VERIFIED_SAFE_TO_RETIRE",azure:{id:$azure_id,url:$azure_url},legacy:[{id:$render_id,url:$render_url},{id:$vercel_id_1,url:$vercel_url},{id:$vercel_id_2,url:$vercel_url}]}' \
+            > legacy-webhook-cleanup-plan.json
+          cat legacy-webhook-cleanup-plan.json
+
+      - name: Diagnostic boundary
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'DIAGNOSTIC_ONLY=PASS — exact legacy IDs/URLs verified; no Stripe endpoint deleted on pull_request.'
+
+      - name: Delete exact retired endpoints
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for id in "$LEGACY_RENDER_ID" "$LEGACY_VERCEL_ID_1" "$LEGACY_VERCEL_ID_2"; do
+            code=$(curl --silent --show-error \
+              --output "/tmp/delete-$id.json" \
+              --write-out '%{http_code}' \
+              --request DELETE "https://api.stripe.com/v1/webhook_endpoints/$id" \
+              --header "Authorization: Bearer $STRIPE_KEY" || true)
+            [[ "$code" == '200' ]] || {
+              echo "Deleting legacy webhook $id returned HTTP $code." >&2
+              exit 1
+            }
+            jq -e --arg id "$id" '.id == $id and .deleted == true' "/tmp/delete-$id.json" >/dev/null || {
+              echo "Stripe did not confirm deletion for $id." >&2
+              exit 1
+            }
+          done
+
+      - name: Prove Azure webhook remains and legacy endpoints are gone
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --get 'https://api.stripe.com/v1/webhook_endpoints' \
+            --header "Authorization: Bearer $STRIPE_KEY" \
+            --data-urlencode 'limit=100' > /tmp/final-webhooks.json
+
+          jq -e --arg id "$AZURE_WEBHOOK_ID" --arg url "$AZURE_WEBHOOK_URL" '
+            [.data[] | select(.id == $id and .livemode == true and .status == "enabled" and .url == $url)] | length == 1
+          ' /tmp/final-webhooks.json >/dev/null || {
+            echo 'Azure webhook is not present after cleanup.' >&2
+            exit 1
+          }
+
+          jq -e \
+            --arg r "$LEGACY_RENDER_ID" \
+            --arg v1 "$LEGACY_VERCEL_ID_1" \
+            --arg v2 "$LEGACY_VERCEL_ID_2" '
+            [.data[].id] as $ids |
+            (($ids | index($r)) == null) and
+            (($ids | index($v1)) == null) and
+            (($ids | index($v2)) == null)
+          ' /tmp/final-webhooks.json >/dev/null || {
+            echo 'At least one retired webhook still exists.' >&2
+            exit 1
+          }
+
+          code=$(curl --silent --show-error \
+            --output /tmp/billing-status.json \
+            --write-out '%{http_code}' \
+            "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/status" || true)
+          [[ "$code" == '200' ]] && jq -e '
+            .checkout_status == "LINKED" and
+            .stripe.link_state == "LINKED_VERIFIED" and
+            .stripe.charges_enabled == true and
+            .stripe.webhooks_enabled == true and
+            .stripe.operational_checks.webhook == "PASS"
+          ' /tmp/billing-status.json >/dev/null || {
+            echo 'Azure billing link was not healthy after legacy webhook cleanup.' >&2
+            exit 1
+          }
+
+          jq -n \
+            --arg verified_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg azure_webhook_id "$AZURE_WEBHOOK_ID" \
+            --arg azure_webhook_url "$AZURE_WEBHOOK_URL" \
+            --arg render_id "$LEGACY_RENDER_ID" \
+            --arg vercel_id_1 "$LEGACY_VERCEL_ID_1" \
+            --arg vercel_id_2 "$LEGACY_VERCEL_ID_2" \
+            '{status:"PASS",azure_webhook:{id:$azure_webhook_id,url:$azure_webhook_url,status:"PRESENT_AND_LINKED"},retired_webhooks:[$render_id,$vercel_id_1,$vercel_id_2],verified_at:$verified_at}' \
+            > legacy-webhook-cleanup-evidence.json
+          cat legacy-webhook-cleanup-evidence.json
+
+      - name: Upload cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-stripe-webhook-cleanup-${{ github.run_id }}
+          path: |
+            legacy-webhook-cleanup-plan.json
+            legacy-webhook-cleanup-evidence.json
+          retention-days: 90
+          if-no-files-found: warn
