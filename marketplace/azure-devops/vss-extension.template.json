@@ -1,0 +1,31 @@
+{
+  "manifestVersion": 1,
+  "id": "dsg-verified-execution",
+  "name": "DSG Verified Execution",
+  "version": "0.1.0",
+  "publisher": "__PUBLISHER_ID__",
+  "description": "Verify Azure Pipelines execution against DSG ONE and emit replayable proof evidence.",
+  "public": false,
+  "categories": ["Azure Pipelines"],
+  "galleryFlags": ["Paid", "Preview"],
+  "tags": ["__BYOLENFORCED", "AI governance", "verified execution", "Z3", "audit evidence"],
+  "targets": [
+    {"id": "Microsoft.VisualStudio.Services"}
+  ],
+  "links": {
+    "home": {"uri": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/app"},
+    "support": {"uri": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues"},
+    "repository": {"uri": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent"}
+  },
+  "files": [
+    {"path": "dsg-verify.yml", "addressable": true, "contentType": "text/plain"}
+  ],
+  "contributions": [
+    {
+      "id": "dsg-verified-execution-pre-job",
+      "type": "ms.azure-pipelines.pipeline-decorator",
+      "targets": ["ms.azure-pipelines-agent-job.pre-job-tasks"],
+      "properties": {"template": "dsg-verify.yml"}
+    }
+  ]
+}

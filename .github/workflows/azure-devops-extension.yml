@@ -1,0 +1,44 @@
+name: Azure DevOps Extension
+
+on:
+  pull_request:
+    paths:
+      - 'marketplace/azure-devops/**'
+      - 'marketplace/azure/offer.md'
+      - 'tests/test_azure_devops_marketplace.py'
+      - '.github/workflows/azure-devops-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install validation dependency
+        run: python -m pip install --disable-pip-version-check pyyaml pytest
+
+      - name: Run Azure DevOps package tests
+        run: python -m pytest -q tests/test_azure_devops_marketplace.py
+
+      - name: Validate manifest JSON and BYOL boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('marketplace/azure-devops/vss-extension.template.json')
+          m = json.loads(p.read_text())
+          assert m['publisher'] == '__PUBLISHER_ID__'
+          assert 'Paid' in m['galleryFlags']
+          assert '__BYOLENFORCED' in m['tags']
+          assert m['links']['home']['uri'].endswith('/app')
+          print('Azure DevOps manifest: PASS')
+          PY
