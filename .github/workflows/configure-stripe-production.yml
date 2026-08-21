@@ -1,6 +1,9 @@
 name: Configure Stripe Production
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/configure-stripe-production.yml'
   push:
     branches: [main]
     paths:
@@ -12,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: stripe-production-configuration
+  group: stripe-production-configuration-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -53,27 +56,54 @@ jobs:
 
           STRIPE_KEY="${CONFIGURED_STRIPE_SECRET_KEY:-}"
           STRIPE_SOURCE='repository_secret'
+
           if [[ -z "$STRIPE_KEY" && -n "${KEY_VAULT_NAME:-}" ]]; then
             STRIPE_KEY=$(az keyvault secret show \
               --vault-name "$KEY_VAULT_NAME" \
               --name "$KEY_VAULT_STRIPE_SECRET_NAME" \
               --query value --output tsv 2>/dev/null || true)
-            STRIPE_SOURCE='key_vault'
+            STRIPE_SOURCE='configured_key_vault'
+          fi
+
+          # Last-resort discovery follows the source already attached to Cinema.
+          # No secret metadata or value is printed. This makes the cutover work
+          # even if the repository variable naming the vault was removed after
+          # the Container App had already been configured.
+          if [[ -z "$STRIPE_KEY" ]]; then
+            SECRET_META=$(az containerapp secret show \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$CINEMA_APP" \
+              --secret-name stripe-secret-key \
+              --output json 2>/dev/null || echo '{}')
+
+            INLINE_VALUE=$(jq -r '.value // empty' <<<"$SECRET_META")
+            KEY_VAULT_URL=$(jq -r '.keyVaultUrl // empty' <<<"$SECRET_META")
+
+            if [[ -n "$INLINE_VALUE" ]]; then
+              STRIPE_KEY="$INLINE_VALUE"
+              STRIPE_SOURCE='container_app_inline_secret'
+            elif [[ -n "$KEY_VAULT_URL" ]]; then
+              STRIPE_KEY=$(az keyvault secret show \
+                --id "$KEY_VAULT_URL" \
+                --query value --output tsv 2>/dev/null || true)
+              STRIPE_SOURCE='container_app_key_vault_ref'
+            fi
           fi
 
           if [[ -z "$STRIPE_KEY" ]]; then
-            echo 'No readable production Stripe secret key is available to this workflow.' >&2
+            echo 'DIAGNOSTIC: Stripe credential source exists on Azure but no live key is readable by this workflow identity.' >&2
             echo 'No Azure configuration was changed.' >&2
             exit 1
           fi
           echo "::add-mask::$STRIPE_KEY"
 
           if [[ "$STRIPE_KEY" != sk_live_* ]]; then
-            echo 'Refusing Stripe production cutover: the resolved key is not sk_live_*.' >&2
+            echo "DIAGNOSTIC: resolved Stripe credential source=$STRIPE_SOURCE but key mode is not live." >&2
             echo 'No Azure configuration was changed.' >&2
             exit 1
           fi
 
+          echo "DIAGNOSTIC: resolved a masked sk_live_* credential from $STRIPE_SOURCE."
           echo "STRIPE_KEY=$STRIPE_KEY" >> "$GITHUB_ENV"
           echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
 
@@ -91,22 +121,42 @@ jobs:
         run: |
           set -euo pipefail
 
-          stripe_get() {
+          stripe_get_to_file() {
             local url="$1"
-            shift
-            curl --fail-with-body --silent --show-error \
+            local output="$2"
+            shift 2
+            local code
+            code=$(curl --silent --show-error \
+              --output "$output" \
+              --write-out '%{http_code}' \
               --get "$url" \
               --header "Authorization: Bearer $STRIPE_KEY" \
-              "$@"
+              "$@" || true)
+            echo "$code"
           }
 
-          stripe_get "https://api.stripe.com/v1/products/$EXPECTED_PRODUCT_ID" > /tmp/product.json
-          stripe_get "https://api.stripe.com/v1/prices/$EXPECTED_PRICE_ID" > /tmp/price.json
-
+          PRODUCT_CODE=$(stripe_get_to_file \
+            "https://api.stripe.com/v1/products/$EXPECTED_PRODUCT_ID" /tmp/product.json)
+          if [[ "$PRODUCT_CODE" != '200' ]]; then
+            echo "DIAGNOSTIC: expected live Product $EXPECTED_PRODUCT_ID returned HTTP $PRODUCT_CODE." >&2
+            echo 'No Azure configuration was changed.' >&2
+            exit 1
+          fi
           jq -e --arg id "$EXPECTED_PRODUCT_ID" '
             .id == $id and .active == true and .livemode == true
-          ' /tmp/product.json >/dev/null
+          ' /tmp/product.json >/dev/null || {
+            echo "DIAGNOSTIC: Product $EXPECTED_PRODUCT_ID exists but is not active live mode." >&2
+            exit 1
+          }
+          echo "DIAGNOSTIC: Product $EXPECTED_PRODUCT_ID = PASS."
 
+          PRICE_CODE=$(stripe_get_to_file \
+            "https://api.stripe.com/v1/prices/$EXPECTED_PRICE_ID" /tmp/price.json)
+          if [[ "$PRICE_CODE" != '200' ]]; then
+            echo "DIAGNOSTIC: expected live Price $EXPECTED_PRICE_ID returned HTTP $PRICE_CODE." >&2
+            echo 'No Azure configuration was changed.' >&2
+            exit 1
+          fi
           jq -e --arg id "$EXPECTED_PRICE_ID" --arg product "$EXPECTED_PRODUCT_ID" '
             .id == $id and
             .active == true and
@@ -114,11 +164,19 @@ jobs:
             .currency == "usd" and
             ((.product | if type == "object" then .id else . end) == $product) and
             ((.unit_amount == 5) or (.unit_amount_decimal == "5"))
-          ' /tmp/price.json >/dev/null
+          ' /tmp/price.json >/dev/null || {
+            echo "DIAGNOSTIC: Price $EXPECTED_PRICE_ID does not match active live USD $0.05/proof scope." >&2
+            exit 1
+          }
+          echo "DIAGNOSTIC: Price $EXPECTED_PRICE_ID = PASS."
 
           PRICE_METER_ID=$(jq -r '.recurring.meter // empty' /tmp/price.json)
-          stripe_get 'https://api.stripe.com/v1/billing/meters' \
-            --data-urlencode 'limit=100' > /tmp/meters.json
+          METERS_CODE=$(stripe_get_to_file 'https://api.stripe.com/v1/billing/meters' /tmp/meters.json \
+            --data-urlencode 'limit=100')
+          if [[ "$METERS_CODE" != '200' ]]; then
+            echo "DIAGNOSTIC: Billing Meter list returned HTTP $METERS_CODE." >&2
+            exit 1
+          fi
 
           if [[ -n "$PRICE_METER_ID" ]]; then
             METER_ID="$PRICE_METER_ID"
@@ -130,19 +188,51 @@ jobs:
           fi
 
           if [[ -z "$METER_ID" ]]; then
-            echo "Expected exactly one active live Billing Meter for $EXPECTED_METER_EVENT_NAME." >&2
+            MATCHING_METERS=$(jq -r --arg event "$EXPECTED_METER_EVENT_NAME" '
+              [.data[] | select(.status == "active" and .livemode == true and .event_name == $event)] | length
+            ' /tmp/meters.json)
+            echo "DIAGNOSTIC: expected exactly one active live Billing Meter for $EXPECTED_METER_EVENT_NAME; found $MATCHING_METERS." >&2
             echo 'No Azure configuration was changed.' >&2
             exit 1
           fi
 
-          stripe_get "https://api.stripe.com/v1/billing/meters/$METER_ID" > /tmp/meter.json
+          METER_CODE=$(stripe_get_to_file \
+            "https://api.stripe.com/v1/billing/meters/$METER_ID" /tmp/meter.json)
+          if [[ "$METER_CODE" != '200' ]]; then
+            echo "DIAGNOSTIC: Billing Meter $METER_ID returned HTTP $METER_CODE." >&2
+            exit 1
+          fi
           jq -e --arg id "$METER_ID" --arg event "$EXPECTED_METER_EVENT_NAME" '
             .id == $id and .status == "active" and .livemode == true and .event_name == $event
-          ' /tmp/meter.json >/dev/null
+          ' /tmp/meter.json >/dev/null || {
+            echo "DIAGNOSTIC: Billing Meter $METER_ID does not match active live event $EXPECTED_METER_EVENT_NAME." >&2
+            exit 1
+          }
+          echo "DIAGNOSTIC: Billing Meter $METER_ID = PASS."
 
-          stripe_get 'https://api.stripe.com/v1/webhook_endpoints' \
-            --data-urlencode 'limit=100' > /tmp/webhooks.json
+          WEBHOOKS_CODE=$(stripe_get_to_file 'https://api.stripe.com/v1/webhook_endpoints' /tmp/webhooks.json \
+            --data-urlencode 'limit=100')
+          if [[ "$WEBHOOKS_CODE" != '200' ]]; then
+            echo "DIAGNOSTIC: webhook endpoint list returned HTTP $WEBHOOKS_CODE." >&2
+            exit 1
+          fi
 
+          WEBHOOK_MATCHES=$(jq -r --arg url "$STRIPE_WEBHOOK_ENDPOINT_URL" '
+            [
+              .data[] |
+              select(.url == $url and .status == "enabled" and .livemode == true) |
+              select(
+                ([
+                  "checkout.session.completed",
+                  "customer.subscription.created",
+                  "customer.subscription.updated",
+                  "customer.subscription.deleted",
+                  "invoice.paid",
+                  "invoice.payment_failed"
+                ] - (.enabled_events // [])) | length == 0
+              )
+            ] | length
+          ' /tmp/webhooks.json)
           WEBHOOK_ID=$(jq -r --arg url "$STRIPE_WEBHOOK_ENDPOINT_URL" '
             [
               .data[] |
@@ -162,10 +252,11 @@ jobs:
           ' /tmp/webhooks.json)
 
           if [[ -z "$WEBHOOK_ID" ]]; then
-            echo "No unique enabled live Stripe webhook matches $STRIPE_WEBHOOK_ENDPOINT_URL and the required DSG events." >&2
+            echo "DIAGNOSTIC: expected exactly one enabled live webhook at $STRIPE_WEBHOOK_ENDPOINT_URL with all DSG events; found $WEBHOOK_MATCHES." >&2
             echo 'No Azure configuration was changed.' >&2
             exit 1
           fi
+          echo "DIAGNOSTIC: Webhook Endpoint $WEBHOOK_ID = PASS."
 
           echo "METER_ID=$METER_ID" >> "$GITHUB_ENV"
           echo "WEBHOOK_ID=$WEBHOOK_ID" >> "$GITHUB_ENV"
@@ -188,7 +279,15 @@ jobs:
             }' > stripe-production-discovery.json
           cat stripe-production-discovery.json
 
+      - name: Diagnostic boundary
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'DIAGNOSTIC_ONLY=PASS — live Stripe objects are verified; Azure mutation intentionally skipped on pull_request.'
+
       - name: Install verified Stripe object identities on Azure
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -209,6 +308,7 @@ jobs:
             --output none
 
       - name: Prove Stripe commerce is linked on Azure
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -278,12 +378,20 @@ jobs:
             }' > stripe-production-evidence.json
           cat stripe-production-evidence.json
 
+      - name: Upload Stripe discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripe-production-discovery-${{ github.run_id }}
+          path: stripe-production-discovery.json
+          retention-days: 90
+          if-no-files-found: warn
+
       - name: Upload Stripe production evidence
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: stripe-production-evidence-${{ github.run_id }}
-          path: |
-            stripe-production-discovery.json
-            stripe-production-evidence.json
+          path: stripe-production-evidence.json
           retention-days: 90
           if-no-files-found: error
