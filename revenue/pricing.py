@@ -4,6 +4,11 @@ All money is represented in micro-USD integers (1 USD = 1_000_000 micros) so
 pricing never depends on floating point. The unit that is sold is a single
 verified proof receipt; a receipt is only billable when Z3 proved
 VERIFIED_GLOBAL_OPTIMUM.
+
+GitHub Marketplace subscription plans are entitlement-only inside Cinema. GitHub
+collects their subscription payment, so these plans deliberately carry a zero
+Cinema unit price and never require a Stripe payment link. This prevents a
+Marketplace buyer from being charged again by the direct Stripe meter.
 """
 
 from __future__ import annotations
@@ -80,6 +85,45 @@ PLAN_CATALOG: dict[str, Plan] = {
         included_units=0,
         unit_price_micros=None,
         hard_cap_units=None,
+        requires_linked_payment=False,
+    ),
+    # Migrated from the retired Control Plane Marketplace entitlement policy.
+    # Price is not duplicated here: GitHub is the merchant of record for these
+    # subscriptions. Only usage entitlement belongs in the Cinema catalog.
+    "github_free": Plan(
+        plan="github_free",
+        title="GitHub Marketplace Free",
+        base_price_micros=0,
+        included_units=1_000,
+        unit_price_micros=0,
+        hard_cap_units=1_000,
+        requires_linked_payment=False,
+    ),
+    "github_pro": Plan(
+        plan="github_pro",
+        title="GitHub Marketplace Pro",
+        base_price_micros=0,
+        included_units=10_000,
+        unit_price_micros=0,
+        hard_cap_units=10_000,
+        requires_linked_payment=False,
+    ),
+    "github_business": Plan(
+        plan="github_business",
+        title="GitHub Marketplace Business",
+        base_price_micros=0,
+        included_units=100_000,
+        unit_price_micros=0,
+        hard_cap_units=100_000,
+        requires_linked_payment=False,
+    ),
+    "github_enterprise": Plan(
+        plan="github_enterprise",
+        title="GitHub Marketplace Enterprise",
+        base_price_micros=0,
+        included_units=1_000_000,
+        unit_price_micros=0,
+        hard_cap_units=1_000_000,
         requires_linked_payment=False,
     ),
 }
