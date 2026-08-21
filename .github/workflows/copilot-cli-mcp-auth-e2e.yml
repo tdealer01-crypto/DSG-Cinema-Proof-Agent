@@ -94,7 +94,7 @@ jobs:
             "$MCP_SERVER_NAME" "$MCP_URL" >/tmp/mcp-add.txt
           rm -f /tmp/mcp-add.txt
 
-      - name: Discover authenticated DSG tools through Copilot CLI
+      - name: Inspect authenticated DSG MCP state through Copilot CLI
         shell: bash
         env:
           HOME: ${{ runner.temp }}/copilot-auth-home
@@ -102,20 +102,44 @@ jobs:
         run: |
           set -euo pipefail
 
-          cat >/tmp/verify-dsg-mcp.py <<'PY'
-          import json
+          cat >/tmp/sanitize-copilot-output.py <<'PY'
           import os
           import sys
-          from pathlib import Path
-
           raw = sys.stdin.read()
           key = os.environ['DSG_API_KEY']
-          # Copilot CLI 1.0.80 can include configured HTTP header values in
-          # `mcp get --json`. Never persist that raw output. Sanitize it while
-          # it is still in the pipe, then inspect only the sanitized object.
-          sanitized = raw.replace(key, '***MASKED***')
-          data = json.loads(sanitized)
-          serialized = json.dumps(data)
+          sys.stdout.write(raw.replace(key, '***MASKED***'))
+          PY
+
+          # Copilot CLI 1.0.80 may expose configured HTTP header values in MCP
+          # inspection output. Pipe every inspection command through the
+          # sanitizer before anything is persisted or printed.
+          copilot mcp list 2>&1 | python /tmp/sanitize-copilot-output.py >/tmp/mcp-list.sanitized.txt
+          copilot mcp get "$MCP_SERVER_NAME" 2>&1 | python /tmp/sanitize-copilot-output.py >/tmp/mcp-get.sanitized.txt
+          copilot plugins list 2>&1 | python /tmp/sanitize-copilot-output.py >/tmp/plugins-list.sanitized.txt || true
+
+          echo '--- copilot mcp list (sanitized) ---'
+          cat /tmp/mcp-list.sanitized.txt
+          echo '--- copilot mcp get (sanitized) ---'
+          cat /tmp/mcp-get.sanitized.txt
+          echo '--- copilot plugins list (sanitized) ---'
+          cat /tmp/plugins-list.sanitized.txt
+
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+
+          key = os.environ['DSG_API_KEY']
+          paths = [
+              Path('/tmp/mcp-list.sanitized.txt'),
+              Path('/tmp/mcp-get.sanitized.txt'),
+              Path('/tmp/plugins-list.sanitized.txt'),
+          ]
+          texts = [p.read_text(encoding='utf-8', errors='replace') for p in paths]
+          combined = '\n'.join(texts)
+          assert key not in combined, 'DSG key remained after sanitization'
+          assert os.environ['MCP_SERVER_NAME'] in combined, 'Copilot CLI did not retain the configured DSG MCP server'
+
           expected = [
               'dsg_status',
               'dsg_create_plan',
@@ -127,14 +151,22 @@ jobs:
               'dsg_verify_execution',
               'dsg_get_proof',
           ]
-          missing = [name for name in expected if name not in serialized]
-          assert not missing, f'Missing authenticated DSG MCP tools: {missing}'
-          assert key not in sanitized
+          discovered = [name for name in expected if name in combined]
+          missing = [name for name in expected if name not in combined]
+          state_words = [word for word in ('connected', 'online', 'ready', 'healthy', 'running') if word in combined.lower()]
+          diagnostic = {
+              'configured_server_present': True,
+              'discovered_tools': discovered,
+              'missing_tools': missing,
+              'connection_state_words': state_words,
+          }
+          Path('/tmp/dsg-mcp-diagnostic.json').write_text(json.dumps(diagnostic, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(diagnostic, indent=2))
+          assert not missing, 'Copilot CLI inspection did not expose the DSG tool catalog; do not claim authenticated discovery PASS'
           Path('/tmp/dsg-tools.json').write_text(json.dumps(expected), encoding='utf-8')
           PY
 
-          copilot mcp get "$MCP_SERVER_NAME" --json | python /tmp/verify-dsg-mcp.py
-          rm -f /tmp/verify-dsg-mcp.py
+          rm -f /tmp/sanitize-copilot-output.py
 
       - name: Build sanitized authenticated-MCP evidence
         shell: bash
@@ -161,7 +193,7 @@ jobs:
               'activation_plan': 'free',
               'mcp_authenticated_discovery': 'PASS',
               'discovered_tools': tools,
-              'raw_mcp_json_retained': False,
+              'raw_mcp_output_retained': False,
               'agent_initiated_tool_call': 'NOT_RUN',
               'truth_boundary': 'Proves Copilot CLI authenticated remote MCP connection and tool discovery. A model-driven Copilot agent tool invocation remains a separate gate requiring Copilot authentication.'
           }
