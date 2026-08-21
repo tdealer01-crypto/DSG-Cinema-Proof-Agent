@@ -1,0 +1,140 @@
+name: Verify DSG ONE v1 API
+
+on:
+  pull_request:
+    paths:
+      - 'api_v1/**'
+      - 'openapi/**'
+      - 'web/**'
+      - 'docs/API_V1_CONTRACT.md'
+      - 'cinema_main.py'
+      - 'Dockerfile.cinema'
+      - 'tests/test_api_v1.py'
+      - 'tests/test_api_contract.py'
+      - 'tests/test_console_prototype.py'
+      - '.github/workflows/api-v1-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api_v1/**'
+      - 'openapi/**'
+      - 'web/**'
+      - 'cinema_main.py'
+      - '.github/workflows/api-v1-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-v1-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest pyyaml
+
+      - name: Compile the v1 package
+        run: |
+          python -m py_compile \
+            cinema_main.py \
+            api_v1/__init__.py \
+            api_v1/alignment.py \
+            api_v1/canonical.py \
+            api_v1/constraints.py \
+            api_v1/errors.py \
+            api_v1/evidence.py \
+            api_v1/mcp.py \
+            api_v1/models.py \
+            api_v1/router.py \
+            api_v1/service.py \
+            api_v1/store.py \
+            api_v1/verifier.py
+
+      - name: Run the v1 API, contract and console tests
+        run: |
+          python -m pytest -q \
+            tests/test_api_v1.py \
+            tests/test_api_contract.py \
+            tests/test_console_prototype.py \
+            tests/test_cinema_main.py
+
+      - name: Assert the API cannot be talked into a verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Every computed verdict must be on the rejection list, or an agent could
+          # submit the one field nobody remembered to guard.
+          python - <<'PY'
+          from api_v1.models import ASSERTED_VERDICT_FIELDS
+
+          computed = {
+              "plan_aligned",
+              "constraints_pass",
+              "execution_succeeded",
+              "replay_match",
+              "evidence_complete",
+              "evidence_completeness",
+              "authorized",
+              "verified",
+              "verification",
+              "decision",
+              "proof_hash",
+          }
+          missing = computed - set(ASSERTED_VERDICT_FIELDS)
+          assert not missing, f"computed verdicts accepted on input: {sorted(missing)}"
+          print(f"{len(ASSERTED_VERDICT_FIELDS)} verdict fields refused on input")
+          PY
+
+          # No route may return a verified state without an exact proof.
+          grep -q 'VERIFIED_GLOBAL_OPTIMUM' api_v1/verifier.py
+          grep -q 'raise ProofUnavailable' api_v1/verifier.py
+          ! grep -n '"verified": True' api_v1/service.py | grep -v 'proof\[' || true
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          source = Path("api_v1/service.py").read_text()
+          # The only place a receipt is marked verified is the block that already
+          # holds a validated proof.
+          block = source.split("proof = await _prove(")[1]
+          assert '"verified": True' in block, "a receipt is marked verified outside the proved block"
+          assert '"proof_hash": proof["proof_hash"]' in block
+          print("verified receipts are only built behind an exact proof")
+          PY
+
+          # The published console must not ship a verification state in its markup.
+          MARKUP=$(python -c "print(open('web/dsg-one-3d/index.html').read().split('<script>')[0])")
+          for forbidden in PASS VERIFIED COMPLETE MATCH SUCCESS; do
+            if grep -q "$forbidden" <<<"$MARKUP"; then
+              echo "console markup ships a $forbidden state" >&2
+              exit 1
+            fi
+          done
+          grep -q 'NOT CONNECTED' web/dsg-one-3d/index.html
+
+      - name: Assert the contract and the image stay in step
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'COPY api_v1 ./api_v1' Dockerfile.cinema
+          grep -q 'COPY web ./web' Dockerfile.cinema
+          grep -q 'openapi: 3.1' openapi/dsg-one-v1.yaml
+          grep -q 'AGENT_ASSERTED_VERDICT_REJECTED' openapi/dsg-one-v1.yaml
+          grep -q 'docs/API_V1_CONTRACT.md' README.md

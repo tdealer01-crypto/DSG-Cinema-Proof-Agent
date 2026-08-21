@@ -1,0 +1,1247 @@
+<!doctype html>
+<html lang="en" data-state="disconnected">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DSG ONE — Evidence &amp; Conformance</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath d='M24 3 42 11v13c0 11-7.6 18.6-18 21C13.6 42.6 6 35 6 24V11L24 3Z' fill='%23081020' stroke='%2338e0d0' stroke-width='3'/%3E%3Cpath d='m16 24 6 6 11-12' fill='none' stroke='%2338e0d0' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
+<meta name="description" content="3D prototype for the DSG ONE verification console. Renders only what the API returns." />
+<style>
+  :root{
+    --bg:#050914; --bg-2:#080e1e; --panel:rgba(14,22,42,.82); --panel-2:rgba(10,17,34,.72);
+    --line:rgba(94,124,190,.18); --line-2:rgba(94,124,190,.32);
+    --ink:#e8eefc; --ink-2:#9db0d6; --ink-3:#6b7fa8;
+    --cy:#38e0d0; --cy-dim:rgba(56,224,208,.14);
+    --gr:#3ddc97; --am:#f5b544; --rd:#fb7185; --vi:#8b7cf6; --bl:#4d8dff;
+    --pending:#7b8bb0;
+    --radius:16px; --radius-sm:10px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;font-family:var(--sans);color:var(--ink);background:
+      radial-gradient(1100px 700px at 78% -10%,rgba(77,141,255,.16),transparent 60%),
+      radial-gradient(900px 600px at 8% 110%,rgba(139,124,246,.13),transparent 60%),
+      var(--bg);
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--cy)}
+  button,input,textarea,select{font:inherit;color:inherit}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:rgba(94,124,190,.25);border-radius:8px}
+
+  .shell{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+
+  /* ---------------------------------------------------------------- sidebar */
+  .side{border-right:1px solid var(--line);background:linear-gradient(180deg,rgba(9,15,30,.9),rgba(6,11,24,.9));
+        padding:20px 14px;display:flex;flex-direction:column;gap:18px;position:sticky;top:0;height:100vh}
+  .brand{display:flex;gap:11px;align-items:center;padding:4px 6px 14px;border-bottom:1px solid var(--line)}
+  .brand .mark{width:38px;height:38px;flex:0 0 38px}
+  .brand h1{font-size:15px;margin:0;letter-spacing:.14em}
+  .brand p{margin:2px 0 0;font-size:10.5px;color:var(--ink-3);letter-spacing:.12em;text-transform:uppercase}
+  nav{display:flex;flex-direction:column;gap:3px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--radius-sm);
+    background:none;border:1px solid transparent;cursor:pointer;color:var(--ink-2);font-size:13.5px;text-align:left;width:100%}
+  .nav-item:hover{background:rgba(77,141,255,.07);color:var(--ink)}
+  .nav-item[aria-current="page"]{background:linear-gradient(90deg,rgba(56,224,208,.16),rgba(56,224,208,.03));
+    border-color:rgba(56,224,208,.28);color:#c8fff6}
+  .nav-item svg{width:16px;height:16px;flex:0 0 16px;opacity:.85}
+  .side-foot{margin-top:auto;display:flex;flex-direction:column;gap:10px}
+  .side-card{border:1px solid var(--line);border-radius:var(--radius-sm);padding:11px 12px;background:var(--panel-2)}
+  .side-card h4{margin:0 0 6px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+  .side-card p{margin:0;font-size:12px;color:var(--ink-2)}
+
+  /* ------------------------------------------------------------------- head */
+  main{min-width:0;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:rgba(5,9,20,.86);backdrop-filter:blur(12px);z-index:5;flex-wrap:wrap}
+  .crumb{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-3)}
+  .crumb b{color:var(--ink);font-weight:600}
+  .topbar .spacer{flex:1}
+  .btn{border:1px solid var(--line-2);background:rgba(20,30,56,.6);border-radius:10px;padding:8px 13px;
+    font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.15s}
+  .btn:hover:not(:disabled){border-color:rgba(56,224,208,.5);background:rgba(56,224,208,.1)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn.primary{background:linear-gradient(135deg,rgba(77,141,255,.9),rgba(139,124,246,.85));border-color:transparent;color:#fff;font-weight:600}
+  .btn.ghost{background:transparent}
+
+  .pill{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;font-size:11.5px;
+    font-weight:600;letter-spacing:.06em;border:1px solid var(--line-2);color:var(--ink-2);background:rgba(15,23,44,.7)}
+  .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--pending);box-shadow:0 0 0 3px rgba(123,139,176,.16)}
+  .pill[data-tone="ok"]{color:#b8f5df;border-color:rgba(61,220,151,.4);background:rgba(61,220,151,.1)}
+  .pill[data-tone="ok"] .dot{background:var(--gr);box-shadow:0 0 0 3px rgba(61,220,151,.18)}
+  .pill[data-tone="warn"]{color:#ffe3b0;border-color:rgba(245,181,68,.4);background:rgba(245,181,68,.1)}
+  .pill[data-tone="warn"] .dot{background:var(--am);box-shadow:0 0 0 3px rgba(245,181,68,.18)}
+  .pill[data-tone="bad"]{color:#ffd4dc;border-color:rgba(251,113,133,.42);background:rgba(251,113,133,.11)}
+  .pill[data-tone="bad"] .dot{background:var(--rd);box-shadow:0 0 0 3px rgba(251,113,133,.18)}
+  .pill[data-tone="busy"]{color:#cfe2ff;border-color:rgba(77,141,255,.45);background:rgba(77,141,255,.12)}
+  .pill[data-tone="busy"] .dot{background:var(--bl);animation:blink 1.1s ease-in-out infinite}
+  @keyframes blink{50%{opacity:.25}}
+
+  .view{padding:20px 22px 44px;display:none;gap:18px;flex-direction:column}
+  .view.active{display:flex}
+
+  /* ------------------------------------------------------------------- hero */
+  .hero{position:relative;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+    background:linear-gradient(120deg,rgba(12,20,40,.96),rgba(9,15,32,.9));display:grid;
+    grid-template-columns:minmax(240px,320px) 1fr;gap:0;perspective:1200px}
+  .stage{position:relative;min-height:250px;background:radial-gradient(circle at 50% 45%,rgba(56,224,208,.13),transparent 62%)}
+  .stage canvas{display:block;width:100%;height:100%}
+  .stage figcaption{position:absolute;left:0;right:0;bottom:10px;text-align:center;font-size:10.5px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+  .hero-body{padding:22px 24px;display:flex;flex-direction:column;gap:14px;min-width:0}
+  .hero-title{margin:0;font-size:26px;line-height:1.2;letter-spacing:-.01em}
+  .hero-sub{margin:0;font-size:12.5px;color:var(--ink-3);font-family:var(--mono);word-break:break-all}
+  .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:14px;margin-top:2px}
+  .meta div{min-width:0}
+  .meta dt{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);margin:0 0 4px}
+  .meta dd{margin:0;font-size:13.5px;color:var(--ink);overflow-wrap:anywhere}
+  .note{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:12px;
+    padding:11px 13px;background:rgba(77,141,255,.07);font-size:12.5px;color:var(--ink-2)}
+  .note svg{flex:0 0 15px;margin-top:1px;opacity:.8}
+
+  /* ------------------------------------------------------------------ tiles */
+  .panel{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:16px 18px}
+  .panel > h2{margin:0 0 14px;font-size:14px;letter-spacing:.02em}
+  .panel h3{margin:0 0 10px;font-size:13px;color:var(--ink-2)}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;perspective:900px}
+  .tile{border:1px solid var(--line);border-radius:13px;padding:13px;background:linear-gradient(160deg,rgba(17,26,50,.9),rgba(11,18,36,.8));
+    display:flex;flex-direction:column;gap:8px;transition:transform .25s,border-color .25s,box-shadow .25s}
+  .tile:hover{transform:translateZ(24px) translateY(-3px);border-color:var(--line-2);box-shadow:0 18px 40px -24px rgba(0,0,0,.9)}
+  .tile-head{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-2)}
+  .tile-head .ico{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:rgba(77,141,255,.14);color:var(--bl)}
+  .tile-state{font-size:17px;font-weight:700;letter-spacing:.01em;color:var(--pending)}
+  .tile[data-tone="ok"] .tile-state{color:var(--gr)}
+  .tile[data-tone="warn"] .tile-state{color:var(--am)}
+  .tile[data-tone="bad"] .tile-state{color:var(--rd)}
+  .tile[data-tone="busy"] .tile-state{color:var(--bl)}
+  .tile-badges{display:flex;flex-wrap:wrap;gap:5px}
+  .badge{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;padding:3px 7px;border-radius:6px;
+    border:1px solid var(--line-2);color:var(--ink-3);background:rgba(9,15,30,.6)}
+  .badge[data-kind="proved"]{color:#c8fff6;border-color:rgba(56,224,208,.4);background:rgba(56,224,208,.1)}
+  .badge[data-kind="observed"]{color:#ffe3b0;border-color:rgba(245,181,68,.36);background:rgba(245,181,68,.09)}
+  .tile-note{font-size:11.5px;color:var(--ink-3);line-height:1.45;min-height:32px}
+  .tile-foot{font-size:10.5px;color:var(--ink-3);font-family:var(--mono);border-top:1px solid var(--line);padding-top:7px;overflow-wrap:anywhere}
+
+  .grid-2{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:18px;align-items:start}
+  @media (max-width:1120px){.grid-2{grid-template-columns:1fr}.hero{grid-template-columns:1fr}.shell{grid-template-columns:1fr}
+    .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center}
+    .side-foot{margin:0}nav{flex-direction:row;flex-wrap:wrap}}
+
+  /* --------------------------------------------------------------- timeline */
+  .timeline{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto}
+  .timeline li{display:grid;grid-template-columns:22px 74px 1fr auto;gap:10px;align-items:center;padding:8px 6px;
+    border-radius:9px;font-size:12.5px}
+  .timeline li:hover{background:rgba(77,141,255,.06)}
+  .timeline li[data-active="true"]{background:rgba(77,141,255,.1);outline:1px solid rgba(77,141,255,.3)}
+  .tl-dot{width:19px;height:19px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line-2);
+    color:var(--ink-3);font-size:10px;background:rgba(8,14,28,.9)}
+  .timeline li[data-tone="ok"] .tl-dot{color:var(--gr);border-color:rgba(61,220,151,.5)}
+  .timeline li[data-tone="bad"] .tl-dot{color:var(--rd);border-color:rgba(251,113,133,.5)}
+  .timeline li[data-tone="busy"] .tl-dot{color:var(--bl);border-color:rgba(77,141,255,.5)}
+  .tl-time{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+  .tl-actor{font-size:9.5px;letter-spacing:.09em;padding:3px 8px;border-radius:6px;border:1px solid var(--line-2);color:var(--ink-3)}
+  .tl-actor[data-actor="DSG"]{color:#c8fff6;border-color:rgba(56,224,208,.35);background:rgba(56,224,208,.09)}
+  .tl-actor[data-actor="AGENT"]{color:#cfe2ff;border-color:rgba(77,141,255,.35);background:rgba(77,141,255,.1)}
+  .empty{border:1px dashed var(--line-2);border-radius:12px;padding:22px;text-align:center;color:var(--ink-3);font-size:12.5px}
+
+  .kv{display:flex;flex-direction:column;gap:9px}
+  .kv div{display:flex;justify-content:space-between;gap:14px;font-size:12.5px;align-items:baseline}
+  .kv dt{color:var(--ink-3);white-space:nowrap}
+  .kv dd{margin:0;text-align:right;overflow-wrap:anywhere}
+  .hash{font-family:var(--mono);font-size:11px;color:var(--cy);word-break:break-all;line-height:1.5;
+    border:1px solid var(--line);border-radius:9px;padding:9px;background:rgba(6,11,24,.8)}
+  code,pre{font-family:var(--mono)}
+  pre{margin:0;font-size:11.5px;line-height:1.55;color:#bcd2f5;background:rgba(5,10,22,.9);border:1px solid var(--line);
+    border-radius:11px;padding:12px;overflow:auto;max-height:340px}
+  label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px}
+  input[type=text],input[type=password],textarea{width:100%;background:rgba(6,11,24,.85);border:1px solid var(--line-2);
+    border-radius:10px;padding:9px 11px;font-size:12.5px;font-family:var(--mono)}
+  input:focus,textarea:focus{outline:none;border-color:rgba(56,224,208,.55);box-shadow:0 0 0 3px rgba(56,224,208,.12)}
+  textarea{min-height:210px;resize:vertical;line-height:1.5}
+  .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+  .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
+  .muted{color:var(--ink-3);font-size:12px;line-height:1.55}
+  .stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px}
+  .stat div{border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:rgba(8,14,28,.6)}
+  .stat b{display:block;font-size:17px;margin-bottom:2px}
+  .stat span{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+  .toolgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+  .tool{border:1px solid var(--line);border-radius:11px;padding:11px;background:rgba(8,14,28,.6)}
+  .tool b{font-family:var(--mono);font-size:12px;color:#c8fff6}
+  .tool p{margin:6px 0 0;font-size:11.5px;color:var(--ink-3);line-height:1.5}
+  .banner{border:1px solid rgba(251,113,133,.35);background:rgba(251,113,133,.08);color:#ffd4dc;border-radius:12px;
+    padding:11px 13px;font-size:12.5px;display:none}
+  .banner[data-show="true"]{display:block}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <path d="M24 3 42 11v13c0 11-7.6 18.6-18 21C13.6 42.6 6 35 6 24V11L24 3Z" stroke="#38e0d0" stroke-width="2" fill="rgba(56,224,208,.1)"/>
+        <path d="m16 24 6 6 11-12" stroke="#38e0d0" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <h1>DSG ONE</h1>
+        <p>Evidence &amp; Conformance</p>
+      </div>
+    </div>
+    <nav id="nav" aria-label="Sections">
+      <button class="nav-item" data-view="run" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><polygon points="6 3 20 12 6 21 6 3"/></svg>Run</button>
+      <button class="nav-item" data-view="executions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>Executions</button>
+      <button class="nav-item" data-view="proofs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 20 7v6c0 5-3.4 8.4-8 10-4.6-1.6-8-5-8-10V7l8-4Z"/></svg>Proofs</button>
+      <button class="nav-item" data-view="mcp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.3 10.8 15.7 7.2M8.3 13.2l7.4 3.6"/></svg>MCP Connect</button>
+      <button class="nav-item" data-view="contract"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6"/></svg>API Contract</button>
+      <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>Settings</button>
+    </nav>
+    <div class="side-foot">
+      <div class="side-card">
+        <h4>Connection</h4>
+        <p id="sideConn">NOT CONNECTED</p>
+      </div>
+      <div class="side-card">
+        <h4>Store</h4>
+        <p id="sideStore">Unknown until connected</p>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div class="crumb"><span>Run</span><span>›</span><b id="crumbTail">Execution Details</b></div>
+      <span class="spacer"></span>
+      <span class="pill" id="connPill" data-tone="idle"><span class="dot"></span><span id="connText">NOT CONNECTED</span></span>
+      <button class="btn ghost" id="btnJson" disabled>&lt;/&gt; View JSON</button>
+      <button class="btn primary" id="btnExport" disabled>↓ Export Receipt</button>
+    </header>
+
+    <!-- ============================================================== RUN -->
+    <section class="view active" id="view-run">
+      <div class="banner" id="banner"></div>
+
+      <section class="hero">
+        <figure class="stage" style="margin:0">
+          <canvas id="stage" width="640" height="560" aria-label="3D conformance state"></canvas>
+          <figcaption id="stageCaption">Awaiting connection</figcaption>
+        </figure>
+        <div class="hero-body">
+          <div style="display:flex;align-items:center;gap:11px;flex-wrap:wrap">
+            <span class="pill" id="verdictPill" data-tone="idle"><span class="dot"></span><span id="verdictText">NOT CONNECTED</span></span>
+            <span class="muted" id="verdictLine">No verification has been requested from this browser yet.</span>
+          </div>
+          <h2 class="hero-title" id="runTitle">No execution loaded</h2>
+          <p class="hero-sub">Execution ID: <span id="execId">—</span></p>
+          <dl class="meta">
+            <div><dt>Agent</dt><dd id="metaAgent">—</dd></div>
+            <div><dt>Target</dt><dd id="metaTarget">—</dd></div>
+            <div><dt>Started</dt><dd id="metaStarted">—</dd></div>
+            <div><dt>Duration</dt><dd id="metaDuration">—</dd></div>
+            <div><dt>Cost (observed)</dt><dd id="metaCost">—</dd></div>
+          </dl>
+          <div class="note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <span>DSG verifies conformance of evidence to the approved plan and policy. It does not certify real-world
+            outcomes beyond the observed evidence. This page shows <b>NOT CONNECTED</b> or <b>PENDING</b> until the API
+            returns a computed result — it never renders a verdict of its own.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Verification summary</h2>
+        <div class="tiles" id="tiles"></div>
+      </section>
+
+      <div class="grid-2">
+        <section class="panel">
+          <h2>Execution timeline</h2>
+          <ul class="timeline" id="timeline"></ul>
+          <div class="empty" id="timelineEmpty">Nothing has run yet. Connect to a DSG deployment, then start the flow.</div>
+        </section>
+
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <section class="panel">
+            <h2>Conformance receipt</h2>
+            <dl class="kv">
+              <div><dt>Decision</dt><dd id="rcDecision">—</dd></div>
+              <div><dt>Policy version</dt><dd id="rcPolicy">—</dd></div>
+              <div><dt>Proof generated</dt><dd id="rcWhen">—</dd></div>
+              <div><dt>Receipt hash recomputed</dt><dd id="rcHashOk">—</dd></div>
+            </dl>
+            <label style="margin-top:12px">Receipt hash</label>
+            <div class="hash" id="rcHash">—</div>
+            <div class="actions">
+              <button class="btn" id="btnVerifyReceipt" disabled>⛨ Verify receipt</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Evidence</h2>
+            <div class="stat">
+              <div><b id="evTotal">—</b><span>Artifacts</span></div>
+              <div><b id="evVerified">—</b><span>Content verified</span></div>
+              <div><b id="evHashOnly">—</b><span>Hash only</span></div>
+              <div><b id="evCoverage">—</b><span>Coverage</span></div>
+            </div>
+            <p class="muted" style="margin-top:10px" id="evNote">Hash-only attestations are recorded but never counted as
+              independently verified evidence.</p>
+          </section>
+
+          <section class="panel">
+            <h2>Cost (observed)</h2>
+            <dl class="kv">
+              <div><dt>Recorded on execution</dt><dd id="costMicro">—</dd></div>
+              <div><dt>Metered by DSG</dt><dd id="costBilled">—</dd></div>
+            </dl>
+            <p class="muted" style="margin-top:10px">DSG reports the cost the caller recorded, and the amount its own ledger
+              metered. It does not estimate a breakdown it cannot observe.</p>
+          </section>
+        </div>
+      </div>
+
+      <section class="panel">
+        <h2>Run definition</h2>
+        <p class="muted" style="margin-bottom:12px">Raw material only: the plan to approve, the actions the agent took, and the
+          evidence it produced. There is nowhere here to assert <code>plan_aligned</code> or <code>verified</code> — the API
+          refuses those fields, and this page has no way to fake them.</p>
+        <div class="row">
+          <div><label for="approver">Approver</label><input type="text" id="approver" value="release-manager@example.test" /></div>
+          <div><label for="agentIdentity">Agent identity (must match the plan)</label><input type="text" id="agentIdentity" value="github-copilot" /></div>
+        </div>
+        <div style="margin-top:12px">
+          <label for="runInput">Plan, actions and evidence (JSON)</label>
+          <textarea id="runInput" spellcheck="false"></textarea>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="btnRun" disabled>▶ Run full flow</button>
+          <button class="btn" id="btnReset">↺ Reset sample</button>
+          <button class="btn ghost" id="btnRecompute">Σ Recompute output digests</button>
+        </div>
+      </section>
+
+      <section class="panel" id="jsonPanel" hidden>
+        <h2>Last API response</h2>
+        <pre id="jsonOut">—</pre>
+      </section>
+    </section>
+
+    <!-- ======================================================= EXECUTIONS -->
+    <section class="view" id="view-executions">
+      <section class="panel">
+        <h2>Executions in this session</h2>
+        <p class="muted">This prototype holds no execution list of its own. Rows appear only for runs this browser started
+          against the connected deployment.</p>
+        <ul class="timeline" id="execList" style="margin-top:12px"></ul>
+        <div class="empty" id="execEmpty">No executions recorded from this browser.</div>
+      </section>
+    </section>
+
+    <!-- =========================================================== PROOFS -->
+    <section class="view" id="view-proofs">
+      <section class="panel">
+        <h2>Look up a proof</h2>
+        <div class="row">
+          <div><label for="proofId">Proof ID</label><input type="text" id="proofId" placeholder="proof_…" /></div>
+          <div style="display:flex;align-items:flex-end"><button class="btn primary" id="btnFetchProof" disabled>Fetch receipt</button></div>
+        </div>
+        <p class="muted" style="margin-top:10px">The receipt is returned with DSG's own recomputation of its hash, so an edited
+          receipt is detectable on read.</p>
+        <pre id="proofOut" style="margin-top:12px">—</pre>
+      </section>
+    </section>
+
+    <!-- ============================================================== MCP -->
+    <section class="view" id="view-mcp">
+      <section class="panel">
+        <h2>Universal MCP Connect</h2>
+        <p class="muted">One endpoint, JSON-RPC 2.0 over POST. The tools mirror the REST flow and enforce the same rule: raw
+          material in, computed verdicts out.</p>
+        <dl class="kv" style="margin-top:12px">
+          <div><dt>Endpoint</dt><dd id="mcpEndpoint">—</dd></div>
+          <div><dt>Protocol version</dt><dd id="mcpProtocol">—</dd></div>
+          <div><dt>Server</dt><dd id="mcpServer">—</dd></div>
+        </dl>
+        <div class="actions">
+          <button class="btn primary" id="btnMcp" disabled>⇄ initialize + tools/list</button>
+        </div>
+        <div class="toolgrid" id="mcpTools" style="margin-top:14px"></div>
+        <div class="empty" id="mcpEmpty" style="margin-top:14px">Tools are listed only after a live tools/list call.</div>
+      </section>
+    </section>
+
+    <!-- ========================================================= CONTRACT -->
+    <section class="view" id="view-contract">
+      <section class="panel">
+        <h2>API contract</h2>
+        <p class="muted">The authoritative contract is <code>openapi/dsg-one-v1.yaml</code> (OpenAPI 3.1) in the repository.
+          The flow below is the order the console drives it in.</p>
+        <ul class="timeline" id="flowList" style="margin-top:12px"></ul>
+        <div class="empty" id="flowEmpty">Connect to load the flow the deployment reports.</div>
+      </section>
+    </section>
+
+    <!-- ========================================================= SETTINGS -->
+    <section class="view" id="view-settings">
+      <section class="panel">
+        <h2>Connection</h2>
+        <div class="row">
+          <div><label for="apiBase">API base URL</label><input type="text" id="apiBase" placeholder="https://your-dsg-deployment" /></div>
+          <div><label for="apiKey">X-DSG-API-Key (optional)</label><input type="password" id="apiKey" placeholder="leave empty for unmetered public evaluation" /></div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="btnConnect">⇄ Connect</button>
+          <button class="btn" id="btnDisconnect">✕ Disconnect</button>
+        </div>
+        <p class="muted" style="margin-top:12px">Served from the same origin as the API, the base URL can stay empty. Served from
+          anywhere else, the deployment's CORS policy has to allow this origin. The key is kept in this browser only and is sent
+          just to the base URL above.</p>
+        <dl class="kv" style="margin-top:14px">
+          <div><dt>Service status</dt><dd id="setStatus">NOT CONNECTED</dd></div>
+          <div><dt>Verification backend</dt><dd id="setBackend">—</dd></div>
+          <div><dt>Record store</dt><dd id="setStore">—</dd></div>
+          <div><dt>Engine</dt><dd id="setEngine">—</dd></div>
+          <div><dt>Verdicts accepted from agent</dt><dd id="setVerdicts">—</dd></div>
+        </dl>
+      </section>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ------------------------------------------------------------------ state */
+const S = {
+  base: "",
+  key: "",
+  connected: false,
+  status: null,
+  plan: null,
+  executionId: null,
+  receipt: null,
+  runs: [],
+  lastResponse: null,
+  phase: "disconnected",   // disconnected | connected | running | done
+  decision: null
+};
+
+const el = (id) => document.getElementById(id);
+const TILE_IDS = ["alignment", "constraints", "execution", "evidence", "replay", "proof"];
+
+const TILES = {
+  alignment:   { label: "Plan alignment", icon: "☰", note: "DSG matches every observed action to an approved step." },
+  constraints: { label: "Constraints",    icon: "⛨", note: "Bounded policy constraints, evaluated over observed facts." },
+  execution:   { label: "Execution",      icon: "▶", note: "What the agent recorded doing, as raw actions." },
+  evidence:    { label: "Evidence",       icon: "▤", note: "Coverage of steps that require evidence DSG can hash." },
+  replay:      { label: "Replay",         icon: "↻", note: "Declared output digests against content DSG hashed itself." },
+  proof:       { label: "Proof",          icon: "◆", note: "Exact Z3 global-optimum proof of the derived decision." }
+};
+
+/* ---------------------------------------------------------------- 3D stage */
+const stage = (() => {
+  const canvas = el("stage");
+  const ctx = canvas.getContext("2d");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let w = 0, h = 0, t = 0, raf = 0;
+  let tone = "idle";
+
+  const TONES = {
+    idle:  { core: "#7b8bb0", glow: "rgba(123,139,176,.30)", ring: "rgba(123,139,176,.22)" },
+    busy:  { core: "#4d8dff", glow: "rgba(77,141,255,.45)",  ring: "rgba(77,141,255,.3)" },
+    ok:    { core: "#3ddc97", glow: "rgba(61,220,151,.5)",   ring: "rgba(61,220,151,.32)" },
+    warn:  { core: "#f5b544", glow: "rgba(245,181,68,.45)",  ring: "rgba(245,181,68,.3)" },
+    bad:   { core: "#fb7185", glow: "rgba(251,113,133,.45)", ring: "rgba(251,113,133,.3)" }
+  };
+
+  // An icosahedron, built once. Real vertices, real edges, projected each frame.
+  const phi = (1 + Math.sqrt(5)) / 2;
+  const raw = [];
+  [[-1, phi, 0], [1, phi, 0], [-1, -phi, 0], [1, -phi, 0],
+   [0, -1, phi], [0, 1, phi], [0, -1, -phi], [0, 1, -phi],
+   [phi, 0, -1], [phi, 0, 1], [-phi, 0, -1], [-phi, 0, 1]].forEach(v => raw.push(v));
+  const norm = Math.hypot(1, phi);
+  const VERTS = raw.map(([x, y, z]) => [x / norm, y / norm, z / norm]);
+  const EDGES = [];
+  for (let i = 0; i < VERTS.length; i++) {
+    for (let j = i + 1; j < VERTS.length; j++) {
+      const d = Math.hypot(VERTS[i][0] - VERTS[j][0], VERTS[i][1] - VERTS[j][1], VERTS[i][2] - VERTS[j][2]);
+      if (d < 1.15) EDGES.push([i, j]);
+    }
+  }
+  const CUBE = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]].map(v => v.map(c => c * 0.42));
+  const CUBE_EDGES = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = Math.max(rect.width, 200); h = Math.max(rect.height, 200);
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function project(v, ry, rx, scale) {
+    const [x0, y0, z0] = v;
+    const cx = Math.cos(ry), sx = Math.sin(ry);
+    let x = x0 * cx - z0 * sx, z = x0 * sx + z0 * cx, y = y0;
+    const cy2 = Math.cos(rx), sy2 = Math.sin(rx);
+    const y2 = y * cy2 - z * sy2; z = y * sy2 + z * cy2; y = y2;
+    const d = 3.2, f = d / (d - z);
+    return [w / 2 + x * scale * f, h / 2 + y * scale * f, f];
+  }
+
+  function frame() {
+    const c = TONES[tone] || TONES.idle;
+    const scale = Math.min(w, h) * 0.26;
+    const ry = t * 0.011, rx = Math.sin(t * 0.006) * 0.42;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // ground glow
+    const g = ctx.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, Math.min(w, h) * 0.52);
+    g.addColorStop(0, c.glow); g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+
+    // orbit rings
+    ctx.strokeStyle = c.ring; ctx.lineWidth = 1;
+    for (let r = 0; r < 3; r++) {
+      ctx.beginPath();
+      const tilt = 0.35 + r * 0.12, radius = scale * (1.35 + r * 0.3);
+      for (let a = 0; a <= 64; a++) {
+        const ang = (a / 64) * Math.PI * 2 + t * 0.004 * (r + 1);
+        const p = project([Math.cos(ang) * 1.0, Math.sin(ang) * tilt, Math.sin(ang) * 1.0], ry * 0.5, rx * 0.4, radius);
+        a === 0 ? ctx.moveTo(p[0], p[1]) : ctx.lineTo(p[0], p[1]);
+      }
+      ctx.stroke();
+    }
+
+    // icosahedron shell
+    const pts = VERTS.map(v => project(v, ry, rx, scale));
+    ctx.lineWidth = 1.1;
+    EDGES.forEach(([i, j]) => {
+      const a = pts[i], b = pts[j];
+      const depth = (a[2] + b[2]) / 2;
+      ctx.strokeStyle = c.core;
+      ctx.globalAlpha = Math.max(0.12, Math.min(0.85, (depth - 0.7) * 1.5));
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+
+    // vertices
+    pts.forEach(p => {
+      ctx.fillStyle = c.core;
+      ctx.globalAlpha = Math.max(0.2, Math.min(1, (p[2] - 0.7) * 1.6));
+      ctx.beginPath(); ctx.arc(p[0], p[1], 2.1 * p[2], 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // inner cube, counter-rotating: the sealed record
+    const cpts = CUBE.map(v => project(v, -ry * 1.6, -rx, scale));
+    ctx.strokeStyle = c.core; ctx.globalAlpha = 0.55; ctx.lineWidth = 1.4;
+    CUBE_EDGES.forEach(([i, j]) => {
+      ctx.beginPath(); ctx.moveTo(cpts[i][0], cpts[i][1]); ctx.lineTo(cpts[j][0], cpts[j][1]); ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+
+    // core mark
+    ctx.fillStyle = c.core;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.arc(w / 2, h / 2, 3.4 + Math.sin(t * 0.05) * 0.6, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  function loop() { t += reduce ? 0 : 1; frame(); raf = requestAnimationFrame(loop); }
+
+  window.addEventListener("resize", () => { resize(); frame(); });
+  resize(); loop();
+  if (reduce) cancelAnimationFrame(raf), frame();
+
+  return {
+    setTone(next, caption) {
+      tone = next;
+      el("stageCaption").textContent = caption;
+    }
+  };
+})();
+
+/* ------------------------------------------------------------------ utils */
+const nowLabel = () => new Date().toLocaleTimeString([], { hour12: false });
+const shorten = (value, keep = 12) =>
+  typeof value === "string" && value.length > keep * 2 ? `${value.slice(0, keep)}…${value.slice(-keep)}` : (value ?? "—");
+
+async function sha256Hex(text) {
+  if (!(window.crypto && window.crypto.subtle)) return null;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function banner(message) {
+  const node = el("banner");
+  node.textContent = message || "";
+  node.dataset.show = message ? "true" : "false";
+}
+
+function setPill(node, textNode, tone, text) {
+  node.dataset.tone = tone;
+  textNode.textContent = text;
+}
+
+function renderTiles() {
+  const host = el("tiles");
+  host.innerHTML = "";
+  TILE_IDS.forEach(id => {
+    const spec = TILES[id];
+    const tile = document.createElement("article");
+    tile.className = "tile";
+    tile.id = `tile-${id}`;
+    tile.dataset.tone = "idle";
+    tile.innerHTML = `
+      <div class="tile-head"><span class="ico">${spec.icon}</span>${spec.label}</div>
+      <div class="tile-state" data-role="state">NOT CONNECTED</div>
+      <div class="tile-badges" data-role="badges"></div>
+      <div class="tile-note" data-role="note">${spec.note}</div>
+      <div class="tile-foot" data-role="foot">—</div>`;
+    host.appendChild(tile);
+  });
+}
+
+function setTile(id, { state, tone = "idle", badges = [], note, foot }) {
+  const tile = el(`tile-${id}`);
+  if (!tile) return;
+  tile.dataset.tone = tone;
+  tile.querySelector('[data-role="state"]').textContent = state;
+  const badgeHost = tile.querySelector('[data-role="badges"]');
+  badgeHost.innerHTML = "";
+  badges.forEach(badge => {
+    const node = document.createElement("span");
+    node.className = "badge";
+    if (badge.kind) node.dataset.kind = badge.kind;
+    node.textContent = badge.text;
+    badgeHost.appendChild(node);
+  });
+  if (note !== undefined) tile.querySelector('[data-role="note"]').textContent = note;
+  if (foot !== undefined) tile.querySelector('[data-role="foot"]').textContent = foot;
+}
+
+function resetTiles(state, note) {
+  TILE_IDS.forEach(id => setTile(id, { state, tone: "idle", badges: [], note: note || TILES[id].note, foot: "—" }));
+}
+
+let timelineRow = null;
+function timeline(actor, text, tone = "busy") {
+  el("timelineEmpty").hidden = true;
+  const li = document.createElement("li");
+  li.dataset.tone = tone;
+  li.dataset.active = tone === "busy" ? "true" : "false";
+  li.innerHTML = `<span class="tl-dot">${tone === "ok" ? "✓" : tone === "bad" ? "✕" : "•"}</span>
+    <span class="tl-time">${nowLabel()}</span>
+    <span data-role="text"></span>
+    <span class="tl-actor" data-actor="${actor}">${actor}</span>`;
+  li.querySelector('[data-role="text"]').textContent = text;
+  el("timeline").appendChild(li);
+  el("timeline").scrollTop = el("timeline").scrollHeight;
+  timelineRow = li;
+  return {
+    settle(nextTone, nextText) {
+      li.dataset.tone = nextTone;
+      li.dataset.active = "false";
+      li.querySelector(".tl-dot").textContent = nextTone === "ok" ? "✓" : nextTone === "bad" ? "✕" : "•";
+      if (nextText) li.querySelector('[data-role="text"]').textContent = nextText;
+    }
+  };
+}
+
+/* -------------------------------------------------------------- transport */
+class ApiError extends Error {
+  constructor(status, body) {
+    const detail = body && (body.message || (body.detail && body.detail.message)) || `HTTP ${status}`;
+    super(detail);
+    this.status = status;
+    this.body = body;
+    this.code = (body && (body.error || (body.detail && body.detail.error))) || `HTTP_${status}`;
+    this.remediation = (body && (body.remediation || (body.detail && body.detail.remediation))) || null;
+  }
+}
+
+async function api(path, { method = "GET", body } = {}) {
+  const headers = { Accept: "application/json" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (S.key) headers["X-DSG-API-Key"] = S.key;
+  let response;
+  try {
+    response = await fetch(`${S.base}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } catch (error) {
+    throw new ApiError(0, { error: "NOT_CONNECTED", message: `The deployment at ${S.base || "this origin"} could not be reached.` });
+  }
+  let payload = null;
+  try { payload = await response.json(); } catch (error) { payload = null; }
+  S.lastResponse = { path, method, status: response.status, body: payload };
+  el("jsonOut").textContent = JSON.stringify(S.lastResponse, null, 2);
+  el("btnJson").disabled = false;
+  if (!response.ok) throw new ApiError(response.status, payload);
+  return payload;
+}
+
+/* ------------------------------------------------------------ sample input */
+const SAMPLE = {
+  plan: {
+    title: "Deploy release v1.8.2 to production",
+    agent_identity: "github-copilot",
+    channel: "api",
+    steps: [
+      { step_id: "build", action: "build", target: "acme/web-app", parameters: { branch: "main" } },
+      { step_id: "test", action: "test", target: "acme/web-app" },
+      { step_id: "deploy", action: "deploy", target: "vercel/production", parameters: { environment: "production" } },
+      { step_id: "health", action: "check_health", target: "https://acme.app" }
+    ],
+    constraints: [
+      { constraint_id: "cost_cap", field: "cost_microunits", op: "lte", value: 500000 },
+      { constraint_id: "environment", field: "environment", op: "in", value: ["production", "staging"] },
+      { constraint_id: "no_failed_actions", field: "actions_failed", op: "eq", value: 0 }
+    ]
+  },
+  execution: {
+    environment: "production",
+    channel: "api",
+    cost_microunits: 230000,
+    actions: [
+      { step_id: "build", action: "build", target: "acme/web-app", parameters: { branch: "main" }, status: "succeeded" },
+      { step_id: "test", action: "test", target: "acme/web-app", status: "succeeded" },
+      { step_id: "deploy", action: "deploy", target: "vercel/production", parameters: { environment: "production" }, status: "succeeded" },
+      { step_id: "health", action: "check_health", target: "https://acme.app", status: "succeeded" }
+    ]
+  },
+  evidence: [
+    { artifact_id: "build-log", source: "github-actions", step_id: "build", media_type: "application/json",
+      content: '{"build_id":"8f3142","status":"SUCCESS"}' },
+    { artifact_id: "test-report", source: "github-actions", step_id: "test", media_type: "application/json",
+      content: '{"tests":184,"failed":0}' },
+    { artifact_id: "deploy-record", source: "vercel-api", step_id: "deploy", media_type: "application/json",
+      content: '{"environment":"production","project":"acme/web-app","build_id":"8f3142","status":"READY","url":"https://acme.app"}' },
+    { artifact_id: "health-probe", source: "uptime-probe", step_id: "health", media_type: "application/json",
+      content: '{"http_status":200,"checks_passed":12}' }
+  ]
+};
+
+function loadSample() {
+  el("runInput").value = JSON.stringify(SAMPLE, null, 2);
+}
+
+function readInput() {
+  let parsed;
+  try {
+    parsed = JSON.parse(el("runInput").value);
+  } catch (error) {
+    throw new Error(`The run definition is not valid JSON: ${error.message}`);
+  }
+  if (!parsed.plan || !Array.isArray(parsed.plan.steps)) throw new Error("The run definition needs a plan with steps.");
+  if (!parsed.execution || !Array.isArray(parsed.execution.actions)) throw new Error("The run definition needs an execution with actions.");
+  return parsed;
+}
+
+/** Hash each evidence artifact locally and attach the digest to its action, so replay
+ *  compares real digests. DSG recomputes both sides itself — this only fills the claim. */
+async function recomputeDigests() {
+  const input = readInput();
+  const evidence = input.evidence || [];
+  for (const action of input.execution.actions) {
+    const artifact = evidence.find(item => item.step_id === action.step_id && typeof item.content === "string");
+    if (!artifact) continue;
+    const digest = await sha256Hex(artifact.content);
+    if (digest) action.output_sha256 = digest;
+  }
+  el("runInput").value = JSON.stringify(input, null, 2);
+  return input;
+}
+
+/* -------------------------------------------------------------- connection */
+function applyStatus(status) {
+  S.status = status;
+  const ready = status.status === "READY";
+  S.connected = true;
+  S.phase = "connected";
+  document.documentElement.dataset.state = "connected";
+
+  setPill(el("connPill"), el("connText"), ready ? "ok" : "warn", ready ? "CONNECTED · READY" : "CONNECTED · DEGRADED");
+  el("sideConn").textContent = ready ? `READY · ${status.api_version}` : "DEGRADED · verifier unreachable";
+  el("sideStore").textContent = status.storage
+    ? `${status.storage.mode} · ${status.storage.durable ? "durable" : "ephemeral"}`
+    : "—";
+
+  el("setStatus").textContent = status.status;
+  el("setBackend").textContent = status.verification_backend
+    ? `${status.verification_backend.ready ? "ready" : "not ready"} — ${status.verification_backend.detail ?? ""}`
+    : "—";
+  el("setStore").textContent = status.storage
+    ? `${status.storage.mode} (${status.storage.durable ? "durable" : "ephemeral"}) · plans ${status.storage.records.plans}, executions ${status.storage.records.executions}, proofs ${status.storage.records.proofs}`
+    : "—";
+  el("setEngine").textContent = status.engine_version || "—";
+  el("setVerdicts").textContent = status.independent_verification
+    ? String(status.independent_verification.verdicts_accepted_from_agent)
+    : "—";
+
+  el("mcpEndpoint").textContent = status.mcp ? `${S.base || location.origin}${status.mcp.endpoint}` : "—";
+  el("mcpProtocol").textContent = status.mcp ? status.mcp.protocol_version : "—";
+
+  const flow = el("flowList");
+  flow.innerHTML = "";
+  (status.flow || []).forEach((item, index) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="tl-dot">${index + 1}</span><span class="tl-time">step</span>
+      <span></span><span class="tl-actor" data-actor="DSG">${item.endpoint}</span>`;
+    li.children[2].textContent = item.step;
+    flow.appendChild(li);
+  });
+  el("flowEmpty").hidden = (status.flow || []).length > 0;
+
+  el("btnRun").disabled = !ready;
+  el("btnMcp").disabled = false;
+  el("btnFetchProof").disabled = false;
+
+  if (ready) {
+    resetTiles("PENDING", "Waiting for a run. No result has been computed yet.");
+    stage.setTone("idle", "Connected · no verification yet");
+    setPill(el("verdictPill"), el("verdictText"), "idle", "PENDING");
+    el("verdictLine").textContent = "Connected. Nothing is verified until a run completes.";
+    banner("");
+  } else {
+    resetTiles("UNAVAILABLE", "The exact verifier is unreachable, so no result can be computed.");
+    stage.setTone("warn", "Verifier unavailable");
+    setPill(el("verdictPill"), el("verdictText"), "warn", "VERIFIER UNAVAILABLE");
+    el("verdictLine").textContent = "The deployment answered, but its exact Z3 verifier is not ready. Verification fails closed.";
+    banner("The deployment is reachable but its verifier is not ready. No proof can be issued until it recovers.");
+  }
+}
+
+function disconnect(message) {
+  S.connected = false;
+  S.status = null;
+  S.phase = "disconnected";
+  document.documentElement.dataset.state = "disconnected";
+  setPill(el("connPill"), el("connText"), "idle", "NOT CONNECTED");
+  setPill(el("verdictPill"), el("verdictText"), "idle", "NOT CONNECTED");
+  el("verdictLine").textContent = message || "No verification has been requested from this browser yet.";
+  el("sideConn").textContent = "NOT CONNECTED";
+  el("sideStore").textContent = "Unknown until connected";
+  el("setStatus").textContent = "NOT CONNECTED";
+  ["setBackend", "setStore", "setEngine", "setVerdicts", "mcpEndpoint", "mcpProtocol", "mcpServer"].forEach(id => el(id).textContent = "—");
+  el("btnRun").disabled = true;
+  el("btnMcp").disabled = true;
+  el("btnFetchProof").disabled = true;
+  resetTiles("NOT CONNECTED");
+  stage.setTone("idle", "Awaiting connection");
+  if (message) banner(message);
+}
+
+async function connect() {
+  S.base = el("apiBase").value.trim().replace(/\/+$/, "");
+  S.key = el("apiKey").value.trim();
+  try { localStorage.setItem("dsg-one-base", S.base); localStorage.setItem("dsg-one-key", S.key); } catch (error) {}
+  setPill(el("connPill"), el("connText"), "busy", "CONNECTING…");
+  const row = timeline("DSG", `GET ${S.base || location.origin}/api/v1/status`);
+  try {
+    const status = await api("/api/v1/status");
+    row.settle("ok", `GET /api/v1/status → ${status.status}`);
+    applyStatus(status);
+  } catch (error) {
+    row.settle("bad", `GET /api/v1/status → ${error.code}`);
+    disconnect(`${error.message}${error.remediation ? ` Next step: ${error.remediation.next_step}` : ""}`);
+  }
+}
+
+/* --------------------------------------------------------------- the flow */
+function resetRunView() {
+  S.plan = null; S.executionId = null; S.receipt = null; S.decision = null;
+  el("runTitle").textContent = "No execution loaded";
+  el("execId").textContent = "—";
+  ["metaAgent", "metaTarget", "metaStarted", "metaDuration", "metaCost",
+   "rcDecision", "rcPolicy", "rcWhen", "rcHashOk", "evTotal", "evVerified", "evHashOnly",
+   "evCoverage", "costMicro", "costBilled"].forEach(id => el(id).textContent = "—");
+  el("rcHash").textContent = "—";
+  el("btnExport").disabled = true;
+  el("btnVerifyReceipt").disabled = true;
+  resetTiles("PENDING", "Waiting for a run. No result has been computed yet.");
+}
+
+async function runFlow() {
+  let input;
+  try {
+    input = await recomputeDigests();
+  } catch (error) {
+    banner(error.message);
+    return;
+  }
+
+  banner("");
+  resetRunView();
+  el("btnRun").disabled = true;
+  S.phase = "running";
+  stage.setTone("busy", "Verification in progress");
+  setPill(el("verdictPill"), el("verdictText"), "busy", "RUNNING");
+  el("verdictLine").textContent = "Submitting raw material. Every verdict below comes back computed by DSG.";
+  el("runTitle").textContent = input.plan.title || "Untitled plan";
+  el("metaAgent").textContent = input.plan.agent_identity || "—";
+  const deployStep = input.plan.steps.find(step => step.action === "deploy") || input.plan.steps[input.plan.steps.length - 1];
+  el("metaTarget").textContent = deployStep ? deployStep.target : "—";
+  const started = new Date();
+  el("metaStarted").textContent = started.toLocaleString();
+
+  const agentIdentity = el("agentIdentity").value.trim() || input.plan.agent_identity;
+  input.plan.agent_identity = agentIdentity;
+
+  try {
+    /* 1. plan + approval ------------------------------------------------- */
+    let row = timeline("DSG", "POST /api/v1/plans");
+    const plan = await api("/api/v1/plans", { method: "POST", body: input.plan });
+    S.plan = plan;
+    row.settle("ok", `POST /api/v1/plans → ${plan.plan_id}`);
+
+    row = timeline("DSG", "POST /api/v1/plans/{id}/approve");
+    const approved = await api(`/api/v1/plans/${plan.plan_id}/approve`, {
+      method: "POST",
+      body: { approver: el("approver").value.trim() || "unknown-approver", plan_hash: plan.plan_hash }
+    });
+    row.settle("ok", `Plan approved and locked · ${shorten(approved.plan_hash, 8)}`);
+
+    /* 2. plan alignment --------------------------------------------------- */
+    setTile("alignment", { state: "CHECKING", tone: "busy", badges: [], note: "DSG is matching actions to approved steps." });
+    row = timeline("DSG", "POST /api/v1/verify/plan-alignment");
+    const alignment = await api("/api/v1/verify/plan-alignment", {
+      method: "POST",
+      body: { plan_id: plan.plan_id, actions: input.execution.actions }
+    });
+    const alignBlocking = (alignment.findings || []).filter(item => item.severity === "block");
+    setTile("alignment", {
+      state: alignment.plan_aligned ? "PASS" : "FAIL",
+      tone: alignment.plan_aligned ? "ok" : "bad",
+      badges: [{ text: "computed · DSG", kind: "proved" }],
+      note: alignment.plan_aligned
+        ? `${alignment.steps_matched}/${alignment.steps_total} approved steps matched, no out-of-plan action.`
+        : alignBlocking.map(item => item.detail).join(" "),
+      foot: `alignment_hash ${shorten(alignment.alignment_hash, 10)}`
+    });
+    row.settle(alignment.plan_aligned ? "ok" : "bad",
+      `Plan alignment → ${alignment.plan_aligned ? "aligned" : "out of plan"}`);
+
+    /* 3. constraints ------------------------------------------------------ */
+    setTile("constraints", { state: "PROVING", tone: "busy", note: "Evaluating constraints and requesting an exact proof." });
+    row = timeline("DSG", "POST /api/v1/verify/constraints");
+    const facts = Object.assign({}, input.execution.observed_facts || {}, {
+      cost_microunits: input.execution.cost_microunits ?? 0,
+      environment: input.execution.environment || "unknown",
+      actions_failed: input.execution.actions.filter(action => action.status === "failed").length
+    });
+    const constraints = await api("/api/v1/verify/constraints", {
+      method: "POST",
+      body: { plan_id: plan.plan_id, facts }
+    });
+    setTile("constraints", {
+      state: constraints.constraints_pass ? "PASS" : "FAIL",
+      tone: constraints.constraints_pass ? "ok" : "bad",
+      badges: [{ text: `proved · Z3`, kind: "proved" }, { text: constraints.decision }],
+      note: constraints.constraints_pass
+        ? `${constraints.constraints_satisfied}/${constraints.constraints_total} constraints satisfied over observed facts.`
+        : constraints.violations.map(item => `${item.constraint_id}: ${item.reason}`).join(", "),
+      foot: `proof_hash ${shorten(constraints.proof_hash, 10)}`
+    });
+    row.settle(constraints.constraints_pass ? "ok" : "bad",
+      `Constraints → ${constraints.decision} (${constraints.verification})`);
+
+    /* 4. execution -------------------------------------------------------- */
+    setTile("execution", { state: "RECORDING", tone: "busy", note: "Submitting the observed action trace." });
+    row = timeline("AGENT", "POST /api/v1/executions");
+    const execution = await api("/api/v1/executions", {
+      method: "POST",
+      body: {
+        plan_id: plan.plan_id,
+        agent_identity: agentIdentity,
+        environment: input.execution.environment || "unknown",
+        channel: input.execution.channel || "api",
+        cost_microunits: input.execution.cost_microunits ?? 0,
+        observed_facts: input.execution.observed_facts || {},
+        started_at: started.toISOString(),
+        actions: input.execution.actions
+      }
+    });
+    S.executionId = execution.execution_id;
+    el("execId").textContent = execution.execution_id;
+    const failed = input.execution.actions.filter(action => action.status === "failed").length;
+    setTile("execution", {
+      state: failed ? "FAILED STEPS" : "RECORDED",
+      tone: failed ? "warn" : "busy",
+      badges: [{ text: "observed", kind: "observed" }],
+      note: `${execution.actions.length} actions recorded${failed ? `, ${failed} failed` : ""}. Recording is not a verdict.`,
+      foot: `action_trace_hash ${shorten(execution.action_trace_hash, 10)}`
+    });
+    row.settle("ok", `Execution recorded → ${execution.execution_id}`);
+
+    /* 5. evidence --------------------------------------------------------- */
+    setTile("evidence", { state: "SUBMITTING", tone: "busy", note: "DSG hashes every submitted artifact itself." });
+    row = timeline("AGENT", "POST /api/v1/executions/{id}/evidence");
+    const evidence = await api(`/api/v1/executions/${execution.execution_id}/evidence`, {
+      method: "POST",
+      body: { artifacts: input.evidence || [] }
+    });
+    const ev = evidence.evidence, rp = evidence.replay;
+    el("evTotal").textContent = ev.artifacts_total;
+    el("evVerified").textContent = ev.artifacts_content_verified;
+    el("evHashOnly").textContent = ev.artifacts_hash_only;
+    el("evCoverage").textContent = `${Math.round(ev.evidence_completeness * 100)}%`;
+    el("evNote").textContent = ev.gaps.length
+      ? ev.gaps.map(gap => gap.detail).join(" ")
+      : "Every step that requires evidence is covered by an artifact DSG hashed itself.";
+    setTile("evidence", {
+      state: ev.evidence_complete ? "COMPLETE" : "INCOMPLETE",
+      tone: ev.evidence_complete ? "ok" : "warn",
+      badges: [{ text: "computed · DSG", kind: "proved" }],
+      note: `${ev.covered_steps.length}/${ev.required_steps.length} required steps covered · ${ev.artifacts_content_verified} content-verified, ${ev.artifacts_hash_only} hash-only.`,
+      foot: `evidence_hash ${shorten(ev.evidence_hash, 10)}`
+    });
+    setTile("replay", {
+      state: rp.replay_match ? "MATCH" : "MISMATCH",
+      tone: rp.replay_match ? "ok" : "warn",
+      badges: [{ text: "computed · DSG", kind: "proved" }],
+      note: rp.replay_match
+        ? `${rp.actions_matched}/${rp.actions_checked} declared output digests matched verified artifacts.`
+        : rp.mismatches.map(item => `${item.step_id ?? `action ${item.action_index}`}: ${item.reason}`).join(", "),
+      foot: `replay_hash ${shorten(rp.replay_hash, 10)}`
+    });
+    row.settle("ok", `Evidence accepted → ${evidence.accepted_artifacts.length} artifacts`);
+
+    /* 6. verify ----------------------------------------------------------- */
+    setTile("proof", { state: "PROVING", tone: "busy", note: "Recomputing every verdict, then requiring an exact proof." });
+    row = timeline("DSG", "POST /api/v1/executions/{id}/verify");
+    const receipt = await api(`/api/v1/executions/${execution.execution_id}/verify`, { method: "POST", body: {} });
+    S.receipt = receipt;
+    S.decision = receipt.decision;
+    row.settle(receipt.decision === "ALLOW" ? "ok" : receipt.decision === "BLOCK" ? "bad" : "busy",
+      `Verification complete → ${receipt.decision}`);
+
+    renderReceipt(receipt);
+
+    /* 7. read back the proof ---------------------------------------------- */
+    row = timeline("DSG", "GET /api/v1/proofs/{id}");
+    const proof = await api(`/api/v1/proofs/${receipt.proof_id}`);
+    el("rcHashOk").textContent = proof.receipt_hash_verified ? "verified by DSG on read" : "MISMATCH";
+    row.settle(proof.receipt_hash_verified ? "ok" : "bad",
+      `Proof read back → receipt hash ${proof.receipt_hash_verified ? "verified" : "mismatch"}`);
+
+    S.runs.unshift({
+      execution_id: execution.execution_id,
+      proof_id: receipt.proof_id,
+      decision: receipt.decision,
+      at: new Date().toISOString()
+    });
+    renderRuns();
+  } catch (error) {
+    const message = `${error.code || "ERROR"}: ${error.message}${error.remediation ? ` — next step: ${error.remediation.next_step}` : ""}`;
+    banner(message);
+    if (timelineRow) {
+      timelineRow.dataset.tone = "bad";
+      timelineRow.dataset.active = "false";
+      timelineRow.querySelector(".tl-dot").textContent = "✕";
+    }
+    TILE_IDS.forEach(id => {
+      const tile = el(`tile-${id}`);
+      if (tile && tile.dataset.tone === "busy") {
+        setTile(id, { state: "NOT VERIFIED", tone: "warn", badges: [], note: message, foot: "—" });
+      }
+    });
+    stage.setTone("bad", "Verification did not complete");
+    setPill(el("verdictPill"), el("verdictText"), "bad", "NOT VERIFIED");
+    el("verdictLine").textContent = "The flow stopped before a proof was issued. No verdict is shown, because none exists.";
+    if (error.status === 0) disconnect(message);
+  } finally {
+    el("btnRun").disabled = !S.connected || (S.status && S.status.status !== "READY");
+    el("metaDuration").textContent = `${((Date.now() - started.getTime()) / 1000).toFixed(1)}s`;
+  }
+}
+
+function renderReceipt(receipt) {
+  const tone = receipt.decision === "ALLOW" ? "ok" : receipt.decision === "REVIEW" ? "warn" : "bad";
+  setPill(el("verdictPill"), el("verdictText"), tone, receipt.decision);
+  el("verdictLine").textContent = receipt.reasons.join("; ");
+  stage.setTone(tone, `${receipt.decision} · ${receipt.verification}`);
+  document.documentElement.dataset.state = "verified";
+
+  setTile("proof", {
+    state: receipt.decision,
+    tone,
+    badges: [{ text: "proved · Z3", kind: "proved" }, { text: receipt.verification, kind: "proved" }],
+    note: `Exact global-optimum proof of the decision DSG derived. Witness ${JSON.stringify(receipt.witness)}.`,
+    foot: `proof_hash ${shorten(receipt.proof_hash, 10)}`
+  });
+
+  const computed = receipt.computed || {};
+  setTile("execution", {
+    state: computed.execution_succeeded ? "SUCCESS" : "INCOMPLETE",
+    tone: computed.execution_succeeded ? "ok" : "warn",
+    badges: [{ text: "computed · DSG", kind: "proved" }],
+    note: computed.execution_succeeded
+      ? "Every approved step ran and reported success."
+      : "At least one approved step did not complete successfully.",
+    foot: `context_hash ${shorten(receipt.context_hash, 10)}`
+  });
+
+  el("rcDecision").textContent = receipt.decision;
+  el("rcPolicy").textContent = receipt.policy_version;
+  el("rcWhen").textContent = new Date(receipt.verified_at).toLocaleString();
+  el("rcHash").textContent = receipt.receipt_hash;
+  el("metaCost").textContent = `${receipt.cost_microunits} microunits (observed)`;
+  el("costMicro").textContent = `${receipt.cost_microunits} microunits`;
+  el("costBilled").textContent = receipt.billing
+    ? `${receipt.billing.amount_usd} · ${receipt.billing.sku} · ledger #${receipt.billing.ledger_sequence}`
+    : "not metered (no API key presented)";
+  el("btnExport").disabled = false;
+  el("btnVerifyReceipt").disabled = false;
+}
+
+function renderRuns() {
+  const host = el("execList");
+  host.innerHTML = "";
+  S.runs.forEach(run => {
+    const li = document.createElement("li");
+    const tone = run.decision === "ALLOW" ? "ok" : run.decision === "BLOCK" ? "bad" : "busy";
+    li.dataset.tone = tone;
+    li.innerHTML = `<span class="tl-dot">${tone === "ok" ? "✓" : tone === "bad" ? "✕" : "•"}</span>
+      <span class="tl-time">${new Date(run.at).toLocaleTimeString([], { hour12: false })}</span>
+      <span></span><span class="tl-actor" data-actor="DSG">${run.decision}</span>`;
+    li.children[2].textContent = `${run.execution_id} → ${run.proof_id}`;
+    host.appendChild(li);
+  });
+  el("execEmpty").hidden = S.runs.length > 0;
+}
+
+/* ------------------------------------------------------------------- MCP */
+async function mcpProbe() {
+  el("btnMcp").disabled = true;
+  const row = timeline("DSG", "POST /api/v1/mcp · initialize");
+  try {
+    const init = await api("/api/v1/mcp", {
+      method: "POST",
+      body: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {} } }
+    });
+    const info = init.result.serverInfo;
+    el("mcpServer").textContent = `${info.name} ${info.version}`;
+    el("mcpProtocol").textContent = init.result.protocolVersion;
+    row.settle("ok", `initialize → ${info.name} ${info.version}`);
+
+    const row2 = timeline("DSG", "POST /api/v1/mcp · tools/list");
+    const listed = await api("/api/v1/mcp", { method: "POST", body: { jsonrpc: "2.0", id: 2, method: "tools/list" } });
+    const tools = listed.result.tools || [];
+    const host = el("mcpTools");
+    host.innerHTML = "";
+    tools.forEach(tool => {
+      const node = document.createElement("div");
+      node.className = "tool";
+      const name = document.createElement("b");
+      name.textContent = tool.name;
+      const description = document.createElement("p");
+      description.textContent = tool.description;
+      node.append(name, description);
+      host.appendChild(node);
+    });
+    el("mcpEmpty").hidden = tools.length > 0;
+    row2.settle("ok", `tools/list → ${tools.length} tools`);
+  } catch (error) {
+    row.settle("bad", `MCP probe failed → ${error.code}`);
+    banner(`${error.code}: ${error.message}`);
+  } finally {
+    el("btnMcp").disabled = !S.connected;
+  }
+}
+
+/* ------------------------------------------------------------------ wiring */
+function switchView(name) {
+  document.querySelectorAll(".view").forEach(node => node.classList.toggle("active", node.id === `view-${name}`));
+  document.querySelectorAll(".nav-item").forEach(node => {
+    if (node.dataset.view === name) node.setAttribute("aria-current", "page");
+    else node.removeAttribute("aria-current");
+  });
+  el("crumbTail").textContent = {
+    run: "Execution Details", executions: "Executions", proofs: "Proofs",
+    mcp: "MCP Connect", contract: "API Contract", settings: "Settings"
+  }[name] || name;
+}
+
+el("nav").addEventListener("click", event => {
+  const button = event.target.closest(".nav-item");
+  if (button) switchView(button.dataset.view);
+});
+
+el("btnConnect").addEventListener("click", connect);
+el("btnDisconnect").addEventListener("click", () => disconnect("Disconnected. Nothing on this page is a verification result."));
+el("btnRun").addEventListener("click", runFlow);
+el("btnReset").addEventListener("click", () => { loadSample(); banner(""); });
+el("btnRecompute").addEventListener("click", () => {
+  recomputeDigests().then(() => banner("")).catch(error => banner(error.message));
+});
+el("btnMcp").addEventListener("click", mcpProbe);
+el("btnJson").addEventListener("click", () => {
+  const panel = el("jsonPanel");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+});
+el("btnExport").addEventListener("click", () => {
+  if (!S.receipt) return;
+  const blob = new Blob([JSON.stringify(S.receipt, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${S.receipt.proof_id}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+});
+el("btnVerifyReceipt").addEventListener("click", async () => {
+  if (!S.receipt) return;
+  const row = timeline("DSG", "GET /api/v1/proofs/{id}");
+  try {
+    const proof = await api(`/api/v1/proofs/${S.receipt.proof_id}`);
+    el("rcHashOk").textContent = proof.receipt_hash_verified ? "verified by DSG on read" : "MISMATCH";
+    row.settle(proof.receipt_hash_verified ? "ok" : "bad",
+      `Receipt hash ${proof.receipt_hash_verified ? "verified" : "mismatch"}`);
+  } catch (error) {
+    row.settle("bad", `Receipt read failed → ${error.code}`);
+    banner(`${error.code}: ${error.message}`);
+  }
+});
+el("btnFetchProof").addEventListener("click", async () => {
+  const id = el("proofId").value.trim();
+  if (!id) return;
+  try {
+    const proof = await api(`/api/v1/proofs/${id}`);
+    el("proofOut").textContent = JSON.stringify(proof, null, 2);
+  } catch (error) {
+    el("proofOut").textContent = JSON.stringify({ error: error.code, message: error.message, remediation: error.remediation }, null, 2);
+  }
+});
+
+/* -------------------------------------------------------------- bootstrap */
+renderTiles();
+loadSample();
+disconnect();
+try {
+  const savedBase = localStorage.getItem("dsg-one-base");
+  const savedKey = localStorage.getItem("dsg-one-key");
+  if (savedBase !== null) el("apiBase").value = savedBase;
+  if (savedKey) el("apiKey").value = savedKey;
+} catch (error) { /* private mode: the fields simply start empty */ }
+if (el("apiBase").value.trim() === "" && location.protocol.startsWith("http")) {
+  // Same-origin deployment (served by cinema_main at /app): connect on load.
+  connect();
+}
+})();
+</script>
+</body>
+</html>
