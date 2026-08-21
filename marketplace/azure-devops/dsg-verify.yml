@@ -1,0 +1,58 @@
+steps:
+  - bash: |
+      set -euo pipefail
+
+      if [ "${DSG_VERIFY_ENABLED:-false}" != "true" ]; then
+        echo "DSG Verified Execution: disabled for this pipeline."
+        echo "Enable with pipeline variable DSG_VERIFY_ENABLED=true after configuring the secret DSG_API_KEY and DSG_VERIFICATION_REQUEST_PATH."
+        exit 0
+      fi
+
+      : "${DSG_API_KEY:?DSG_API_KEY secret pipeline variable is required when DSG verification is enabled}"
+      : "${DSG_VERIFICATION_REQUEST_PATH:?DSG_VERIFICATION_REQUEST_PATH is required when DSG verification is enabled}"
+      : "${DSG_API_BASE:=https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io}"
+
+      if [ ! -s "$DSG_VERIFICATION_REQUEST_PATH" ]; then
+        echo "DSG Verified Execution: request file not found or empty: $DSG_VERIFICATION_REQUEST_PATH" >&2
+        exit 2
+      fi
+
+      response_file="$(mktemp)"
+      trap 'rm -f "$response_file"' EXIT
+
+      http_code="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+        --request POST "$DSG_API_BASE/verify/evaluate" \
+        --header "X-DSG-API-Key: $DSG_API_KEY" \
+        --header 'Content-Type: application/json' \
+        --data-binary "@$DSG_VERIFICATION_REQUEST_PATH")"
+
+      if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+        echo "DSG Verified Execution: API returned HTTP $http_code" >&2
+        jq '{error, code, detail, next_step}' "$response_file" 2>/dev/null || cat "$response_file" >&2
+        exit 3
+      fi
+
+      jq -e '
+        .verified == true and
+        .verification == "VERIFIED_GLOBAL_OPTIMUM" and
+        (.decision == "ALLOW" or .decision == "REVIEW" or .decision == "BLOCK") and
+        (.proof_hash | type == "string" and length == 64) and
+        (.request_hash | type == "string" and length == 64) and
+        (.context_hash | type == "string" and length == 64)
+      ' "$response_file" >/dev/null
+
+      decision="$(jq -r '.decision' "$response_file")"
+      proof_hash="$(jq -r '.proof_hash' "$response_file")"
+      echo "DSG Verified Execution: $decision"
+      echo "Proof hash: $proof_hash"
+
+      if [ "$decision" = "BLOCK" ]; then
+        echo "DSG blocked this bounded action according to the verified policy result." >&2
+        exit 4
+      fi
+    displayName: DSG Verified Execution
+    env:
+      DSG_VERIFY_ENABLED: $(DSG_VERIFY_ENABLED)
+      DSG_API_KEY: $(DSG_API_KEY)
+      DSG_API_BASE: $(DSG_API_BASE)
+      DSG_VERIFICATION_REQUEST_PATH: $(DSG_VERIFICATION_REQUEST_PATH)
