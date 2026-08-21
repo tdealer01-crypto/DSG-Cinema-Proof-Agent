@@ -1,1 +1,105 @@
-placeholder
+name: Copilot CLI Plugin E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/plugin/**'
+      - 'marketplace/agent-plugin/**'
+      - '.github/workflows/copilot-cli-plugin-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  client-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CI: '1'
+      NO_COLOR: '1'
+      MARKETPLACE_REPO: tdealer01-crypto/DSG-Cinema-Proof-Agent
+      MARKETPLACE_NAME: dsg-agent-plugins
+      PLUGIN_NAME: dsg-governance
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Record Copilot CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          copilot --version | tee /tmp/copilot-version.txt
+
+      - name: Add DSG marketplace from GitHub
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-e2e-home
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME"
+          copilot plugin marketplace add "$MARKETPLACE_REPO"
+          copilot plugin marketplace list | tee /tmp/marketplaces.txt
+          grep -F "$MARKETPLACE_NAME" /tmp/marketplaces.txt
+
+      - name: Browse DSG marketplace
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-e2e-home
+        run: |
+          set -euo pipefail
+          copilot plugin marketplace browse "$MARKETPLACE_NAME" | tee /tmp/browse.txt
+          grep -F "$PLUGIN_NAME" /tmp/browse.txt
+
+      - name: Install DSG governance plugin
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-e2e-home
+        run: |
+          set -euo pipefail
+          copilot plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME"
+          copilot plugin list | tee /tmp/plugins.txt
+          grep -F "$PLUGIN_NAME" /tmp/plugins.txt
+
+      - name: Build client-install evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = Path('/tmp/copilot-version.txt').read_text(encoding='utf-8').strip()
+          evidence = {
+              'schema_version': '1.0',
+              'client': 'GitHub Copilot CLI',
+              'client_version': version,
+              'marketplace_repository': os.environ['MARKETPLACE_REPO'],
+              'marketplace_name': os.environ['MARKETPLACE_NAME'],
+              'plugin_name': os.environ['PLUGIN_NAME'],
+              'marketplace_add': 'PASS',
+              'marketplace_browse': 'PASS',
+              'plugin_install': 'PASS',
+              'plugin_list': 'PASS',
+              'authenticated_mcp_tool_call': 'NOT_RUN',
+              'truth_boundary': 'Client installation proof only. MCP authorization and DSG tool-call proof remain separate gates.'
+          }
+          Path('copilot-cli-plugin-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
+          PY
+          cat copilot-cli-plugin-e2e.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload client-install evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-cli-plugin-e2e
+          path: copilot-cli-plugin-e2e.json
+          if-no-files-found: error
