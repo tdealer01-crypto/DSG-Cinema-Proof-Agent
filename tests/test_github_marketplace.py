@@ -255,8 +255,8 @@ def test_github_account_never_opens_a_stripe_http_client(marketplace, monkeypatc
         )
     )
     assert metering["amount_micros"] == 0
-    assert metering["stripe"]["sync_state"] == "PENDING"
-    assert "no Stripe customer id" in metering["stripe"]["detail"]
+    assert metering["stripe_sync"]["sync_state"] == "PENDING"
+    assert "no Stripe customer id" in metering["stripe_sync"]["detail"]
     assert called is False
 
 
