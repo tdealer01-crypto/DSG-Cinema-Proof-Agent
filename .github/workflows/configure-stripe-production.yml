@@ -1,0 +1,289 @@
+name: Configure Stripe Production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/configure-stripe-production.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: stripe-production-configuration
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      KEY_VAULT_NAME: ${{ vars.DSG_KEY_VAULT_NAME }}
+      KEY_VAULT_STRIPE_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_SECRET_NAME || 'stripe-secret-key' }}
+      CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      EXPECTED_PRODUCT_ID: prod_V6xAufMNUNF6KV
+      EXPECTED_PRICE_ID: price_1U6jRJAZNzhgTUPVUfr3tWaD
+      EXPECTED_METER_EVENT_NAME: dsg_verified_execution
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve the existing live Stripe credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+
+          STRIPE_KEY="${CONFIGURED_STRIPE_SECRET_KEY:-}"
+          STRIPE_SOURCE='repository_secret'
+          if [[ -z "$STRIPE_KEY" && -n "${KEY_VAULT_NAME:-}" ]]; then
+            STRIPE_KEY=$(az keyvault secret show \
+              --vault-name "$KEY_VAULT_NAME" \
+              --name "$KEY_VAULT_STRIPE_SECRET_NAME" \
+              --query value --output tsv 2>/dev/null || true)
+            STRIPE_SOURCE='key_vault'
+          fi
+
+          if [[ -z "$STRIPE_KEY" ]]; then
+            echo 'No readable production Stripe secret key is available to this workflow.' >&2
+            echo 'No Azure configuration was changed.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$STRIPE_KEY"
+
+          if [[ "$STRIPE_KEY" != sk_live_* ]]; then
+            echo 'Refusing Stripe production cutover: the resolved key is not sk_live_*.' >&2
+            echo 'No Azure configuration was changed.' >&2
+            exit 1
+          fi
+
+          echo "STRIPE_KEY=$STRIPE_KEY" >> "$GITHUB_ENV"
+          echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
+
+          CINEMA_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$CINEMA_FQDN"
+          echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
+          echo "STRIPE_WEBHOOK_ENDPOINT_URL=https://$CINEMA_FQDN/billing/webhook/stripe" >> "$GITHUB_ENV"
+
+      - name: Verify the existing live Stripe catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stripe_get() {
+            local url="$1"
+            shift
+            curl --fail-with-body --silent --show-error \
+              --get "$url" \
+              --header "Authorization: Bearer $STRIPE_KEY" \
+              "$@"
+          }
+
+          stripe_get "https://api.stripe.com/v1/products/$EXPECTED_PRODUCT_ID" > /tmp/product.json
+          stripe_get "https://api.stripe.com/v1/prices/$EXPECTED_PRICE_ID" > /tmp/price.json
+
+          jq -e --arg id "$EXPECTED_PRODUCT_ID" '
+            .id == $id and .active == true and .livemode == true
+          ' /tmp/product.json >/dev/null
+
+          jq -e --arg id "$EXPECTED_PRICE_ID" --arg product "$EXPECTED_PRODUCT_ID" '
+            .id == $id and
+            .active == true and
+            .livemode == true and
+            .currency == "usd" and
+            ((.product | if type == "object" then .id else . end) == $product) and
+            ((.unit_amount == 5) or (.unit_amount_decimal == "5"))
+          ' /tmp/price.json >/dev/null
+
+          PRICE_METER_ID=$(jq -r '.recurring.meter // empty' /tmp/price.json)
+          stripe_get 'https://api.stripe.com/v1/billing/meters' \
+            --data-urlencode 'limit=100' > /tmp/meters.json
+
+          if [[ -n "$PRICE_METER_ID" ]]; then
+            METER_ID="$PRICE_METER_ID"
+          else
+            METER_ID=$(jq -r --arg event "$EXPECTED_METER_EVENT_NAME" '
+              [.data[] | select(.status == "active" and .livemode == true and .event_name == $event)] |
+              if length == 1 then .[0].id else empty end
+            ' /tmp/meters.json)
+          fi
+
+          if [[ -z "$METER_ID" ]]; then
+            echo "Expected exactly one active live Billing Meter for $EXPECTED_METER_EVENT_NAME." >&2
+            echo 'No Azure configuration was changed.' >&2
+            exit 1
+          fi
+
+          stripe_get "https://api.stripe.com/v1/billing/meters/$METER_ID" > /tmp/meter.json
+          jq -e --arg id "$METER_ID" --arg event "$EXPECTED_METER_EVENT_NAME" '
+            .id == $id and .status == "active" and .livemode == true and .event_name == $event
+          ' /tmp/meter.json >/dev/null
+
+          stripe_get 'https://api.stripe.com/v1/webhook_endpoints' \
+            --data-urlencode 'limit=100' > /tmp/webhooks.json
+
+          WEBHOOK_ID=$(jq -r --arg url "$STRIPE_WEBHOOK_ENDPOINT_URL" '
+            [
+              .data[] |
+              select(.url == $url and .status == "enabled" and .livemode == true) |
+              select(
+                ([
+                  "checkout.session.completed",
+                  "customer.subscription.created",
+                  "customer.subscription.updated",
+                  "customer.subscription.deleted",
+                  "invoice.paid",
+                  "invoice.payment_failed"
+                ] - (.enabled_events // [])) | length == 0
+              )
+            ] |
+            if length == 1 then .[0].id else empty end
+          ' /tmp/webhooks.json)
+
+          if [[ -z "$WEBHOOK_ID" ]]; then
+            echo "No unique enabled live Stripe webhook matches $STRIPE_WEBHOOK_ENDPOINT_URL and the required DSG events." >&2
+            echo 'No Azure configuration was changed.' >&2
+            exit 1
+          fi
+
+          echo "METER_ID=$METER_ID" >> "$GITHUB_ENV"
+          echo "WEBHOOK_ID=$WEBHOOK_ID" >> "$GITHUB_ENV"
+
+          jq -n \
+            --arg product_id "$EXPECTED_PRODUCT_ID" \
+            --arg price_id "$EXPECTED_PRICE_ID" \
+            --arg meter_id "$METER_ID" \
+            --arg meter_event_name "$EXPECTED_METER_EVENT_NAME" \
+            --arg webhook_endpoint_id "$WEBHOOK_ID" \
+            --arg webhook_endpoint_url "$STRIPE_WEBHOOK_ENDPOINT_URL" \
+            '{
+              status:"DISCOVERED_AND_VERIFIED",
+              product_id:$product_id,
+              price_id:$price_id,
+              meter_id:$meter_id,
+              meter_event_name:$meter_event_name,
+              webhook_endpoint_id:$webhook_endpoint_id,
+              webhook_endpoint_url:$webhook_endpoint_url
+            }' > stripe-production-discovery.json
+          cat stripe-production-discovery.json
+
+      - name: Install verified Stripe object identities on Azure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # These are Stripe object identifiers, not credentials. The existing
+          # secret key and webhook secret remain secretrefs already mounted on
+          # the Container App; this step never prints or replaces them.
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --set-env-vars \
+              "STRIPE_PRODUCT_ID=$EXPECTED_PRODUCT_ID" \
+              "STRIPE_PRICE_ID=$EXPECTED_PRICE_ID" \
+              "STRIPE_METER_ID=$METER_ID" \
+              "STRIPE_METER_EVENT_NAME=$EXPECTED_METER_EVENT_NAME" \
+              "STRIPE_WEBHOOK_ENDPOINT_ID=$WEBHOOK_ID" \
+              "STRIPE_WEBHOOK_ENDPOINT_URL=$STRIPE_WEBHOOK_ENDPOINT_URL" \
+            --output none
+
+      - name: Prove Stripe commerce is linked on Azure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 60); do
+            code=$(curl --silent --show-error \
+              --output /tmp/billing-status.json \
+              --write-out '%{http_code}' \
+              "$CINEMA_URL/billing/status" || true)
+
+            if [[ "$code" == '200' ]] && jq -e '
+              .checkout_status == "LINKED" and
+              .stripe.link_state == "LINKED_VERIFIED" and
+              .stripe.configured == true and
+              .stripe.catalog_scope_configured == true and
+              .stripe.operational_scope_configured == true and
+              .stripe.charges_enabled == true and
+              .stripe.webhooks_configured == true and
+              .stripe.webhooks_enabled == true and
+              .stripe.operational_checks.product == "PASS" and
+              .stripe.operational_checks.price == "PASS" and
+              .stripe.operational_checks.meter == "PASS" and
+              .stripe.operational_checks.webhook == "PASS"
+            ' /tmp/billing-status.json >/dev/null 2>&1; then
+              break
+            fi
+
+            if [[ "$attempt" == '60' ]]; then
+              echo 'Azure billing/status did not become LINKED_VERIFIED.' >&2
+              cat /tmp/billing-status.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          LATEST_REVISION=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query properties.latestRevisionName \
+            --output tsv)
+
+          jq -n \
+            --arg verified_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg app "$CINEMA_APP" \
+            --arg revision "$LATEST_REVISION" \
+            --arg product_id "$EXPECTED_PRODUCT_ID" \
+            --arg price_id "$EXPECTED_PRICE_ID" \
+            --arg meter_id "$METER_ID" \
+            --arg meter_event_name "$EXPECTED_METER_EVENT_NAME" \
+            --arg webhook_endpoint_id "$WEBHOOK_ID" \
+            --arg webhook_endpoint_url "$STRIPE_WEBHOOK_ENDPOINT_URL" \
+            '{
+              status:"PASS",
+              target:"azure_container_app",
+              app:$app,
+              revision:$revision,
+              stripe_link_state:"LINKED_VERIFIED",
+              charges_enabled:true,
+              webhooks_enabled:true,
+              product_id:$product_id,
+              price_id:$price_id,
+              meter_id:$meter_id,
+              meter_event_name:$meter_event_name,
+              webhook_endpoint_id:$webhook_endpoint_id,
+              webhook_endpoint_url:$webhook_endpoint_url,
+              verified_at:$verified_at
+            }' > stripe-production-evidence.json
+          cat stripe-production-evidence.json
+
+      - name: Upload Stripe production evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripe-production-evidence-${{ github.run_id }}
+          path: |
+            stripe-production-discovery.json
+            stripe-production-evidence.json
+          retention-days: 90
+          if-no-files-found: error
