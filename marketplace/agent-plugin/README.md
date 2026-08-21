@@ -12,7 +12,7 @@ copilot plugin marketplace browse dsg-agent-plugins
 copilot plugin install dsg-governance@dsg-agent-plugins
 ```
 
-These commands describe the intended distribution path. A repository package passing CI is not by itself evidence that a specific Copilot client completed a real install/connect/tool-call run; client compatibility remains tracked separately below.
+These commands are now covered by a real GitHub Copilot CLI client-install E2E on a GitHub-hosted runner. That client-install proof does not by itself prove authenticated DSG MCP tool calls; MCP authorization remains tracked separately below.
 
 ## Package contents
 
@@ -71,10 +71,11 @@ Checkout creation never grants entitlement. The existing DSG signed Stripe webho
 | DSG MCP protocol contract | Existing API tests exercise `initialize`, `tools/list`, tool calls, refusal handling, and no caller-supplied verdicts | CI-GATED |
 | DSG execution semantics | Existing API tests cover approved execution, out-of-plan BLOCK, replay REVIEW, deterministic constraints, and fail-closed verifier behavior | CI-GATED |
 | VS Code / GitHub Copilot client install | No real client run is stored in this repository yet | NOT VERIFIED |
-| Copilot CLI client install | No real client run is stored in this repository yet | NOT VERIFIED |
+| Copilot CLI client install | GitHub Actions run `32482954936` used GitHub Copilot CLI `1.0.80` to add `dsg-agent-plugins`, browse it, install `dsg-governance@dsg-agent-plugins`, and confirm plugin `v1.0.0` in the installed-plugin list. Permanent evidence: `evidence/client/copilot-cli-plugin-e2e-2026-08-21.json` | PASS |
+| Copilot CLI authenticated DSG MCP tool call | The install run deliberately did not supply a DSG API key or claim an authenticated remote MCP call | NOT VERIFIED |
 | Other Agent Plugins clients | Must be tested client by client | NOT VERIFIED |
 
-Package conformance is not client compatibility. Do not change a client row to PASS until an actual install/connect/tool-call run produces stored evidence.
+Package conformance is not client compatibility. A client row changes to PASS only when a real client run produces stored evidence for that exact surface.
 
 ## Authentication
 
@@ -94,4 +95,4 @@ A useful integration must show, without requiring log inspection:
 
 ## Truth boundary
 
-This directory is a portable package and CI target. The marketplace catalog makes it discoverable/installable by compatible GitHub Copilot clients, but it is not evidence that every client can authenticate to DSG or complete metered governed execution. Client compatibility remains a separate end-to-end test surface.
+This directory is a portable package and CI target. The marketplace catalog is now proven discoverable/installable by GitHub Copilot CLI `1.0.80`, but that does not prove every client can authenticate to DSG or complete metered governed execution. Authenticated MCP/tool-call compatibility remains a separate end-to-end test surface.
