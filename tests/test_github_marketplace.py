@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -200,7 +201,7 @@ def test_pending_change_never_grants_future_plan_early(marketplace):
     assert store.link_for(4242)["pending_plan_name"] == "Enterprise"
 
 
-def test_github_account_never_sends_a_stripe_meter_request(marketplace, monkeypatch):
+def test_github_account_never_opens_a_stripe_http_client(marketplace, monkeypatch):
     engine, store = marketplace
     assert post_purchase("purchased", "Pro", "stripe-proof").status_code == 200
     link = store.link_for(4242)
@@ -216,6 +217,18 @@ def test_github_account_never_sends_a_stripe_meter_request(marketplace, monkeypa
     account = engine.accounts.authenticate(api_key)
     assert account is not None
     assert account.account_id == link["account_id"]
+    assert account.stripe_customer_id is None
+
+    # Make Stripe appear fully configured. push_meter_event must still stop at
+    # the missing Stripe customer id before an HTTP client is opened.
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_configured")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test_configured")
+    monkeypatch.setenv("STRIPE_PRODUCT_ID", "prod_dsg")
+    monkeypatch.setenv("STRIPE_PRICE_ID", "price_dsg")
+    monkeypatch.setenv("STRIPE_METER_ID", "mtr_dsg")
+    monkeypatch.setenv("STRIPE_METER_EVENT_NAME", "dsg_verified_execution")
+    monkeypatch.setenv("STRIPE_WEBHOOK_ENDPOINT_ID", "we_dsg")
+    monkeypatch.setenv("STRIPE_WEBHOOK_ENDPOINT_URL", "https://cinema.example.test/billing/webhook/stripe")
 
     called = False
 
@@ -228,23 +241,26 @@ def test_github_account_never_sends_a_stripe_meter_request(marketplace, monkeypa
     monkeypatch.setattr("revenue.stripe_sync.httpx.AsyncClient", ExplodingClient)
     authorization = engine.authorize(api_key, "verified_execution")
     assert authorization.authorized is True
-    entry, created = engine.record_usage(
-        authorization,
-        sku="verified_execution",
-        receipt={
-            "verified": True,
-            "verification": "VERIFIED_GLOBAL_OPTIMUM",
-            "proof_hash": "a" * 64,
-            "context_hash": "b" * 64,
-        },
-        channel="github",
+    metering = asyncio.run(
+        billing.meter(
+            authorization,
+            sku="verified_execution",
+            receipt={
+                "verified": True,
+                "verification": "VERIFIED_GLOBAL_OPTIMUM",
+                "proof_hash": "a" * 64,
+                "context_hash": "b" * 64,
+            },
+            channel="github",
+        )
     )
-    assert created is True
-    assert entry.amount_micros == 0
+    assert metering["amount_micros"] == 0
+    assert metering["stripe"]["sync_state"] == "PENDING"
+    assert "no Stripe customer id" in metering["stripe"]["detail"]
     assert called is False
 
 
-def test_callback_verifies_installation_then_rotates_key(marketplace, monkeypatch):
+def test_callback_verifies_installation_then_rotates_key_and_hands_it_to_console(marketplace, monkeypatch):
     engine, store = marketplace
     assert post_purchase("purchased", "Business", "before-oauth").status_code == 200
     old_account_id = store.link_for(4242)["account_id"]
@@ -267,6 +283,7 @@ def test_callback_verifies_installation_then_rotates_key(marketplace, monkeypatc
     )
     assert response.status_code == 200
     assert response.headers["cache-control"].startswith("no-store")
+    assert "localStorage.setItem('dsg-one-key'" in response.text
     assert "location.replace('/app')" in response.text
 
     match = re.search(r"dsg_live_[0-9a-f]{16}_[0-9a-f]{48}", response.text)
