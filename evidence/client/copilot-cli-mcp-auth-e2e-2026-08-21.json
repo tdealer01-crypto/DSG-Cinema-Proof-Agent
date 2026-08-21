@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.1",
+  "observed_at_utc": "2026-08-21T15:29:09Z",
+  "client": "GitHub Copilot CLI",
+  "client_version": "1.0.80",
+  "workflow_run_id": 32497793523,
+  "workflow_job_id": 96820242598,
+  "pull_request": 74,
+  "tested_head_sha": "ea60a174162d8339d9492c2605410a4941aa0118",
+  "merged_main_sha": "3dc4f460f4d9bb8ea2511014e1fcb21eb8ecec57",
+  "marketplace_repository": "tdealer01-crypto/DSG-Cinema-Proof-Agent",
+  "marketplace_name": "dsg-agent-plugins",
+  "plugin_name": "dsg-governance",
+  "mcp_url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp",
+  "results": {
+    "plugin_install": "PASS",
+    "copilot_agent_authentication": "PASS",
+    "ephemeral_dsg_key_activation": "PASS",
+    "authenticated_mcp_registration": "PASS",
+    "direct_authenticated_dsg_status": "PASS",
+    "agent_initiated_dsg_status_tool_call": "PASS"
+  },
+  "artifact": {
+    "id": 9452300332,
+    "digest": "sha256:49a691454cba9dd1eb1b779c6aef711a17d1ed4500b566f4939e3937eef5e3e8",
+    "expires_at": "2026-11-19T15:28:37Z"
+  },
+  "dsg_key_created_only_after_copilot_auth": true,
+  "credentials_retained": false,
+  "truth_boundary": "This proves a real GitHub Copilot CLI agent authenticated with the configured user-owned Copilot token, registered the authenticated Azure DSG MCP endpoint, and invoked dsg_status successfully. It does not by itself prove a full governed execution through create-plan, approval, alignment, constraints, evidence, replay, Z3 verification, and proof-receipt readback from Copilot CLI."
+}
