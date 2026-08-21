@@ -13,6 +13,7 @@ import cinema_main
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "marketplace" / "agent-plugin"
+MARKETPLACE = ROOT / ".github" / "plugin" / "marketplace.json"
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 PLUGIN_FIELDS = {
@@ -60,6 +61,28 @@ def test_plugin_manifest_targets_agent_plugins_v1_and_uses_only_portable_fields(
     assert manifest["repository"] == "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent"
 
 
+def test_copilot_marketplace_catalog_points_to_the_portable_plugin():
+    catalog = _json(MARKETPLACE)
+    assert set(catalog) == {"name", "owner", "metadata", "plugins"}
+    assert catalog["name"] == "dsg-agent-plugins"
+    assert catalog["owner"]["name"] == "DSG ONE"
+    assert catalog["metadata"]["version"] == "1.0.0"
+    assert len(catalog["plugins"]) == 1
+
+    entry = catalog["plugins"][0]
+    manifest = _json(PLUGIN / "plugin.json")
+    assert entry["name"] == manifest["name"] == "dsg-governance"
+    assert entry["version"] == manifest["version"] == "1.0.0"
+    assert entry["source"] == "./marketplace/agent-plugin"
+    assert entry["strict"] is True
+    assert "mcpServers" not in entry
+
+    source = (ROOT / entry["source"].removeprefix("./")).resolve()
+    assert source == PLUGIN.resolve()
+    assert source.is_dir()
+    assert (source / "plugin.json").is_file()
+
+
 def test_mcp_config_is_https_streamable_http_and_contains_no_embedded_credentials():
     config = _json(PLUGIN / "mcp.json")
     assert set(config) == {"$schema", "mcpServers"}
@@ -102,6 +125,8 @@ def test_plugin_truth_boundary_does_not_claim_unrun_client_compatibility():
     assert "Copilot CLI client install" in readme
     assert readme.count("NOT VERIFIED") >= 3
     assert "Package conformance is not client compatibility" in readme
+    assert "copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent" in readme
+    assert "copilot plugin install dsg-governance@dsg-agent-plugins" in readme
 
 
 def test_dsg_mcp_endpoint_performs_initialize_and_exposes_governance_tools():
