@@ -577,7 +577,7 @@ async def marketplace_callback(
 <html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
 <title>DSG Verified Execution</title></head><body>
 <p>GitHub Marketplace entitlement connected: <strong>{plan_key}</strong>. Opening DSG ONE…</p>
-<script>sessionStorage.setItem('dsg_api_key', {safe_key}); location.replace('/app');</script>
+<script>localStorage.setItem('dsg-one-key', {safe_key}); location.replace('/app');</script>
 <noscript>JavaScript is required to hand the one-time API key to the DSG console without placing it in the URL.</noscript>
 </body></html>"""
     return HTMLResponse(
