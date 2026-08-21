@@ -1,0 +1,180 @@
+name: Copilot CLI Real DSG Plugin E2E
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/copilot-cli-real-plugin-e2e.yml'
+      - '.github/plugin/marketplace.json'
+      - 'marketplace/agent-plugin/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  copilot-requests: write
+
+jobs:
+  real-plugin-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: '1'
+      NO_COLOR: '1'
+      CINEMA_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      MCP_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp
+      MARKETPLACE_REPO: tdealer01-crypto/DSG-Cinema-Proof-Agent
+      MARKETPLACE_NAME: dsg-agent-plugins
+      PLUGIN_NAME: dsg-governance
+      MCP_SERVER_NAME: dsg-one-e2e
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install latest GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Add DSG marketplace and install plugin
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-real-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-real-home/.copilot
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME" "$COPILOT_HOME"
+          copilot --version
+          copilot plugin marketplace add "$MARKETPLACE_REPO"
+          copilot plugin marketplace browse "$MARKETPLACE_NAME" >/tmp/dsg-marketplace.txt
+          grep -Fq "$PLUGIN_NAME" /tmp/dsg-marketplace.txt
+          copilot plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME"
+          copilot plugin list >/tmp/dsg-plugin-list.txt
+          grep -Fq "$PLUGIN_NAME" /tmp/dsg-plugin-list.txt
+          rm -f /tmp/dsg-marketplace.txt /tmp/dsg-plugin-list.txt
+
+      - name: Verify Copilot request authentication
+        id: copilot_auth
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-real-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-real-home/.copilot
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          set +e
+          copilot -sp 'Reply exactly: COPILOT_AUTH_OK' >/tmp/copilot-auth.out 2>/tmp/copilot-auth.err
+          rc=$?
+          set -e
+          if [[ "$rc" == '0' ]] && grep -Fq 'COPILOT_AUTH_OK' /tmp/copilot-auth.out; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'COPILOT_AUTH_STATUS=PASS' >> "$GITHUB_ENV"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'COPILOT_AUTH_STATUS=ACTION_REQUIRED' >> "$GITHUB_ENV"
+            echo 'Copilot request authentication did not pass with the built-in GITHUB_TOKEN.' >&2
+            sed -n '1,30p' /tmp/copilot-auth.err >&2 || true
+          fi
+          rm -f /tmp/copilot-auth.out /tmp/copilot-auth.err
+
+      - name: Activate ephemeral free DSG key
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          activation_id="copilot-real-plugin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          payload=$(jq -cn \
+            --arg channel 'copilot_cli' \
+            --arg activation_id "$activation_id" \
+            --arg display_name 'Copilot CLI real DSG plugin E2E' \
+            '{channel:$channel,activation_id:$activation_id,display_name:$display_name}')
+          code=$(curl --silent --show-error \
+            --output /tmp/dsg-activate.json \
+            --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data "$payload" || true)
+          if [[ "$code" != '200' && "$code" != '201' ]]; then
+            echo "DSG activation failed with HTTP $code" >&2
+            jq 'del(.api_key)' /tmp/dsg-activate.json 2>/dev/null || true
+            exit 1
+          fi
+          DSG_API_KEY=$(jq -r '.api_key // empty' /tmp/dsg-activate.json)
+          test -n "$DSG_API_KEY"
+          echo "::add-mask::$DSG_API_KEY"
+          printf 'DSG_API_KEY=%s\n' "$DSG_API_KEY" >> "$GITHUB_ENV"
+          rm -f /tmp/dsg-activate.json
+
+      - name: Register authenticated DSG MCP in Copilot CLI
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-real-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-real-home/.copilot
+        run: |
+          set -euo pipefail
+          copilot mcp add \
+            --transport http \
+            --header "X-DSG-API-Key: $DSG_API_KEY" \
+            --tools '*' \
+            "$MCP_SERVER_NAME" "$MCP_URL" >/tmp/mcp-add.txt
+          rm -f /tmp/mcp-add.txt
+
+      - name: Ask Copilot to call dsg_status
+        id: agent_call
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-real-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-real-home/.copilot
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS: 'true'
+        run: |
+          set -euo pipefail
+          copilot -sp \
+            'Use only the DSG MCP server. Call dsg_status exactly once. Return one compact JSON object with keys tool and ready.' \
+            --allow-tool="$MCP_SERVER_NAME/*" \
+            >/tmp/copilot-dsg-status.out
+          test -s /tmp/copilot-dsg-status.out
+          grep -Fq 'dsg_status' /tmp/copilot-dsg-status.out
+          echo 'AGENT_TOOL_CALL_STATUS=PASS' >> "$GITHUB_ENV"
+
+      - name: Build sanitized evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COPILOT_AUTH_STATUS="${COPILOT_AUTH_STATUS:-ACTION_REQUIRED}"
+          export AGENT_TOOL_CALL_STATUS="${AGENT_TOOL_CALL_STATUS:-NOT_RUN}"
+          export COPILOT_VERSION="$(copilot --version | head -n 1 | sed 's/[[:space:]]*$//')"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          evidence = {
+              'schema_version': '1.0',
+              'client': 'GitHub Copilot CLI',
+              'client_version': os.environ['COPILOT_VERSION'],
+              'marketplace_repository': os.environ['MARKETPLACE_REPO'],
+              'marketplace_name': os.environ['MARKETPLACE_NAME'],
+              'plugin_name': os.environ['PLUGIN_NAME'],
+              'marketplace_install': 'PASS',
+              'copilot_agent_authentication': os.environ['COPILOT_AUTH_STATUS'],
+              'agent_initiated_dsg_status_tool_call': os.environ['AGENT_TOOL_CALL_STATUS'],
+              'credentials_retained': False,
+              'truth_boundary': 'PASS for marketplace installation is independent from agent-driven MCP E2E. Full agent E2E is PASS only when Copilot request authentication and dsg_status both pass.'
+          }
+          Path('copilot-cli-real-plugin-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
+          PY
+          cat copilot-cli-real-plugin-e2e.json >> "$GITHUB_STEP_SUMMARY"
+          rm -f /tmp/copilot-dsg-status.out
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-cli-real-plugin-e2e-${{ github.run_id }}
+          path: copilot-cli-real-plugin-e2e.json
+          if-no-files-found: error
+          retention-days: 90
