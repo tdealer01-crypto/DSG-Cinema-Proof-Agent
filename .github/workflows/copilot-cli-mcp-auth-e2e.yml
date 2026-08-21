@@ -101,17 +101,20 @@ jobs:
           COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
         run: |
           set -euo pipefail
-          copilot mcp get "$MCP_SERVER_NAME" --json >/tmp/dsg-mcp-get.json
 
-          python - <<'PY'
+          cat >/tmp/verify-dsg-mcp.py <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
 
-          raw = Path('/tmp/dsg-mcp-get.json').read_text(encoding='utf-8')
+          raw = sys.stdin.read()
           key = os.environ['DSG_API_KEY']
-          assert key not in raw, 'API key leaked into Copilot MCP JSON output'
-          data = json.loads(raw)
+          # Copilot CLI 1.0.80 can include configured HTTP header values in
+          # `mcp get --json`. Never persist that raw output. Sanitize it while
+          # it is still in the pipe, then inspect only the sanitized object.
+          sanitized = raw.replace(key, '***MASKED***')
+          data = json.loads(sanitized)
           serialized = json.dumps(data)
           expected = [
               'dsg_status',
@@ -126,10 +129,12 @@ jobs:
           ]
           missing = [name for name in expected if name not in serialized]
           assert not missing, f'Missing authenticated DSG MCP tools: {missing}'
+          assert key not in sanitized
           Path('/tmp/dsg-tools.json').write_text(json.dumps(expected), encoding='utf-8')
           PY
 
-          rm -f /tmp/dsg-mcp-get.json
+          copilot mcp get "$MCP_SERVER_NAME" --json | python /tmp/verify-dsg-mcp.py
+          rm -f /tmp/verify-dsg-mcp.py
 
       - name: Build sanitized authenticated-MCP evidence
         shell: bash
@@ -156,6 +161,7 @@ jobs:
               'activation_plan': 'free',
               'mcp_authenticated_discovery': 'PASS',
               'discovered_tools': tools,
+              'raw_mcp_json_retained': False,
               'agent_initiated_tool_call': 'NOT_RUN',
               'truth_boundary': 'Proves Copilot CLI authenticated remote MCP connection and tool discovery. A model-driven Copilot agent tool invocation remains a separate gate requiring Copilot authentication.'
           }
