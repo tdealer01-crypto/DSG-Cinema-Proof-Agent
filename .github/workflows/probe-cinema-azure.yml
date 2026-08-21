@@ -12,10 +12,12 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The staging GitHub Environment supplies the read-capable PR OIDC subject.
+    # The resource being probed below is the current production Container App.
     environment: staging
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
-      CINEMA_APP_NAME: DSG-Cinema-Proof-Agent
+      CINEMA_APP: dsg-cinema-production
       AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
@@ -31,102 +33,122 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Read Cinema runtime metadata
+      - name: Probe current production Container App
         shell: bash
         run: |
           set -euo pipefail
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
 
-          APP_JSON=$(az webapp show \
+          APP_JSON=$(az containerapp show \
             --resource-group "$RESOURCE_GROUP" \
-            --name "$CINEMA_APP_NAME" \
+            --name "$CINEMA_APP" \
             --output json)
 
-          HOST=$(jq -r '.defaultHostName // empty' <<<"$APP_JSON")
-          STATE=$(jq -r '.state // empty' <<<"$APP_JSON")
-          KIND=$(jq -r '.kind // empty' <<<"$APP_JSON")
-          PLAN_ID=$(jq -r '.serverFarmId // empty' <<<"$APP_JSON")
+          HOST=$(jq -r '.properties.configuration.ingress.fqdn // empty' <<<"$APP_JSON")
+          PROVISIONING_STATE=$(jq -r '.properties.provisioningState // empty' <<<"$APP_JSON")
+          RUNNING_STATUS=$(jq -r '.properties.runningStatus // empty' <<<"$APP_JSON")
+          LATEST_REVISION=$(jq -r '.properties.latestRevisionName // empty' <<<"$APP_JSON")
+          ENVIRONMENT_ID=$(jq -r '.properties.environmentId // empty' <<<"$APP_JSON")
+
           test -n "$HOST"
-          test -n "$PLAN_ID"
+          : > /tmp/cinema-health-body
+          : > /tmp/billing-status-body
 
-          PLAN_NAME=${PLAN_ID##*/}
-          PLAN_JSON=$(az appservice plan show \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$PLAN_NAME" \
-            --output json)
-
-          SKU_NAME=$(jq -r '.sku.name // empty' <<<"$PLAN_JSON")
-          SKU_TIER=$(jq -r '.sku.tier // empty' <<<"$PLAN_JSON")
-
-          SLOT_JSON=$(az webapp deployment slot list \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$CINEMA_APP_NAME" \
-            --query '[].{name:name,defaultHostName:defaultHostName,state:state}' \
-            --output json)
-
-          SETTINGS_JSON=$(az webapp config appsettings list \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$CINEMA_APP_NAME" \
-            --query '[].name' \
-            --output json)
-
-          SOURCE_JSON='{}'
-          if SOURCE_RAW=$(az webapp deployment source show \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$CINEMA_APP_NAME" \
-            --query '{repoUrl:repoUrl,branch:branch,isManualIntegration:isManualIntegration}' \
-            --output json 2>/dev/null); then
-            SOURCE_JSON="$SOURCE_RAW"
-          fi
-
+          set +e
           HEALTH_CODE=$(curl --silent --show-error \
             --output /tmp/cinema-health-body \
             --write-out '%{http_code}' \
-            --max-time 20 \
-            "https://$HOST/health" || true)
+            --max-time 30 \
+            "https://$HOST/health")
+          HEALTH_RC=$?
+          BILLING_CODE=$(curl --silent --show-error \
+            --output /tmp/billing-status-body \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://$HOST/billing/status")
+          BILLING_RC=$?
+          set -e
 
-          HEALTH_BODY_TYPE="text"
-          if jq -e . /tmp/cinema-health-body >/dev/null 2>&1; then
-            HEALTH_BODY_TYPE="json"
+          if [[ "$HEALTH_RC" != "0" ]]; then HEALTH_CODE=0; fi
+          if [[ "$BILLING_RC" != "0" ]]; then BILLING_CODE=0; fi
+
+          HEALTH_READY=false
+          if [[ "$HEALTH_CODE" == "200" ]] && \
+             jq -e '.status == "ready" and .backend == "ready"' /tmp/cinema-health-body >/dev/null 2>&1; then
+            HEALTH_READY=true
           fi
 
+          BILLING_READABLE=false
+          if [[ "$BILLING_CODE" == "200" ]] && \
+             jq -e '.billing_version and (.metering_enabled == true) and .checkout_status and .stripe and .ledger' \
+               /tmp/billing-status-body >/dev/null 2>&1; then
+            BILLING_READABLE=true
+          fi
+
+          CHECKOUT_STATUS=$(jq -r '.checkout_status // "UNAVAILABLE"' /tmp/billing-status-body 2>/dev/null || echo UNAVAILABLE)
+          STRIPE_CHARGES_ENABLED=$(jq -r '.stripe.charges_enabled // false' /tmp/billing-status-body 2>/dev/null || echo false)
+          METERING_ENFORCED=$(jq -r '.metering_enforced // false' /tmp/billing-status-body 2>/dev/null || echo false)
+          ENFORCEMENT_READY=$(jq -r '.enforcement_ready // false' /tmp/billing-status-body 2>/dev/null || echo false)
+          LEDGER_ENTRIES=$(jq -r '.ledger.entries // 0' /tmp/billing-status-body 2>/dev/null || echo 0)
+
           jq -n \
-            --arg app_name "$CINEMA_APP_NAME" \
+            --arg app_name "$CINEMA_APP" \
             --arg host "$HOST" \
-            --arg state "$STATE" \
-            --arg kind "$KIND" \
-            --arg plan_name "$PLAN_NAME" \
-            --arg sku_name "$SKU_NAME" \
-            --arg sku_tier "$SKU_TIER" \
-            --arg health_code "$HEALTH_CODE" \
-            --arg health_body_type "$HEALTH_BODY_TYPE" \
-            --argjson slots "$SLOT_JSON" \
-            --argjson setting_names "$SETTINGS_JSON" \
-            --argjson source "$SOURCE_JSON" \
+            --arg provisioning_state "$PROVISIONING_STATE" \
+            --arg running_status "$RUNNING_STATUS" \
+            --arg latest_revision "$LATEST_REVISION" \
+            --arg environment_id "$ENVIRONMENT_ID" \
+            --argjson health_http_status "$HEALTH_CODE" \
+            --argjson health_ready "$HEALTH_READY" \
+            --argjson billing_http_status "$BILLING_CODE" \
+            --argjson billing_readable "$BILLING_READABLE" \
+            --arg checkout_status "$CHECKOUT_STATUS" \
+            --argjson stripe_charges_enabled "$STRIPE_CHARGES_ENABLED" \
+            --argjson metering_enforced "$METERING_ENFORCED" \
+            --argjson enforcement_ready "$ENFORCEMENT_READY" \
+            --argjson ledger_entries "$LEDGER_ENTRIES" \
             '{
+              target: "azure_container_app",
               app_name: $app_name,
               default_host: $host,
-              state: $state,
-              kind: $kind,
-              app_service_plan: {
-                name: $plan_name,
-                sku_name: $sku_name,
-                sku_tier: $sku_tier
-              },
-              slots: $slots,
-              app_setting_names: $setting_names,
-              deployment_source: $source,
+              provisioning_state: $provisioning_state,
+              running_status: $running_status,
+              latest_revision: $latest_revision,
+              environment_id: $environment_id,
               health: {
-                http_status: ($health_code | tonumber? // 0),
-                body_type: $health_body_type
+                http_status: $health_http_status,
+                ready: $health_ready
+              },
+              revenue: {
+                http_status: $billing_http_status,
+                readable: $billing_readable,
+                checkout_status: $checkout_status,
+                stripe_charges_enabled: $stripe_charges_enabled,
+                metering_enforced: $metering_enforced,
+                enforcement_ready: $enforcement_ready,
+                ledger_entries: $ledger_entries
               }
             }' > cinema_runtime_probe.json
 
           cat cinema_runtime_probe.json
 
+          if [[ "$HEALTH_READY" != "true" ]]; then
+            echo 'Current production Cinema health is not ready.' >&2
+            cat /tmp/cinema-health-body >&2 || true
+            exit 1
+          fi
+          if [[ "$BILLING_READABLE" != "true" ]]; then
+            echo 'Current production billing/status is unavailable or malformed.' >&2
+            cat /tmp/billing-status-body >&2 || true
+            exit 1
+          fi
+
       - name: Upload Cinema probe evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cinema-runtime-probe-${{ github.sha }}
           path: cinema_runtime_probe.json
           retention-days: 30
+          if-no-files-found: warn
