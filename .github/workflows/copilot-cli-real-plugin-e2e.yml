@@ -135,7 +135,7 @@ jobs:
           set -euo pipefail
           copilot -sp \
             'Use only the DSG MCP server. Call dsg_status exactly once. Return one compact JSON object with keys tool and ready.' \
-            --allow-tool="$MCP_SERVER_NAME/*" \
+            --allow-tool="$MCP_SERVER_NAME" \
             >/tmp/copilot-dsg-status.out
           test -s /tmp/copilot-dsg-status.out
           grep -Fq 'dsg_status' /tmp/copilot-dsg-status.out
