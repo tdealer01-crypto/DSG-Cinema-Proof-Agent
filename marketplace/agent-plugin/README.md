@@ -12,7 +12,7 @@ copilot plugin marketplace browse dsg-agent-plugins
 copilot plugin install dsg-governance@dsg-agent-plugins
 ```
 
-These commands are covered by a real GitHub Copilot CLI client-install E2E on a GitHub-hosted runner. That client-install proof does not by itself prove an agent-driven authenticated DSG MCP tool call; the additional authentication gate is tracked separately below.
+These commands are covered by a real GitHub Copilot CLI client-install E2E on a GitHub-hosted runner. Authenticated agent-driven `dsg_status` is covered by a separate gated E2E and permanent evidence below.
 
 ## Package contents
 
@@ -72,8 +72,9 @@ Checkout creation never grants entitlement. The existing DSG signed Stripe webho
 | DSG execution semantics | Existing API tests cover approved execution, out-of-plan BLOCK, replay REVIEW, deterministic constraints, and fail-closed verifier behavior | CI-GATED |
 | VS Code / GitHub Copilot client install | No real client run is stored in this repository yet | NOT VERIFIED |
 | Copilot CLI client install | GitHub Actions run `32482954936` used GitHub Copilot CLI `1.0.80` to add `dsg-agent-plugins`, browse it, install `dsg-governance@dsg-agent-plugins`, and confirm plugin `v1.0.0` in the installed-plugin list. Permanent evidence: `evidence/client/copilot-cli-plugin-e2e-2026-08-21.json` | PASS |
-| Copilot CLI agent authentication in CI | Run `32484042904` proved the default GitHub Actions token is rejected for Copilot agent requests. No DSG key was created. Configure repository/environment secret `COPILOT_CLI_TOKEN` with a user-owned fine-grained token that has the **Copilot Requests** account permission. Evidence: `evidence/client/copilot-cli-agent-auth-preflight-2026-08-21.json` | ACTION_REQUIRED |
-| Copilot CLI authenticated DSG MCP tool call | Gated workflow `.github/workflows/copilot-cli-mcp-auth-e2e.yml` is ready to create an ephemeral free DSG key and ask the authenticated Copilot agent to call `dsg_status` only after Copilot agent authentication passes | NOT VERIFIED |
+| Copilot CLI agent authentication in CI | GitHub Actions run `32497793523` authenticated GitHub Copilot CLI `1.0.80` with the configured user-owned `COPILOT_CLI_TOKEN` before any DSG key was issued. Permanent evidence: `evidence/client/copilot-cli-mcp-auth-e2e-2026-08-21.json` | PASS |
+| Copilot CLI authenticated DSG MCP `dsg_status` tool call | Run `32497793523` activated an ephemeral free DSG key only after Copilot auth, registered `dsg-one-auth`, independently verified authenticated `dsg_status = READY`, and then had the Copilot agent invoke `dsg_status` successfully. Credentials were not retained. Permanent evidence: `evidence/client/copilot-cli-mcp-auth-e2e-2026-08-21.json` | PASS |
+| Copilot CLI full governed execution + proof receipt | A real Copilot CLI client has not yet completed create-plan → approval → alignment → constraints → execution → evidence → verify → proof readback as one stored client-conformance run | NOT VERIFIED |
 | Other Agent Plugins clients | Must be tested client by client | NOT VERIFIED |
 
 Package conformance is not client compatibility. A client row changes to PASS only when a real client run produces stored evidence for that exact surface.
@@ -98,4 +99,4 @@ A useful integration must show, without requiring log inspection:
 
 ## Truth boundary
 
-This directory is a portable package and CI target. The marketplace catalog is proven discoverable/installable by GitHub Copilot CLI `1.0.80`. Agent-driven authenticated DSG MCP execution is not yet proven because the default Actions token lacks Copilot request authorization. Do not claim that surface PASS until the gated E2E completes with a valid `COPILOT_CLI_TOKEN` and a real `dsg_status` invocation.
+This directory is a portable package and CI target. The marketplace catalog is proven discoverable/installable by GitHub Copilot CLI `1.0.80`, and run `32497793523` proves authenticated agent-driven `dsg_status` against the Azure DSG MCP endpoint. A full governed execution through plan creation, approval, alignment, constraints, evidence, replay, exact Z3 verification, and proof-receipt readback from Copilot CLI is still not verified and must not be claimed PASS until that client E2E is stored as evidence.
