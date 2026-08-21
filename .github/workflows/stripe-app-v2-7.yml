@@ -124,9 +124,33 @@ jobs:
         run: |
           set -euo pipefail
           PAYLOAD='{"stripe_account_id":"acct_marketplace_smoke","object_type":"charge","object_id":"ch_marketplace_smoke","amount_cents":5000,"currency":"usd","stripe_status":"succeeded","risk_level":"low"}'
+
+          # Enforcement refuses an unauthenticated evaluation, so this probe
+          # has to present a key the way a real caller does. Activation is the
+          # self-serve route to one and can only ever grant the free capped
+          # plan, so this packaging check never grants itself billable
+          # capacity. Without it, once enforcement is on, every poll below
+          # gets 401 and the loop exhausts its budget on a production endpoint
+          # that was actually ready the whole time.
+          API_KEY=''
           for attempt in $(seq 1 120); do
+            if [[ -z "$API_KEY" ]]; then
+              ACTIVATION=$(curl --silent --show-error --output /tmp/activation.json --write-out '%{http_code}' \
+                --request POST "$CINEMA_API_BASE/billing/activate" \
+                --header 'Content-Type: application/json' \
+                --data "$(jq -n --arg id "stripe-app-package-$GITHUB_RUN_ID" \
+                  '{channel:"api",activation_id:$id,display_name:"stripe app packaging check"}')" || true)
+              if [[ "$ACTIVATION" == "200" ]]; then
+                API_KEY=$(jq -r '.api_key // empty' /tmp/activation.json)
+                if [[ -n "$API_KEY" ]]; then
+                  echo "::add-mask::$API_KEY"
+                fi
+              fi
+            fi
+
             CODE=$(curl --silent --show-error --output /tmp/stripe-proof.json --write-out '%{http_code}' \
               --request POST "$CINEMA_API_BASE/stripe/evaluate" \
+              --header "X-DSG-API-Key: $API_KEY" \
               --header 'Content-Type: application/json' \
               --data "$PAYLOAD" || true)
             if [[ "$CODE" == "200" ]] && jq -e '.decision == "ALLOW" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and (.proof_hash | length) == 64 and (.context_hash | length) == 64' /tmp/stripe-proof.json >/dev/null 2>&1; then
