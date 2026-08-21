@@ -1,0 +1,172 @@
+name: Configure GitHub Marketplace Production
+
+on:
+  workflow_run:
+    workflows: ["Deploy Cinema + Z3 Production"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: github-marketplace-production
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET: ${{ secrets.GITHUB_MARKETPLACE_WEBHOOK_SECRET }}
+      CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_ID: ${{ vars.GITHUB_MARKETPLACE_OAUTH_CLIENT_ID || secrets.GITHUB_MARKETPLACE_OAUTH_CLIENT_ID }}
+      CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET: ${{ secrets.GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET }}
+
+    steps:
+      - name: Refuse incomplete Marketplace credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing=()
+          [[ ${#CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET} -ge 32 ]] || missing+=(GITHUB_MARKETPLACE_WEBHOOK_SECRET)
+          [[ -n "$CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_ID" ]] || missing+=(GITHUB_MARKETPLACE_OAUTH_CLIENT_ID)
+          [[ ${#CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET} -ge 32 ]] || missing+=(GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET)
+
+          if (( ${#missing[@]} > 0 )); then
+            echo 'GitHub Marketplace production is ACTION_REQUIRED.' >&2
+            printf 'Missing/invalid repository production configuration: %s\n' "${missing[*]}" >&2
+            echo 'No Azure configuration was changed.' >&2
+            {
+              echo '## GitHub Marketplace production — ACTION_REQUIRED'
+              echo
+              echo "Missing/invalid: \`${missing[*]}\`"
+              echo
+              echo 'The paid App is not claimed live until these values are configured and this workflow passes.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "::add-mask::$CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET"
+          echo "::add-mask::$CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET"
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Marketplace credentials on Cinema
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+
+          az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" >/dev/null
+
+          az containerapp secret set \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --secrets \
+              "github-marketplace-webhook-secret=$CONFIGURED_GITHUB_MARKETPLACE_WEBHOOK_SECRET" \
+              "github-marketplace-oauth-client-secret=$CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET" \
+            --output none
+
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --set-env-vars \
+              GITHUB_MARKETPLACE_WEBHOOK_SECRET=secretref:github-marketplace-webhook-secret \
+              "GITHUB_MARKETPLACE_OAUTH_CLIENT_ID=$CONFIGURED_GITHUB_MARKETPLACE_OAUTH_CLIENT_ID" \
+              GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET=secretref:github-marketplace-oauth-client-secret \
+            --output none
+
+          CINEMA_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$CINEMA_FQDN"
+          echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
+
+      - name: Prove Marketplace bridge is READY on production
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 60); do
+            code=$(curl --silent --show-error \
+              --output /tmp/marketplace-status.json \
+              --write-out '%{http_code}' \
+              "$CINEMA_URL/marketplace/github/status" || true)
+            if [[ "$code" == "200" ]] && jq -e '
+              .status == "READY" and
+              .billing_channel == "github_marketplace" and
+              .checks.durable_store == "PASS" and
+              .checks.webhook_secret == "PASS" and
+              .checks.oauth_client_id == "PASS" and
+              .checks.oauth_client_secret == "PASS" and
+              .truth_boundary.github_collects_subscription_payment == true and
+              .truth_boundary.cinema_stripe_rebilling == false and
+              .truth_boundary.unknown_plan_falls_back_to_free == true
+            ' /tmp/marketplace-status.json >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == "60" ]]; then
+              echo 'Cinema Marketplace bridge did not become READY.' >&2
+              cat /tmp/marketplace-status.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          # A known-invalid signature must be refused as authentication failure,
+          # not 503 configuration failure. This proves the webhook secret reached
+          # the running revision without sending a purchase event.
+          forged_code=$(curl --silent --show-error \
+            --output /tmp/forged-webhook.json \
+            --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/marketplace/github/webhook" \
+            --header 'Content-Type: application/json' \
+            --header 'X-GitHub-Event: marketplace_purchase' \
+            --header 'X-GitHub-Delivery: production-config-probe' \
+            --header "X-Hub-Signature-256: sha256=$(printf '0%.0s' {1..64})" \
+            --data '{"action":"purchased"}' || true)
+          test "$forged_code" = '401'
+
+          # Setup must be able to sign OAuth state and target GitHub. Do not
+          # follow the redirect, and never put a client secret in output.
+          setup_headers=$(mktemp)
+          setup_code=$(curl --silent --show-error \
+            --dump-header "$setup_headers" \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            "$CINEMA_URL/marketplace/github/setup?installation_id=1" || true)
+          test "$setup_code" = '302'
+          grep -qi '^location: https://github.com/login/oauth/authorize?' "$setup_headers"
+
+          {
+            echo '## GitHub Marketplace production — READY'
+            echo
+            echo "- Cinema: \`$CINEMA_URL\`"
+            echo "- Webhook: \`$CINEMA_URL/marketplace/github/webhook\`"
+            echo "- OAuth callback: \`$CINEMA_URL/marketplace/github/callback\`"
+            echo "- Product console: \`$CINEMA_URL/app\`"
+            echo '- Signed-webhook configuration: PASS'
+            echo '- OAuth setup configuration: PASS'
+            echo '- GitHub-paid → Stripe rebilling: DISABLED by entitlement design'
+          } >> "$GITHUB_STEP_SUMMARY"

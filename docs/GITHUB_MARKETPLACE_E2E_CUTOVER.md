@@ -1,0 +1,104 @@
+# GitHub Marketplace paid App → DSG Verified Execution
+
+This is the cutover contract for reusing the existing paid GitHub Marketplace App as the sales and entitlement surface for the current Cinema + exact Z3 product.
+
+## Canonical product after cutover
+
+The retired Control Plane UI is not the runtime sold by this integration.
+
+The product path is:
+
+```text
+GitHub Marketplace paid App
+  → marketplace_purchase webhook
+  → signed webhook verification
+  → bounded Cinema entitlement
+  → GitHub OAuth installation verification
+  → DSG API key
+  → /app or /api/v1/*
+  → DSG-computed plan alignment / constraints / execution / replay / evidence
+  → exact Z3 proof
+  → proof receipt
+```
+
+GitHub remains the merchant of record for Marketplace subscriptions. Cinema must not send a GitHub-paid account to the direct Stripe meter.
+
+## Entitlement mapping
+
+The old Control Plane quota policy is preserved as a bounded entitlement, not copied as a second billing system.
+
+| GitHub Marketplace plan | Cinema plan | Verified proofs / period | Cinema Stripe charge |
+| --- | --- | ---: | --- |
+| Free | `github_free` | 1,000 | none |
+| Pro / Team / Solo | `github_pro` | 10,000 | none |
+| Business / Production / Agency | `github_business` | 100,000 | none |
+| Enterprise | `github_enterprise` | 1,000,000 | none |
+| Unknown plan name | `github_free` | 1,000 | none; fail-safe floor |
+
+A `pending_change` records the future plan but does not grant it early. A `changed` event applies it. A `cancelled` event returns the account to `github_free`.
+
+## Runtime routes
+
+All routes are on the Cinema production origin.
+
+| Purpose | Route |
+| --- | --- |
+| Marketplace readiness | `GET /marketplace/github/status` |
+| GitHub Marketplace webhook | `POST /marketplace/github/webhook` |
+| OAuth/setup redirect | `GET /marketplace/github/setup?installation_id=...` |
+| OAuth callback | `GET /marketplace/github/callback` |
+| Product console | `GET /app` |
+| Independent API status | `GET /api/v1/status` |
+| Universal MCP | `POST /api/v1/mcp` |
+
+The callback never trusts `installation_id` by itself. It exchanges the OAuth code, then asks GitHub for the installation through the authenticated user API before an API key is issued.
+
+## Production secrets / variables
+
+The Cinema repository production environment must provide:
+
+- `GITHUB_MARKETPLACE_WEBHOOK_SECRET` — secret; minimum 32 characters.
+- `GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET` — secret; minimum 32 characters.
+- `GITHUB_MARKETPLACE_OAUTH_CLIENT_ID` — repository variable is preferred; a repository secret is also accepted by the activation workflow.
+
+`.github/workflows/configure-github-marketplace-production.yml` refuses to touch Azure if any required value is absent. After a successful Cinema production deployment it installs the values into `dsg-cinema-production` and verifies `/marketplace/github/status` reports `READY`.
+
+The Marketplace account-link store is durable when the existing `DSG_REVENUE_ACCOUNT_STORE` points at the Azure Files revenue mount. By default the Marketplace bridge stores `github-marketplace.json` next to that account store.
+
+## Existing GitHub App settings to change
+
+Keep the existing approved paid App identity/listing and existing Marketplace plans. Change the product destination to the current Cinema production origin.
+
+Set the App to use:
+
+- **Homepage / product URL:** the Cinema product console (`<CINEMA_ORIGIN>/app`) or the current public DSG Verified Execution landing page that links to it.
+- **Webhook URL:** `<CINEMA_ORIGIN>/marketplace/github/webhook`
+- **OAuth callback URL:** `<CINEMA_ORIGIN>/marketplace/github/callback`
+- **Setup URL**, if the App uses one: `<CINEMA_ORIGIN>/marketplace/github/setup`
+- **Webhook secret:** the same value stored as `GITHUB_MARKETPLACE_WEBHOOK_SECRET` in this repository's production configuration.
+- **Request user authorization during installation:** enabled when using the automatic API-key handoff.
+
+Do not point the paid App back to the retired Control Plane webhook/callback after cutover.
+
+## Evidence gates
+
+The cutover is **not LIVE** merely because the code is merged.
+
+It is LIVE only after all of these are true:
+
+1. PR tests for Marketplace purchase/change/cancel/idempotency/OAuth/key rotation pass.
+2. `Verify Revenue System` passes.
+3. `Verify DSG ONE v1 API` passes.
+4. Cinema production deploy succeeds.
+5. `Configure GitHub Marketplace Production` succeeds.
+6. Production `GET /marketplace/github/status` returns `READY` with all four checks `PASS`.
+7. The activation workflow proves a forged webhook signature returns `401`, not a configuration error.
+8. The activation workflow proves the OAuth setup endpoint redirects to GitHub.
+9. The existing GitHub Marketplace App itself has the new webhook/callback/product URLs saved.
+10. A real Marketplace test purchase or existing buyer event is observed end-to-end before claiming paid revenue is flowing.
+
+Until items 9–10 are observed externally, the correct status is **CODE READY / EXTERNAL MARKETPLACE CUTOVER PENDING**.
+
+## User-visible result
+
+After GitHub installation and authorization, the callback rotates a fresh DSG API key into the same browser storage key already used by the `/app` console and redirects there. The console then sends `X-DSG-API-Key` on API calls automatically. The user should not need to copy a key from logs or edit workflow YAML just to start using the purchased entitlement.

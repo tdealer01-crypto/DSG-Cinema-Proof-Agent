@@ -17,14 +17,17 @@ import hmac
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+import api_v1
+from api_v1.verifier import decision_qubo
 from marketplace_verification import (
     POLICY_VERSION,
     RECEIPT_VERSION,
@@ -47,10 +50,15 @@ app.add_middleware(
     allow_origin_regex=r"https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept", "X-DSG-API-Key"],
+    allow_headers=["Content-Type", "Accept", "X-DSG-API-Key", "Authorization"],
 )
 
 app.include_router(billing.router)
+
+# The v1 verification flow (plans, alignment, constraints, executions, evidence,
+# proofs, MCP). It shares this adapter's Z3 transport and billing gate, and it
+# never accepts a verdict from the caller.
+api_v1.install(app)
 
 VERIFIED_EXECUTION_SKU = "verified_execution"
 STRIPE_DECISION_SKU = "stripe_policy_decision"
@@ -246,22 +254,12 @@ def _target_decision(score: int) -> Literal["ALLOW", "REVIEW", "BLOCK"]:
 
 
 def _decision_qubo(target: str) -> tuple[list[int], list[list[int]]]:
-    # Three binary variables: [ALLOW, REVIEW, BLOCK].
-    # A one-hot penalty keeps exactly one variable selected.
-    penalty = 100
-    costs = {
-        "ALLOW": [0, 30, 60],
-        "REVIEW": [40, 0, 40],
-        "BLOCK": [60, 30, 0],
-    }[target]
-    linear = [cost - penalty for cost in costs]
-    pair_penalty = 2 * penalty
-    quadratic = [
-        [0, 1, pair_penalty],
-        [0, 2, pair_penalty],
-        [1, 2, pair_penalty],
-    ]
-    return linear, quadratic
+    """The shared ALLOW/REVIEW/BLOCK encoding, owned by api_v1.verifier.
+
+    One encoding for every route in this service: a receipt from /verify/evaluate
+    and a receipt from /api/v1 name the same decision problem.
+    """
+    return decision_qubo(target)
 
 
 def _decision_from_witness(witness: Any) -> Literal["ALLOW", "REVIEW", "BLOCK"]:
@@ -288,6 +286,25 @@ def _stripe_context_hash(request: StripeVerifyRequest, risk_score: int) -> str:
     }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+PROTOTYPE_PATH = Path(__file__).resolve().parent / "web" / "dsg-one-3d" / "index.html"
+
+
+@app.get("/app", include_in_schema=False)
+async def prototype_console() -> FileResponse:
+    """Serve the DSG ONE console from the API's own origin.
+
+    Same origin means the console needs no CORS grant and no configured base URL,
+    so what it displays always comes from the deployment it is served by.
+    """
+    if not PROTOTYPE_PATH.exists():
+        raise HTTPException(status_code=404, detail="the console bundle is not present in this image")
+    return FileResponse(
+        PROTOTYPE_PATH,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.get("/health")

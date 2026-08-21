@@ -21,6 +21,39 @@ The Azure deployment receipt is the source of truth for the official landing
 URL. A prepared package is not described as approved or public until the
 marketplace itself confirms that state.
 
+## DSG ONE v1 — independent verification
+
+`/verify/evaluate` above takes the conformance booleans from its caller. An exact
+proof over caller-supplied booleans proves the policy was applied correctly; it
+cannot prove the inputs were true. The **v1 API** closes that gap: the agent submits
+raw material — the approved plan, the actions it took, the evidence it produced —
+and DSG computes `plan_aligned`, `constraints_pass`, `execution_succeeded`,
+`replay_match` and `evidence_complete` itself. A request carrying any of those
+fields is refused with `AGENT_ASSERTED_VERDICT_REJECTED`.
+
+```text
+POST /api/v1/plans                      →  plan_hash computed by DSG
+POST /api/v1/plans/{id}/approve         →  approval must echo that hash
+POST /api/v1/verify/plan-alignment      →  per-action findings
+POST /api/v1/verify/constraints         →  evaluation + exact Z3 proof
+POST /api/v1/executions                 →  the observed action trace
+POST /api/v1/executions/{id}/evidence   →  artifacts DSG hashes itself
+POST /api/v1/executions/{id}/verify     →  recomputed verdicts + proof receipt
+GET  /api/v1/proofs/{id}                →  receipt, hash recomputed on read
+POST /api/v1/mcp                        →  the same flow as MCP tools
+GET  /api/v1/status                     →  readiness; fail-closed, never a stale pass
+```
+
+- Contract: [`openapi/dsg-one-v1.yaml`](openapi/dsg-one-v1.yaml) (OpenAPI 3.1)
+- Reasoning and error vocabulary: [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md)
+- Console: [`web/dsg-one-3d/index.html`](web/dsg-one-3d/index.html), served by the API
+  itself at `GET /app`
+
+If the exact verifier is unreachable, verification returns `502` and no receipt is
+issued. The console shows `NOT CONNECTED` until `/api/v1/status` answers and
+`PENDING` until a response carries a computed result — it has no code path that
+renders a verdict of its own.
+
 ## End-to-end contract
 
 ```text

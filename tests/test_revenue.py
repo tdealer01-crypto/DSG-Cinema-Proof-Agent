@@ -1233,6 +1233,26 @@ def test_billing_status_is_public_and_declares_the_checkout_truth(engine):
     }
 
 
+def test_marketplace_entitlements_are_resolvable_but_never_sold_here(engine):
+    """GitHub is the merchant of record for Marketplace subscriptions.
+
+    Those plans have to resolve — an entitled buyer must get their quota — while
+    staying out of the public direct-billing catalog, so a Marketplace
+    entitlement is never presented as something Cinema will charge for.
+    """
+    from revenue.pricing import GITHUB_MARKETPLACE_PLAN_CATALOG, get_plan
+
+    published = {plan["plan"] for plan in client.get("/billing/status").json()["catalog"]["plans"]}
+    assert not (published & set(GITHUB_MARKETPLACE_PLAN_CATALOG))
+
+    for name, plan in GITHUB_MARKETPLACE_PLAN_CATALOG.items():
+        assert get_plan(name) is plan
+        assert plan.base_price_micros == 0
+        assert plan.unit_price_micros == 0
+        assert plan.requires_linked_payment is False
+        assert plan.hard_cap_units == plan.included_units
+
+
 def test_billing_status_does_not_claim_linked_from_a_secret_string(engine, monkeypatch):
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
     body = client.get("/billing/status").json()
