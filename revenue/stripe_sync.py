@@ -2,8 +2,12 @@
 
 Credential presence is configuration, not proof that money can move. Public
 status becomes ``LINKED_VERIFIED`` only after Stripe confirms the configured
-product, price, payment link, meter, and webhook endpoint. Webhooks are signature checked,
+product, price, meter, and webhook endpoint. Webhooks are signature checked,
 catalog scoped, subscription scoped, idempotent, and stale-event resistant.
+
+Checkout does not use a Stripe Payment Link: Payment Links do not support
+metered prices, so a self-serve or admin-initiated purchase must create a
+Checkout Session against ``product_id``/``price_id`` directly instead.
 """
 
 from __future__ import annotations
@@ -57,7 +61,6 @@ class StripeConfig:
     meter_event_name: str
     product_id: Optional[str] = None
     price_id: Optional[str] = None
-    payment_link_id: Optional[str] = None
     meter_id: Optional[str] = None
     webhook_endpoint_id: Optional[str] = None
     webhook_endpoint_url: Optional[str] = None
@@ -85,7 +88,6 @@ class StripeConfig:
     def operational_scope_configured(self) -> bool:
         return bool(
             self.webhook_scope_configured
-            and self.payment_link_id
             and self.meter_id
             and self.meter_event_name
             and self.webhook_endpoint_id
@@ -147,7 +149,6 @@ def config_from_env(env: Optional[dict] = None) -> StripeConfig:
         ).strip(),
         product_id=optional("STRIPE_PRODUCT_ID"),
         price_id=optional("STRIPE_PRICE_ID"),
-        payment_link_id=optional("STRIPE_PAYMENT_LINK_ID"),
         meter_id=optional("STRIPE_METER_ID"),
         webhook_endpoint_id=optional("STRIPE_WEBHOOK_ENDPOINT_ID"),
         webhook_endpoint_url=optional("STRIPE_WEBHOOK_ENDPOINT_URL"),
@@ -172,7 +173,6 @@ async def verify_operational_link(
         hashlib.sha256((config.secret_key or "").encode("utf-8")).hexdigest(),
         config.product_id,
         config.price_id,
-        config.payment_link_id,
         config.meter_id,
         config.meter_event_name,
         config.webhook_endpoint_id,
@@ -196,15 +196,6 @@ async def verify_operational_link(
                 f"{STRIPE_API_BASE}/v1/prices/{config.price_id}",
                 headers=headers,
             )
-            payment_link_response = await client.get(
-                f"{STRIPE_API_BASE}/v1/payment_links/{config.payment_link_id}",
-                headers=headers,
-            )
-            payment_link_items_response = await client.get(
-                f"{STRIPE_API_BASE}/v1/payment_links/{config.payment_link_id}/line_items",
-                headers=headers,
-                params={"limit": 100},
-            )
             meter_response = await client.get(
                 f"{STRIPE_API_BASE}/v1/billing/meters/{config.meter_id}",
                 headers=headers,
@@ -226,8 +217,6 @@ async def verify_operational_link(
     responses = {
         "product": product_response,
         "price": price_response,
-        "payment_link": payment_link_response,
-        "payment_link_items": payment_link_items_response,
         "meter": meter_response,
         "webhook": webhook_response,
     }
@@ -268,28 +257,6 @@ async def verify_operational_link(
         else checks.get("price", "MISMATCH")
     )
 
-    payment_link = bodies.get("payment_link", {})
-    line_items = bodies.get("payment_link_items", {}).get("data") or []
-    linked_prices = set()
-    for item in line_items:
-        item_price = item.get("price") if isinstance(item, dict) else None
-        if isinstance(item_price, dict):
-            linked_prices.add(item_price.get("id"))
-        elif isinstance(item_price, str):
-            linked_prices.add(item_price)
-    payment_link_failure = checks.get("payment_link") or checks.get(
-        "payment_link_items"
-    )
-    checks["payment_link"] = (
-        "PASS"
-        if payment_link.get("id") == config.payment_link_id
-        and payment_link.get("active") is True
-        and payment_link.get("livemode") is expected_livemode
-        and config.price_id in linked_prices
-        else payment_link_failure or "MISMATCH"
-    )
-    checks.pop("payment_link_items", None)
-
     meter = bodies.get("meter", {})
     checks["meter"] = (
         "PASS"
@@ -315,7 +282,7 @@ async def verify_operational_link(
     result = {
         "verified": all(
             checks.get(name) == "PASS"
-            for name in ("product", "price", "payment_link", "meter", "webhook")
+            for name in ("product", "price", "meter", "webhook")
         ),
         "livemode": expected_livemode,
         "checks": checks,

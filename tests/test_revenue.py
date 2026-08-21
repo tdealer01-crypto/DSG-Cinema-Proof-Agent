@@ -55,7 +55,6 @@ TEST_STRIPE_CONFIG = StripeConfig(
     meter_event_name="dsg_verified_execution",
     product_id="prod_dsg",
     price_id="price_dsg",
-    payment_link_id="plink_dsg",
     meter_id="mtr_dsg",
     webhook_endpoint_id="we_dsg",
     webhook_endpoint_url="https://cinema.example.test/billing/webhook/stripe",
@@ -97,7 +96,6 @@ def engine(monkeypatch):
         "STRIPE_WEBHOOK_SECRET",
         "STRIPE_PRODUCT_ID",
         "STRIPE_PRICE_ID",
-        "STRIPE_PAYMENT_LINK_ID",
         "STRIPE_METER_ID",
         "STRIPE_WEBHOOK_ENDPOINT_ID",
         "STRIPE_WEBHOOK_ENDPOINT_URL",
@@ -695,7 +693,7 @@ def test_unlinked_stripe_configuration_reports_not_linked():
     assert config.status()["charges_enabled"] is False
 
 
-def test_operational_link_verifies_product_price_payment_link_and_meter(monkeypatch):
+def test_operational_link_verifies_product_price_and_meter(monkeypatch):
     bodies = {
         "products": {"id": "prod_dsg", "active": True, "livemode": False},
         "prices": {
@@ -704,12 +702,6 @@ def test_operational_link_verifies_product_price_payment_link_and_meter(monkeypa
             "product": "prod_dsg",
             "livemode": False,
         },
-        "payment_links": {
-            "id": "plink_dsg",
-            "active": True,
-            "livemode": False,
-        },
-        "payment_link_items": {"data": [{"price": {"id": "price_dsg"}}]},
         "meters": {
             "id": "mtr_dsg",
             "status": "active",
@@ -752,10 +744,7 @@ def test_operational_link_verifies_product_price_payment_link_and_meter(monkeypa
             return None
 
         async def get(self, url, **_kwargs):
-            if url.endswith("/line_items"):
-                key = "payment_link_items"
-            else:
-                key = next(name for name in bodies if f"/{name}/" in url)
+            key = next(name for name in bodies if f"/{name}/" in url)
             return FakeResponse(bodies[key])
 
     monkeypatch.setattr("revenue.stripe_sync.httpx.AsyncClient", FakeClient)
@@ -1260,7 +1249,6 @@ def test_billing_status_links_only_after_operational_verification(
         "STRIPE_SECRET_KEY": "sk_test_x",
         "STRIPE_PRODUCT_ID": "prod_dsg",
         "STRIPE_PRICE_ID": "price_dsg",
-        "STRIPE_PAYMENT_LINK_ID": "plink_dsg",
         "STRIPE_METER_ID": "mtr_dsg",
         "STRIPE_WEBHOOK_SECRET": "whsec_test",
         "STRIPE_WEBHOOK_ENDPOINT_ID": "we_dsg",
@@ -1275,7 +1263,6 @@ def test_billing_status_links_only_after_operational_verification(
             "checks": {
                 "product": "PASS",
                 "price": "PASS",
-                "payment_link": "PASS",
                 "meter": "PASS",
             },
         }
