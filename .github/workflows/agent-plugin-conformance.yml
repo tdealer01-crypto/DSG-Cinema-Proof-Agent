@@ -1,0 +1,88 @@
+name: DSG Agent Plugin Conformance
+
+on:
+  pull_request:
+    paths:
+      - 'marketplace/agent-plugin/**'
+      - 'api_v1/**'
+      - 'revenue/**'
+      - 'tests/test_agent_plugin_v1.py'
+      - 'tests/test_api_v1.py'
+      - 'tests/test_revenue_checkout.py'
+      - 'scripts/build_agent_conformance_report.py'
+      - '.github/workflows/agent-plugin-conformance.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'marketplace/agent-plugin/**'
+      - 'api_v1/**'
+      - 'revenue/**'
+      - 'tests/test_agent_plugin_v1.py'
+      - 'tests/test_api_v1.py'
+      - 'tests/test_revenue_checkout.py'
+      - 'scripts/build_agent_conformance_report.py'
+      - '.github/workflows/agent-plugin-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-plugin-conformance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest pyyaml z3-solver==4.13.0
+
+      - name: Validate JSON package files
+        run: |
+          python -m json.tool marketplace/agent-plugin/plugin.json >/dev/null
+          python -m json.tool marketplace/agent-plugin/mcp.json >/dev/null
+
+      - name: Compile conformance code
+        run: |
+          python -m py_compile \
+            api_v1/mcp.py \
+            tests/test_agent_plugin_v1.py \
+            scripts/build_agent_conformance_report.py
+
+      - name: Run deterministic conformance evals
+        run: |
+          python -m pytest -q \
+            tests/test_agent_plugin_v1.py \
+            tests/test_api_v1.py \
+            tests/test_revenue_checkout.py \
+            --junitxml=agent-conformance-junit.xml \
+            --durations=20
+
+      - name: Build machine-readable conformance report
+        run: |
+          python scripts/build_agent_conformance_report.py \
+            --junit agent-conformance-junit.xml \
+            --output agent-conformance-report.json
+
+      - name: Upload conformance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsg-agent-conformance-${{ github.sha }}
+          path: |
+            agent-conformance-report.json
+            agent-conformance-junit.xml
+          if-no-files-found: error
+          retention-days: 90
