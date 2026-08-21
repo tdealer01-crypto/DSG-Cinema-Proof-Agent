@@ -9,6 +9,7 @@ on:
       - 'revenue/github_marketplace.py'
       - 'revenue/pricing.py'
       - 'docs/API_V1_CONTRACT.md'
+      - 'docs/GITHUB_MARKETPLACE_E2E_CUTOVER.md'
       - 'cinema_main.py'
       - 'Dockerfile.cinema'
       - 'tests/test_api_v1.py'
@@ -16,6 +17,7 @@ on:
       - 'tests/test_console_prototype.py'
       - 'tests/test_github_marketplace.py'
       - '.github/workflows/api-v1-verify.yml'
+      - '.github/workflows/configure-github-marketplace-production.yml'
   push:
     branches: [main]
     paths:
@@ -24,9 +26,11 @@ on:
       - 'web/**'
       - 'revenue/github_marketplace.py'
       - 'revenue/pricing.py'
+      - 'docs/GITHUB_MARKETPLACE_E2E_CUTOVER.md'
       - 'cinema_main.py'
       - 'tests/test_github_marketplace.py'
       - '.github/workflows/api-v1-verify.yml'
+      - '.github/workflows/configure-github-marketplace-production.yml'
   workflow_dispatch:
 
 permissions:
@@ -158,6 +162,35 @@ jobs:
               assert plan.unit_price_micros == 0
               assert plan.requires_linked_payment is False
           print("GitHub Marketplace entitlements are bounded and not Stripe-billable")
+          PY
+
+      - name: Validate production Marketplace activation workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+
+          path = Path('.github/workflows/configure-github-marketplace-production.yml')
+          workflow = yaml.safe_load(path.read_text(encoding='utf-8'))
+          assert workflow['name'] == 'Configure GitHub Marketplace Production'
+          jobs = workflow.get('jobs') or {}
+          assert 'configure' in jobs
+          source = path.read_text(encoding='utf-8')
+          for required in (
+              'GITHUB_MARKETPLACE_WEBHOOK_SECRET',
+              'GITHUB_MARKETPLACE_OAUTH_CLIENT_ID',
+              'GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET',
+              '/marketplace/github/status',
+              '/marketplace/github/webhook',
+              '/marketplace/github/setup?installation_id=1',
+              'cinema_stripe_rebilling == false',
+          ):
+              assert required in source, f'missing production Marketplace guard: {required}'
+          assert 'github-marketplace-webhook-secret=' in source
+          assert 'github-marketplace-oauth-client-secret=' in source
+          print('production Marketplace activation workflow parsed and guards are present')
           PY
 
       - name: Assert the contract and the image stay in step
