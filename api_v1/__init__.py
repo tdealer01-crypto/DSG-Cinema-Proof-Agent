@@ -13,10 +13,11 @@ __all__ = ["API_VERSION", "ENGINE_VERSION", "install", "router"]
 
 
 def install(app) -> None:
-    """Mount independent verification and the paid Marketplace bridge together."""
+    """Mount independent verification, billing checkout, and Marketplace bridge."""
     import importlib
 
     importlib.import_module(f"{__name__}.router").install(app)
+    importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
 
 
