@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: copilot-agent-plugin-e2e-${{ github.ref }}
@@ -32,6 +32,7 @@ jobs:
       DSG_ORIGIN: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
       DSG_MCP_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp
       GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS: 'true'
+      COPILOT_E2E_TOKEN_CONFIGURED: ${{ secrets.COPILOT_E2E_TOKEN != '' }}
       # A user-owned fine-grained token with the Copilot Requests permission can
       # be supplied as COPILOT_E2E_TOKEN. The workflow intentionally falls back
       # to the GitHub Actions token so CI records the real authentication
@@ -43,6 +44,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install GitHub Copilot CLI from the official installer
+        id: install_cli
         shell: bash
         run: |
           set -euo pipefail
@@ -55,6 +57,7 @@ jobs:
           "$COPILOT_BIN" --version
 
       - name: Register the DSG marketplace in the real Copilot CLI
+        id: marketplace
         shell: bash
         run: |
           set -euo pipefail
@@ -70,6 +73,7 @@ jobs:
           grep -q 'dsg-governance' /tmp/dsg-marketplace.txt
 
       - name: Install the DSG governance plugin in the real Copilot CLI
+        id: plugin_install
         shell: bash
         run: |
           set -euo pipefail
@@ -78,6 +82,7 @@ jobs:
           grep -q 'dsg-governance' /tmp/dsg-plugins.txt
 
       - name: Activate an isolated free DSG key for this conformance run
+        id: activate
         shell: bash
         run: |
           set -euo pipefail
@@ -93,6 +98,7 @@ jobs:
           jq -e '.decision == "ACTIVATED" and .account.status == "active" and .account.plan == "free"' /tmp/dsg-activation.json >/dev/null
 
       - name: Configure client-managed authenticated DSG MCP
+        id: mcp_config
         shell: bash
         run: |
           set -euo pipefail
@@ -106,6 +112,7 @@ jobs:
           grep -q 'dsg-one-e2e' /tmp/dsg-mcp-list.txt
 
       - name: Call dsg_status through Copilot CLI and the authenticated MCP server
+        id: status_call
         shell: bash
         run: |
           set -euo pipefail
@@ -117,6 +124,7 @@ jobs:
           grep -Eqi 'READY|ready' /tmp/dsg-copilot-status.txt
 
       - name: Run a minimal governed execution through the installed plugin
+        id: governed_flow
         shell: bash
         run: |
           set -euo pipefail
@@ -130,21 +138,51 @@ jobs:
           grep -Eqi 'receipt[_ -]?hash|receipt' /tmp/dsg-copilot-proof.txt
 
       - name: Write non-secret E2E evidence
+        id: evidence
         if: always()
         shell: bash
+        env:
+          INSTALL_CLI_OUTCOME: ${{ steps.install_cli.outcome }}
+          MARKETPLACE_OUTCOME: ${{ steps.marketplace.outcome }}
+          PLUGIN_INSTALL_OUTCOME: ${{ steps.plugin_install.outcome }}
+          ACTIVATE_OUTCOME: ${{ steps.activate.outcome }}
+          MCP_CONFIG_OUTCOME: ${{ steps.mcp_config.outcome }}
+          STATUS_CALL_OUTCOME: ${{ steps.status_call.outcome }}
+          GOVERNED_FLOW_OUTCOME: ${{ steps.governed_flow.outcome }}
         run: |
           set -euo pipefail
+          STATUS=FAIL
+          if [[ "$INSTALL_CLI_OUTCOME" == success \
+             && "$MARKETPLACE_OUTCOME" == success \
+             && "$PLUGIN_INSTALL_OUTCOME" == success \
+             && "$ACTIVATE_OUTCOME" == success \
+             && "$MCP_CONFIG_OUTCOME" == success \
+             && "$STATUS_CALL_OUTCOME" == success \
+             && "$GOVERNED_FLOW_OUTCOME" == success ]]; then
+            STATUS=PASS
+          fi
           mkdir -p .evidence
           jq -n \
+            --arg status "$STATUS" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg run_url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --arg commit "$GITHUB_SHA" \
             --arg event "$GITHUB_EVENT_NAME" \
             --arg tested_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg marketplace "dsg-agent-plugins" \
             --arg plugin "dsg-governance" \
-            '{run_id:$run_id,run_attempt:$run_attempt,commit:$commit,event:$event,tested_at:$tested_at,marketplace:$marketplace,plugin:$plugin,secret_values_recorded:false}' \
+            --arg install_cli "$INSTALL_CLI_OUTCOME" \
+            --arg marketplace_outcome "$MARKETPLACE_OUTCOME" \
+            --arg plugin_install "$PLUGIN_INSTALL_OUTCOME" \
+            --arg activate "$ACTIVATE_OUTCOME" \
+            --arg mcp_config "$MCP_CONFIG_OUTCOME" \
+            --arg status_call "$STATUS_CALL_OUTCOME" \
+            --arg governed_flow "$GOVERNED_FLOW_OUTCOME" \
+            --arg token_configured "$COPILOT_E2E_TOKEN_CONFIGURED" \
+            '{status:$status,run_id:$run_id,run_attempt:$run_attempt,run_url:$run_url,commit:$commit,event:$event,tested_at:$tested_at,marketplace:$marketplace,plugin:$plugin,copilot_e2e_token_configured:($token_configured=="true"),steps:{install_cli:$install_cli,marketplace:$marketplace_outcome,plugin_install:$plugin_install,activate_free_key:$activate,mcp_config:$mcp_config,status_call:$status_call,governed_flow:$governed_flow},secret_values_recorded:false}' \
             > .evidence/copilot-agent-plugin-e2e.json
+          cat .evidence/copilot-agent-plugin-e2e.json
 
       - name: Upload E2E evidence
         if: always()
@@ -153,3 +191,23 @@ jobs:
           name: copilot-agent-plugin-e2e-${{ github.run_id }}
           path: .evidence/copilot-agent-plugin-e2e.json
           if-no-files-found: error
+
+      - name: Persist E2E receipt to main
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .evidence/copilot-agent-plugin-e2e.json
+          cp .evidence/copilot-agent-plugin-e2e.json /tmp/copilot-agent-plugin-e2e.json
+          git fetch origin main
+          git checkout -B copilot-e2e-receipt origin/main
+          mkdir -p .deployment
+          cp /tmp/copilot-agent-plugin-e2e.json .deployment/copilot-agent-plugin-e2e.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .deployment/copilot-agent-plugin-e2e.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: record Copilot Agent Plugin E2E [skip ci]"
+          git push origin HEAD:main
