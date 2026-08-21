@@ -25,6 +25,7 @@ jobs:
       MARKETPLACE_NAME: dsg-agent-plugins
       PLUGIN_NAME: dsg-governance
       MCP_SERVER_NAME: dsg-one
+      DSG_AVAILABLE_TOOLS: skill,dsg-one-dsg_status,dsg-one-dsg_create_plan,dsg-one-dsg_read_plan,dsg-one-dsg_approve_plan,dsg-one-dsg_verify_plan_alignment,dsg-one-dsg_verify_constraints,dsg-one-dsg_record_execution,dsg-one-dsg_submit_evidence,dsg-one-dsg_verify_execution,dsg-one-dsg_get_proof
       EXPECTED_OUTPUT: DSG_COPILOT_E2E_OK
       EXPECTED_OUTPUT_SHA256: b6811fb2f0dba5fd7b6c6f5946ef362c995e93259cf884deb13b939036cdaee5
 
@@ -150,6 +151,7 @@ jobs:
           copilot -sp \
             'Use only the MCP server named dsg-one. Call dsg_status exactly once. Return one compact JSON object with keys tool and ready.' \
             --additional-mcp-config=@/tmp/dsg-auth-mcp.json \
+            --available-tools='dsg-one-dsg_status' \
             --allow-tool="$MCP_SERVER_NAME" \
             >/tmp/copilot-dsg-status.out
           test -s /tmp/copilot-dsg-status.out
@@ -168,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           prompt=$(cat <<'PROMPT'
-          Follow the installed dsg-governed-execution skill. Use only MCP tools from the server named dsg-one. The session MCP override already supplies the client-managed credential; do not try to use or inspect any credential yourself.
+          Follow the installed dsg-governed-execution skill. Use only MCP tools from the server named dsg-one. No shell, web, file, or sub-agent tools are available in this session.
 
           This CI workflow is the operator authorization for exactly one synthetic bounded test action: emit the literal text DSG_COPILOT_E2E_OK. Do not perform or claim any other action.
 
@@ -197,12 +199,13 @@ jobs:
           10. Return RAW JSON ONLY, no markdown, with exactly these keys copied from the verified proof response:
               decision, verification, proof_id, receipt_hash.
 
-          Do not invent any identifier, hash, verdict, proof, or evidence. If any tool refuses or fails, return raw JSON with decision="ERROR" and include the actual tool error text in verification. Do not claim a proof after any refusal.
+          Do not invent any identifier, hash, verdict, proof, or evidence. If any DSG tool refuses or fails, return raw JSON with decision="ERROR" and include the actual tool error text in verification. Do not claim a proof after any refusal.
           PROMPT
           )
 
           copilot -sp "$prompt" \
             --additional-mcp-config=@/tmp/dsg-auth-mcp.json \
+            --available-tools="$DSG_AVAILABLE_TOOLS" \
             --allow-tool="$MCP_SERVER_NAME" \
             >/tmp/copilot-governed.out
 
