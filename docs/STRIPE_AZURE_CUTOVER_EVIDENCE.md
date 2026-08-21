@@ -33,15 +33,19 @@ Observed at `2026-08-21T11:26:17Z`:
 
 Probe artifact: `cinema-runtime-probe-e2404a446076a373004e3062853afed6ca177c0e`, artifact id `9444713973`.
 
-## Verified live catalog
+## Verified live catalog and webhook
 
-The non-mutating production diagnostic immediately before cutover verified:
+The production diagnostics verified:
 
 - Product: `prod_V6xAufMNUNF6KV` — active live.
 - Price: `price_1U6jRJAZNzhgTUPVUfr3tWaD` — active live USD $0.05 per verified proof.
 - Billing Meter: `mtr_61VG7AFaN4e6m4T9C41AZNzhgTUPVFWq` — active live.
 - Meter event: `dsg_verified_execution`.
+- Azure webhook endpoint: `we_1U6qZQAZNzhgTUPVdYAhGRqR` — enabled live.
 - Azure webhook target: `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/webhook/stripe`.
+- Required event scope present: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`.
+
+Post-cutover webhook diagnostic: run `32476720332`, rerun job `96755998040`, artifact id `9444741997`.
 
 ## Truth boundary
 
