@@ -752,6 +752,30 @@ jobs:
             jq -e '.enforcement_ready == false or .metering_enforced == false' /tmp/billing-status.json >/dev/null
           fi
 
+          # Everything above reads what the app reports about itself. Enforcement
+          # is a claim about what the gate actually refuses, so test the refusal:
+          # an unauthenticated evaluation must be denied when enforcement is on
+          # and served when it is off. Without this the deployment could report
+          # enforcement live while still answering every anonymous caller.
+          ANON_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/verify/evaluate" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/marketplace-request.json)
+          if [[ "$REVENUE_ENFORCE" == "1" ]]; then
+            # An absent key resolves to UNKNOWN_KEY, which the engine maps to 401.
+            if [[ "$ANON_CODE" != "401" ]]; then
+              echo "Enforcement is on but an unauthenticated evaluation answered $ANON_CODE, not 401." >&2
+              exit 1
+            fi
+            echo 'Enforcement verified: an unauthenticated evaluation is refused.'
+          else
+            if [[ "$ANON_CODE" != "200" ]]; then
+              echo "Enforcement is off but an unauthenticated evaluation answered $ANON_CODE, not 200." >&2
+              exit 1
+            fi
+            echo 'Free public path verified: an unauthenticated evaluation is still served.'
+          fi
+
           # The ledger must live on the mounted share, not the container
           # filesystem, or it is lost on the next restart.
           if [[ "${REVENUE_STORAGE_READY:-0}" == "1" && "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
