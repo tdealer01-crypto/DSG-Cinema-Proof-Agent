@@ -1,0 +1,155 @@
+name: Copilot Agent Plugin E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/plugin/**'
+      - 'marketplace/agent-plugin/**'
+      - 'tests/test_agent_plugin_v1.py'
+      - '.github/workflows/copilot-agent-plugin-e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/plugin/**'
+      - 'marketplace/agent-plugin/**'
+      - '.github/workflows/copilot-agent-plugin-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copilot-agent-plugin-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  copilot-cli-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      COPILOT_HOME: ${{ runner.temp }}/copilot-home
+      DSG_ORIGIN: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      DSG_MCP_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp
+      GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS: 'true'
+      # A user-owned fine-grained token with the Copilot Requests permission can
+      # be supplied as COPILOT_E2E_TOKEN. The workflow intentionally falls back
+      # to the GitHub Actions token so CI records the real authentication
+      # boundary instead of silently skipping client conformance.
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_E2E_TOKEN || github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GitHub Copilot CLI from the official installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/copilot-bin"
+          mkdir -p "$PREFIX"
+          curl -fsSL https://gh.io/copilot-install | PREFIX="$PREFIX" bash
+          COPILOT_BIN=$(find "$PREFIX" -type f -name copilot -perm -111 | head -n 1)
+          test -n "$COPILOT_BIN"
+          echo "$(dirname "$COPILOT_BIN")" >> "$GITHUB_PATH"
+          "$COPILOT_BIN" --version
+
+      - name: Register the DSG marketplace in the real Copilot CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$COPILOT_HOME"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            SOURCE="$GITHUB_WORKSPACE"
+          else
+            SOURCE="tdealer01-crypto/DSG-Cinema-Proof-Agent"
+          fi
+          copilot plugin marketplace add "$SOURCE"
+          copilot plugin marketplace list
+          copilot plugin marketplace browse dsg-agent-plugins | tee /tmp/dsg-marketplace.txt
+          grep -q 'dsg-governance' /tmp/dsg-marketplace.txt
+
+      - name: Install the DSG governance plugin in the real Copilot CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          copilot plugin install dsg-governance@dsg-agent-plugins
+          copilot plugin list | tee /tmp/dsg-plugins.txt
+          grep -q 'dsg-governance' /tmp/dsg-plugins.txt
+
+      - name: Activate an isolated free DSG key for this conformance run
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTIVATION_ID="copilot-cli-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          curl --fail-with-body --silent --show-error \
+            --request POST "$DSG_ORIGIN/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data "$(jq -n --arg id "$ACTIVATION_ID" '{channel:"copilot_cli_e2e",activation_id:$id,display_name:"Copilot CLI agent plugin E2E"}')" \
+            > /tmp/dsg-activation.json
+          DSG_API_KEY=$(jq -er '.api_key' /tmp/dsg-activation.json)
+          echo "::add-mask::$DSG_API_KEY"
+          echo "DSG_API_KEY=$DSG_API_KEY" >> "$GITHUB_ENV"
+          jq -e '.decision == "ACTIVATED" and .account.status == "active" and .account.plan == "free"' /tmp/dsg-activation.json >/dev/null
+
+      - name: Configure client-managed authenticated DSG MCP
+        shell: bash
+        run: |
+          set -euo pipefail
+          copilot mcp add \
+            --transport http \
+            --header "X-DSG-API-Key: $DSG_API_KEY" \
+            --tools '*' \
+            dsg-one-e2e "$DSG_MCP_URL"
+          # Never use --show-secrets in CI.
+          copilot mcp list | tee /tmp/dsg-mcp-list.txt
+          grep -q 'dsg-one-e2e' /tmp/dsg-mcp-list.txt
+
+      - name: Call dsg_status through Copilot CLI and the authenticated MCP server
+        shell: bash
+        run: |
+          set -euo pipefail
+          copilot -sp \
+            --available-tools='dsg-one-e2e(dsg_status)' \
+            --allow-tool='dsg-one-e2e(dsg_status)' \
+            'Call dsg_status exactly once using the dsg-one-e2e MCP server. Do not use shell or file tools. Report only the server status and verifier readiness. Do not infer READY if the tool call fails.' \
+            | tee /tmp/dsg-copilot-status.txt
+          grep -Eqi 'READY|ready' /tmp/dsg-copilot-status.txt
+
+      - name: Run a minimal governed execution through the installed plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          copilot -sp \
+            --available-tools='dsg-one-e2e' \
+            --allow-tool='dsg-one-e2e' \
+            'Use the installed dsg-governance plugin instructions and only the dsg-one-e2e MCP tools. This CI run is the operator-approved conformance test. Create the smallest plan that authorizes exactly one no-external-side-effect test action named emit_sample_receipt with message copilot-cli-e2e. Use every hash, identifier, verdict, and verifier result only from DSG responses; never invent them. Approve only the exact plan hash returned by DSG. Verify alignment and constraints before recording the test execution. Submit only truthful evidence for the bounded test action, verify execution, then read the stored proof. Stop and report failure if any required fact is unavailable. At the end return compact JSON containing decision, proof_id, receipt_hash, evidence_complete, replay_match, and verification.' \
+            | tee /tmp/dsg-copilot-proof.txt
+          grep -q 'ALLOW' /tmp/dsg-copilot-proof.txt
+          grep -Eqi 'proof[_ -]?id|proof' /tmp/dsg-copilot-proof.txt
+          grep -Eqi 'receipt[_ -]?hash|receipt' /tmp/dsg-copilot-proof.txt
+
+      - name: Write non-secret E2E evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .evidence
+          jq -n \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg commit "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg tested_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg marketplace "dsg-agent-plugins" \
+            --arg plugin "dsg-governance" \
+            '{run_id:$run_id,run_attempt:$run_attempt,commit:$commit,event:$event,tested_at:$tested_at,marketplace:$marketplace,plugin:$plugin,secret_values_recorded:false}' \
+            > .evidence/copilot-agent-plugin-e2e.json
+
+      - name: Upload E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-agent-plugin-e2e-${{ github.run_id }}
+          path: .evidence/copilot-agent-plugin-e2e.json
+          if-no-files-found: error
