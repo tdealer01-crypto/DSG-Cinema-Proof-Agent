@@ -12,9 +12,17 @@ ENGINE_VERSION = "dsg-one-independent-verification-1.0.0"
 __all__ = ["API_VERSION", "ENGINE_VERSION", "install", "router"]
 
 
+def install(app) -> None:
+    """Mount independent verification and the paid Marketplace bridge together."""
+    import importlib
+
+    importlib.import_module(f"{__name__}.router").install(app)
+    importlib.import_module("revenue.github_marketplace").install(app)
+
+
 def __getattr__(name: str):  # lazy so importing constants does not pull FastAPI
-    if name in {"router", "install"}:
+    if name == "router":
         import importlib
 
-        return getattr(importlib.import_module(f"{__name__}.router"), name)
+        return importlib.import_module(f"{__name__}.router").router
     raise AttributeError(name)
