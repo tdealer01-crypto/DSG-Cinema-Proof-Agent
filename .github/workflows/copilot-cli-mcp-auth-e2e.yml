@@ -53,9 +53,6 @@ jobs:
         env:
           HOME: ${{ runner.temp }}/copilot-auth-home
           COPILOT_HOME: ${{ runner.temp }}/copilot-auth-home/.copilot
-          # User-managed fine-grained PAT with the Copilot Requests account
-          # permission takes precedence when configured. The Actions token is
-          # tested only as a fallback and is never assumed to have that scope.
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -73,8 +70,6 @@ jobs:
             echo 'COPILOT_AUTH_STATUS=ACTION_REQUIRED' >> "$GITHUB_ENV"
             echo 'Copilot agent authentication is not available to this workflow.' >&2
             echo 'A user-owned fine-grained token with the Copilot Requests permission is required for headless agent/tool-call E2E.' >&2
-            # Print only the CLI diagnostic. GitHub masks workflow tokens; no
-            # token values are ever intentionally echoed by this workflow.
             sed -n '1,20p' /tmp/copilot-auth.err >&2 || true
           fi
           rm -f /tmp/copilot-auth.out /tmp/copilot-auth.err
@@ -125,6 +120,28 @@ jobs:
             --tools '*' \
             "$MCP_SERVER_NAME" "$MCP_URL" >/tmp/mcp-add.txt
           rm -f /tmp/mcp-add.txt
+          copilot mcp list | grep -F "$MCP_SERVER_NAME"
+
+      - name: Verify authenticated DSG MCP directly
+        id: direct_mcp
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --header "X-DSG-API-Key: $DSG_API_KEY" \
+            --data '{"jsonrpc":"2.0","id":"copilot-e2e-status","method":"tools/call","params":{"name":"dsg_status","arguments":{}}}' \
+            > /tmp/dsg-direct-status.json
+
+          jq -e '
+            .result.isError == false and
+            .result.structuredContent.status == "READY" and
+            .result.structuredContent.verification_backend.ready == true
+          ' /tmp/dsg-direct-status.json >/dev/null
+          echo 'DIRECT_MCP_STATUS=PASS' >> "$GITHUB_ENV"
+          rm -f /tmp/dsg-direct-status.json
 
       - name: Ask Copilot agent to use DSG status tool
         id: agent_call
@@ -137,18 +154,29 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # GitHub Copilot CLI MCP permission patterns use ServerName(tool_name),
-          # not glob syntax such as ServerName/*. Keep this conformance session
-          # restricted to the read-only dsg_status tool.
+          set +e
           copilot -sp \
-            'Use the DSG MCP server to call the dsg_status tool exactly once. Return only a compact JSON object with {"tool":"dsg_status","ready":true} when DSG itself reports ready. Do not infer readiness if the tool call fails.' \
+            'Use only the MCP server named dsg-one-auth. Call its dsg_status tool exactly once. Return a compact JSON object containing the tool name and the READY/DEGRADED status actually returned by DSG. Do not infer status if the tool call fails.' \
+            --disable-mcp-server=dsg-one \
             --allow-tool="$MCP_SERVER_NAME(dsg_status)" \
-            >/tmp/copilot-dsg-status.out
+            >/tmp/copilot-dsg-status.out 2>/tmp/copilot-dsg-status.err
+          rc=$?
+          set -e
 
-          test -s /tmp/copilot-dsg-status.out
+          if [[ "$rc" != '0' ]]; then
+            echo "Copilot DSG status call exited with code $rc" >&2
+            sed -n '1,40p' /tmp/copilot-dsg-status.err >&2 || true
+            exit "$rc"
+          fi
+
+          # The requested response contains only status metadata; printing it is
+          # safe and lets CI distinguish a model formatting mismatch from a
+          # failed MCP invocation without exposing credentials.
+          sed -n '1,20p' /tmp/copilot-dsg-status.out
           grep -Fq 'dsg_status' /tmp/copilot-dsg-status.out
-          grep -Eqi '"?ready"?[[:space:]]*:[[:space:]]*true' /tmp/copilot-dsg-status.out
+          grep -Eqi '("status"[[:space:]]*:[[:space:]]*"READY"|"ready"[[:space:]]*:[[:space:]]*true|status[[:space:]]*[:=][[:space:]]*READY)' /tmp/copilot-dsg-status.out
           echo 'AGENT_TOOL_CALL_STATUS=PASS' >> "$GITHUB_ENV"
+          rm -f /tmp/copilot-dsg-status.out /tmp/copilot-dsg-status.err
 
       - name: Build sanitized E2E evidence
         if: always()
@@ -156,6 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           export COPILOT_AUTH_STATUS="${COPILOT_AUTH_STATUS:-ACTION_REQUIRED}"
+          export DIRECT_MCP_STATUS="${DIRECT_MCP_STATUS:-NOT_RUN}"
           export AGENT_TOOL_CALL_STATUS="${AGENT_TOOL_CALL_STATUS:-NOT_RUN}"
           copilot_version=$(copilot --version | head -n 1 | sed 's/[[:space:]]*$//')
           export COPILOT_VERSION="$copilot_version"
@@ -165,7 +194,7 @@ jobs:
           from pathlib import Path
 
           evidence = {
-              'schema_version': '1.0',
+              'schema_version': '1.1',
               'client': 'GitHub Copilot CLI',
               'client_version': os.environ['COPILOT_VERSION'],
               'marketplace_repository': os.environ['MARKETPLACE_REPO'],
@@ -173,16 +202,17 @@ jobs:
               'plugin_name': os.environ['PLUGIN_NAME'],
               'mcp_url': os.environ['MCP_URL'],
               'copilot_agent_authentication': os.environ['COPILOT_AUTH_STATUS'],
+              'direct_authenticated_dsg_status': os.environ['DIRECT_MCP_STATUS'],
               'agent_initiated_dsg_status_tool_call': os.environ['AGENT_TOOL_CALL_STATUS'],
               'dsg_key_created_only_after_copilot_auth': True,
               'credentials_retained': False,
               'required_ci_secret_when_action_required': 'COPILOT_CLI_TOKEN (user-owned fine-grained token with Copilot Requests permission)',
-              'truth_boundary': 'Copilot CLI marketplace installation is already PASS. This workflow claims an agent-driven authenticated DSG MCP call only when Copilot authentication and the dsg_status invocation both pass.'
+              'truth_boundary': 'Client installation, Copilot authentication, direct authenticated MCP status, and agent-driven dsg_status are independent gates. Agent E2E is PASS only when all applicable gates pass.'
           }
           Path('copilot-cli-mcp-auth-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
           PY
           cat copilot-cli-mcp-auth-e2e.json >> "$GITHUB_STEP_SUMMARY"
-          rm -f /tmp/copilot-dsg-status.out
+          rm -f /tmp/copilot-dsg-status.out /tmp/copilot-dsg-status.err
 
       - name: Upload sanitized E2E evidence
         if: always()
