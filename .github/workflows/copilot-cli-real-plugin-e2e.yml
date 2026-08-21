@@ -25,6 +25,8 @@ jobs:
       MARKETPLACE_NAME: dsg-agent-plugins
       PLUGIN_NAME: dsg-governance
       MCP_SERVER_NAME: dsg-one-e2e
+      EXPECTED_OUTPUT: DSG_COPILOT_E2E_OK
+      EXPECTED_OUTPUT_SHA256: b6811fb2f0dba5fd7b6c6f5946ef362c995e93259cf884deb13b939036cdaee5
 
     steps:
       - name: Checkout
@@ -141,6 +143,115 @@ jobs:
           grep -Fq 'dsg_status' /tmp/copilot-dsg-status.out
           echo 'AGENT_TOOL_CALL_STATUS=PASS' >> "$GITHUB_ENV"
 
+      - name: Run governed execution through Copilot agent
+        id: governed_execution
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/copilot-real-home
+          COPILOT_HOME: ${{ runner.temp }}/copilot-real-home/.copilot
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS: 'true'
+        run: |
+          set -euo pipefail
+          prompt=$(cat <<'PROMPT'
+          Use only the DSG MCP server and follow the installed dsg-governed-execution skill.
+
+          This CI workflow is the operator authorization for exactly one synthetic bounded test action: emit the literal text DSG_COPILOT_E2E_OK. Do not perform or claim any other action.
+
+          Complete the entire DSG flow using MCP tools and the exact raw material below:
+          1. Call dsg_status and stop unless DSG is ready.
+          2. Call dsg_create_plan with:
+             title = "Copilot CLI bounded E2E literal emission"
+             agent_identity = "github-copilot"
+             channel = "copilot_cli"
+             steps = [{"step_id":"emit","action":"emit","target":"DSG_COPILOT_E2E_OK"}]
+             constraints = [{"constraint_id":"cost_cap","field":"cost_microunits","op":"lte","value":1000}]
+          3. Use the plan_id and plan_hash returned by DSG. Call dsg_approve_plan with approver "github-actions-e2e" and exactly that returned plan_hash.
+          4. Call dsg_verify_plan_alignment for that plan_id with exactly this action:
+             {"step_id":"emit","action":"emit","target":"DSG_COPILOT_E2E_OK"}
+          5. Call dsg_verify_constraints for that plan_id with facts {"cost_microunits":0}.
+          6. The authorized synthetic action output is exactly DSG_COPILOT_E2E_OK. Record it with dsg_record_execution using:
+             agent_identity = "github-copilot"
+             environment = "ci"
+             channel = "copilot_cli"
+             cost_microunits = 0
+             actions = [{"step_id":"emit","action":"emit","target":"DSG_COPILOT_E2E_OK","output_sha256":"b6811fb2f0dba5fd7b6c6f5946ef362c995e93259cf884deb13b939036cdaee5"}]
+          7. Call dsg_submit_evidence for the returned execution_id with exactly one real content artifact:
+             {"artifact_id":"emit-output","source":"copilot-cli","step_id":"emit","media_type":"text/plain","content":"DSG_COPILOT_E2E_OK"}
+          8. Call dsg_verify_execution for the same execution_id with require_content_evidence=true.
+          9. Only if verification returns a proof_id, call dsg_get_proof with that proof_id.
+          10. Return RAW JSON ONLY, no markdown, with exactly these keys copied from the verified proof response:
+              decision, verification, proof_id, receipt_hash.
+
+          Do not invent any identifier, hash, verdict, proof, or evidence. If any tool refuses or fails, return raw JSON with decision="ERROR" and do not claim a proof.
+          PROMPT
+          )
+
+          copilot -sp "$prompt" \
+            --allow-tool="$MCP_SERVER_NAME" \
+            >/tmp/copilot-governed.out
+
+          test -s /tmp/copilot-governed.out
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          text = Path('/tmp/copilot-governed.out').read_text(encoding='utf-8').strip()
+          start = text.find('{')
+          end = text.rfind('}')
+          if start < 0 or end < start:
+              raise SystemExit(f'Copilot did not return JSON: {text[:500]}')
+          result = json.loads(text[start:end + 1])
+          if result.get('decision') != 'ALLOW':
+              raise SystemExit(f'governed decision was not ALLOW: {result}')
+          if result.get('verification') != 'VERIFIED_GLOBAL_OPTIMUM':
+              raise SystemExit(f'verification was not VERIFIED_GLOBAL_OPTIMUM: {result}')
+          proof_id = str(result.get('proof_id') or '')
+          receipt_hash = str(result.get('receipt_hash') or '')
+          if not proof_id.startswith('proof_'):
+              raise SystemExit(f'invalid proof_id: {proof_id}')
+          if not re.fullmatch(r'[0-9a-f]{64}', receipt_hash):
+              raise SystemExit(f'invalid receipt_hash: {receipt_hash}')
+          Path('/tmp/copilot-governed-result.json').write_text(json.dumps(result, sort_keys=True) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as handle:
+              handle.write(f'PROOF_ID={proof_id}\n')
+              handle.write(f'AGENT_RECEIPT_HASH={receipt_hash}\n')
+              handle.write('GOVERNED_EXECUTION_STATUS=PASS\n')
+          PY
+
+      - name: Verify proof directly against Azure MCP
+        if: steps.copilot_auth.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -cn \
+            --arg proof_id "$PROOF_ID" \
+            '{jsonrpc:"2.0",id:"proof-readback",method:"tools/call",params:{name:"dsg_get_proof",arguments:{proof_id:$proof_id}}}' \
+            >/tmp/proof-request.json
+
+          code=$(curl --silent --show-error \
+            --output /tmp/proof-readback.json \
+            --write-out '%{http_code}' \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --header "X-DSG-API-Key: $DSG_API_KEY" \
+            --data @/tmp/proof-request.json || true)
+          [[ "$code" == '200' ]]
+          jq -e '
+            .result.isError == false and
+            .result.structuredContent.decision == "ALLOW" and
+            .result.structuredContent.verification == "VERIFIED_GLOBAL_OPTIMUM" and
+            .result.structuredContent.receipt_hash_verified == true
+          ' /tmp/proof-readback.json >/dev/null
+          SERVER_RECEIPT_HASH=$(jq -r '.result.structuredContent.receipt_hash // empty' /tmp/proof-readback.json)
+          test -n "$SERVER_RECEIPT_HASH"
+          test "$SERVER_RECEIPT_HASH" = "$AGENT_RECEIPT_HASH"
+          echo 'PROOF_READBACK_STATUS=PASS' >> "$GITHUB_ENV"
+          rm -f /tmp/proof-request.json /tmp/proof-readback.json
+
       - name: Build sanitized evidence
         if: always()
         shell: bash
@@ -148,12 +259,16 @@ jobs:
           set -euo pipefail
           export COPILOT_AUTH_STATUS="${COPILOT_AUTH_STATUS:-ACTION_REQUIRED}"
           export AGENT_TOOL_CALL_STATUS="${AGENT_TOOL_CALL_STATUS:-NOT_RUN}"
+          export GOVERNED_EXECUTION_STATUS="${GOVERNED_EXECUTION_STATUS:-NOT_RUN}"
+          export PROOF_READBACK_STATUS="${PROOF_READBACK_STATUS:-NOT_RUN}"
+          export PROOF_ID="${PROOF_ID:-}"
+          export AGENT_RECEIPT_HASH="${AGENT_RECEIPT_HASH:-}"
           export COPILOT_VERSION="$(copilot --version | head -n 1 | sed 's/[[:space:]]*$//')"
           python - <<'PY'
           import json, os
           from pathlib import Path
           evidence = {
-              'schema_version': '1.0',
+              'schema_version': '1.1',
               'client': 'GitHub Copilot CLI',
               'client_version': os.environ['COPILOT_VERSION'],
               'marketplace_repository': os.environ['MARKETPLACE_REPO'],
@@ -162,13 +277,18 @@ jobs:
               'marketplace_install': 'PASS',
               'copilot_agent_authentication': os.environ['COPILOT_AUTH_STATUS'],
               'agent_initiated_dsg_status_tool_call': os.environ['AGENT_TOOL_CALL_STATUS'],
+              'governed_execution': os.environ['GOVERNED_EXECUTION_STATUS'],
+              'proof_readback': os.environ['PROOF_READBACK_STATUS'],
+              'proof_id': os.environ['PROOF_ID'] or None,
+              'receipt_hash': os.environ['AGENT_RECEIPT_HASH'] or None,
+              'expected_output_sha256': os.environ['EXPECTED_OUTPUT_SHA256'],
               'credentials_retained': False,
-              'truth_boundary': 'PASS for marketplace installation is independent from agent-driven MCP E2E. Full agent E2E is PASS only when Copilot request authentication and dsg_status both pass.'
+              'truth_boundary': 'Full real-client E2E is PASS only when marketplace install, Copilot authentication, authenticated DSG MCP use, governed execution, and independent proof read-back all pass.'
           }
           Path('copilot-cli-real-plugin-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
           PY
           cat copilot-cli-real-plugin-e2e.json >> "$GITHUB_STEP_SUMMARY"
-          rm -f /tmp/copilot-dsg-status.out
+          rm -f /tmp/copilot-dsg-status.out /tmp/copilot-governed.out /tmp/copilot-governed-result.json
 
       - name: Upload sanitized evidence
         if: always()
