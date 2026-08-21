@@ -12,7 +12,7 @@ copilot plugin marketplace browse dsg-agent-plugins
 copilot plugin install dsg-governance@dsg-agent-plugins
 ```
 
-These commands are covered by a real GitHub Copilot CLI client-install E2E on a GitHub-hosted runner. Authenticated agent-driven `dsg_status` is covered by a separate gated E2E and permanent evidence below.
+These commands are covered by a real GitHub Copilot CLI client-install E2E on a GitHub-hosted runner. Authenticated agent-driven `dsg_status` and one benign full governed execution through proof-receipt readback are covered by separate gated E2E workflows and permanent evidence below.
 
 ## Package contents
 
@@ -74,7 +74,7 @@ Checkout creation never grants entitlement. The existing DSG signed Stripe webho
 | Copilot CLI client install | GitHub Actions run `32482954936` used GitHub Copilot CLI `1.0.80` to add `dsg-agent-plugins`, browse it, install `dsg-governance@dsg-agent-plugins`, and confirm plugin `v1.0.0` in the installed-plugin list. Permanent evidence: `evidence/client/copilot-cli-plugin-e2e-2026-08-21.json` | PASS |
 | Copilot CLI agent authentication in CI | GitHub Actions run `32497793523` authenticated GitHub Copilot CLI `1.0.80` with the configured user-owned `COPILOT_CLI_TOKEN` before any DSG key was issued. Permanent evidence: `evidence/client/copilot-cli-mcp-auth-e2e-2026-08-21.json` | PASS |
 | Copilot CLI authenticated DSG MCP `dsg_status` tool call | Run `32497793523` activated an ephemeral free DSG key only after Copilot auth, registered `dsg-one-auth`, independently verified authenticated `dsg_status = READY`, and then had the Copilot agent invoke `dsg_status` successfully. Credentials were not retained. Permanent evidence: `evidence/client/copilot-cli-mcp-auth-e2e-2026-08-21.json` | PASS |
-| Copilot CLI full governed execution + proof receipt | A real Copilot CLI client has not yet completed create-plan → approval → alignment → constraints → execution → evidence → verify → proof readback as one stored client-conformance run | NOT VERIFIED |
+| Copilot CLI full governed execution + proof receipt | Run `32499134400` completed one benign run-bound conformance flow through plan creation, approval, alignment, exact-Z3 constraints, execution record, content-verified evidence, replay, execution verification and proof readback. Independent post-agent checks re-read `proof_01m0jfx6fvcm1fbxt6w4vh` and required `ALLOW`, `VERIFIED_GLOBAL_OPTIMUM`, complete evidence/replay, and `receipt_hash_verified = true`. Permanent evidence: `evidence/client/copilot-cli-full-governed-e2e-2026-08-21.json` | PASS |
 | Other Agent Plugins clients | Must be tested client by client | NOT VERIFIED |
 
 Package conformance is not client compatibility. A client row changes to PASS only when a real client run produces stored evidence for that exact surface.
@@ -83,9 +83,9 @@ Package conformance is not client compatibility. A client row changes to PASS on
 
 The portable package deliberately contains no `X-DSG-API-Key` header. Store DSG credentials using the client/application's credential mechanism. Agent Plugins 1.0 does not define a portable secret-reference field for remote HTTP headers, so this package does not fake one.
 
-For automated Copilot CLI agent/tool-call testing, the repository workflow expects a secret named `COPILOT_CLI_TOKEN`. It must be a user-owned fine-grained GitHub token with the **Copilot Requests** account permission. Do not put this token in the plugin package, repository files, issue comments, or workflow logs.
+For automated Copilot CLI agent/tool-call testing, the repository workflows expect a secret named `COPILOT_CLI_TOKEN`. It must be a user-owned fine-grained GitHub token with the **Copilot Requests** account permission. Do not put this token in the plugin package, repository files, issue comments, or workflow logs.
 
-The workflow performs Copilot authentication before calling `/billing/activate`, so an unavailable Copilot credential does not create additional DSG free accounts. If authentication passes, the DSG API key is generated for that CI attempt, masked immediately, used only in the ephemeral runner, and not retained in artifacts.
+The workflows perform Copilot authentication before calling `/billing/activate`, so an unavailable Copilot credential does not create additional DSG free accounts. If authentication passes, the DSG API key is generated for that CI attempt, masked immediately, used only in the ephemeral runner, and not retained in artifacts.
 
 ## User-visible result
 
@@ -99,4 +99,4 @@ A useful integration must show, without requiring log inspection:
 
 ## Truth boundary
 
-This directory is a portable package and CI target. The marketplace catalog is proven discoverable/installable by GitHub Copilot CLI `1.0.80`, and run `32497793523` proves authenticated agent-driven `dsg_status` against the Azure DSG MCP endpoint. A full governed execution through plan creation, approval, alignment, constraints, evidence, replay, exact Z3 verification, and proof-receipt readback from Copilot CLI is still not verified and must not be claimed PASS until that client E2E is stored as evidence.
+This directory is a portable package and CI target. The marketplace catalog is proven discoverable/installable by GitHub Copilot CLI `1.0.80`; run `32497793523` proves authenticated agent-driven `dsg_status`; and run `32499134400` proves one benign Copilot CLI full governed conformance execution reached an independently re-read `ALLOW · VERIFIED_GLOBAL_OPTIMUM` proof receipt with complete content evidence, replay match, and a verified receipt hash against the Azure DSG MCP endpoint. The exercised action was only a CI conformance record. This evidence does **not** claim that Copilot deployed or changed an external production resource. VS Code and other Agent Plugins clients remain unverified until client-specific evidence exists.
