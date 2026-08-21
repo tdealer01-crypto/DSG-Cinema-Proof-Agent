@@ -36,7 +36,7 @@ SKU_CATALOG: dict[str, Sku] = {
     "verified_execution": Sku(
         sku="verified_execution",
         title="Verified Execution proof receipt",
-        list_price_micros=100_000,
+        list_price_micros=50_000,
     ),
     "stripe_policy_decision": Sku(
         sku="stripe_policy_decision",
