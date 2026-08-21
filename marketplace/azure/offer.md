@@ -6,11 +6,15 @@
 
 **Short description:** Deterministic proof receipts for AI and automated actions using Cinema + exact Z3 verification.
 
-**Product website:** https://dsgoneverifiedweb.z1.web.core.windows.net/
+**Product / customer landing:** https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/app
+
+The static Azure landing remains a discovery surface, but `/app` is the current product and conversion surface because it is served by the same Cinema runtime that owns verification and revenue status.
 
 ## Fastest launch path
 
 Start with a **Contact me** SaaS listing. This creates an enterprise discovery/lead channel without requiring the transactable SaaS fulfillment integration on day one.
+
+Azure DevOps Marketplace is a separate distribution surface. Paid Azure DevOps extensions use BYOL, so the extension must reuse DSG's existing entitlement service and must not create a second billing ledger. See `marketplace/azure-devops/`.
 
 ## Listing copy
 
@@ -38,9 +42,13 @@ External Partner Center actions:
 5. Configure lead handling in Partner Center.
 6. Submit the offer for certification/review.
 
+The lead CTA should point buyers to the current `/app` customer surface wherever Partner Center permits a product/trial URL.
+
 ## Phase 2 — Transactable SaaS
 
-Only switch to a transactable listing after the product implements the required Microsoft buyer onboarding and fulfillment path, including the applicable Microsoft account / Entra authentication, landing/onboarding flow, and Marketplace fulfillment APIs.
+Only switch to a transactable listing after the product implements the required Microsoft buyer onboarding and fulfillment path, including the applicable Microsoft account / Entra authentication, landing/onboarding flow, Marketplace fulfillment APIs, subscription lifecycle handling, and any selected metered-billing integration.
+
+Microsoft can facilitate billing for transactable SaaS offers. This is different from Azure DevOps paid extensions, where BYOL leaves billing and licensing with the publisher.
 
 ## Truth boundary
 
