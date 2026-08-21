@@ -17,6 +17,7 @@ MARKETPLACE = ROOT / ".github" / "plugin" / "marketplace.json"
 COPILOT_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-plugin-e2e-2026-08-21.json"
 COPILOT_AUTH_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-agent-auth-preflight-2026-08-21.json"
 COPILOT_MCP_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-mcp-auth-e2e-2026-08-21.json"
+COPILOT_FULL_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-full-governed-e2e-2026-08-21.json"
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 PLUGIN_FIELDS = {
@@ -129,13 +130,15 @@ def test_plugin_truth_boundary_tracks_client_surfaces_separately():
     assert "Copilot CLI agent authentication in CI" in readme
     assert "Copilot CLI authenticated DSG MCP `dsg_status` tool call" in readme
     assert "Copilot CLI full governed execution + proof receipt" in readme
-    assert readme.count("NOT VERIFIED") >= 3
+    assert readme.count("NOT VERIFIED") >= 2
     assert "Package conformance is not client compatibility" in readme
     assert "copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent" in readme
     assert "copilot plugin install dsg-governance@dsg-agent-plugins" in readme
     assert "32482954936" in readme
     assert "32497793523" in readme
+    assert "32499134400" in readme
     assert "copilot-cli-mcp-auth-e2e-2026-08-21.json" in readme
+    assert "copilot-cli-full-governed-e2e-2026-08-21.json" in readme
     assert "COPILOT_CLI_TOKEN" in readme
     assert "Copilot Requests" in readme
 
@@ -187,6 +190,39 @@ def test_copilot_authenticated_mcp_evidence_proves_status_without_overclaiming_f
     assert evidence["credentials_retained"] is False
     assert evidence["artifact"]["digest"].startswith("sha256:")
     assert "does not by itself prove a full governed execution" in evidence["truth_boundary"]
+
+
+def test_copilot_full_governed_evidence_proves_receipt_without_external_deploy_claim():
+    evidence = _json(COPILOT_FULL_EVIDENCE)
+    assert evidence["schema_version"] == "1.1"
+    assert evidence["client"] == "GitHub Copilot CLI"
+    assert evidence["client_version"] == "1.0.80"
+    assert evidence["workflow_run_id"] == 32499134400
+    assert evidence["workflow_job_id"] == 96824515223
+    assert evidence["pull_request"] == 76
+    assert evidence["marketplace_name"] == "dsg-agent-plugins"
+    assert evidence["plugin_name"] == "dsg-governance"
+    assert evidence["mcp_url"].endswith("/api/v1/mcp")
+    assert all(value == "PASS" for value in evidence["results"].values())
+    assert evidence["receipt"]["plan_id"].startswith("plan_")
+    assert evidence["receipt"]["execution_id"].startswith("exec_")
+    assert evidence["receipt"]["proof_id"].startswith("proof_")
+    assert evidence["receipt"]["decision"] == "ALLOW"
+    assert evidence["receipt"]["verification"] == "VERIFIED_GLOBAL_OPTIMUM"
+    assert evidence["receipt"]["receipt_hash_verified"] is True
+    computed = evidence["receipt"]["computed"]
+    assert computed["authorized"] is True
+    assert computed["plan_aligned"] is True
+    assert computed["constraints_pass"] is True
+    assert computed["execution_succeeded"] is True
+    assert computed["replay_match"] is True
+    assert computed["evidence_complete"] is True
+    assert computed["evidence_completeness"] == 1.0
+    assert evidence["run_bound_evidence"] is True
+    assert evidence["dsg_key_created_only_after_copilot_auth"] is True
+    assert evidence["credentials_retained"] is False
+    assert evidence["artifact"]["digest"].startswith("sha256:")
+    assert "does not claim that Copilot deployed or changed an external production resource" in evidence["truth_boundary"]
 
 
 def test_dsg_mcp_endpoint_performs_initialize_and_exposes_governance_tools():
