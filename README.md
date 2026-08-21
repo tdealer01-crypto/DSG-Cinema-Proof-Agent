@@ -106,7 +106,9 @@ layer provides:
 Current commercial boundary:
 
 - Checkout remains `NOT_VERIFIED_NOT_LINKED` until Stripe verifies the exact
-  product, price, Payment Link, meter, webhook endpoint, API key, and secret.
+  product, price, meter, webhook endpoint, API key, and secret. Stripe Payment
+  Links do not support metered prices, so checkout is a server-created
+  Checkout Session, not a static Payment Link.
 - Paid enforcement also requires durable account and ledger stores plus a
   single revenue writer. If any prerequisite is absent, it fails closed with
   `BILLING_STORAGE_NOT_READY`.

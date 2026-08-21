@@ -163,7 +163,6 @@ an unreachable service is not reported as zero revenue.
 | `STRIPE_WEBHOOK_SECRET` | for webhooks | Verifies signed inbound events |
 | `STRIPE_PRODUCT_ID` | to charge | Exact DSG Stripe product scope |
 | `STRIPE_PRICE_ID` | to charge | Exact DSG Stripe price scope |
-| `STRIPE_PAYMENT_LINK_ID` | to claim checkout ready | Payment Link verified by `/billing/status` |
 | `STRIPE_METER_ID` | to charge | Meter verified by `/billing/status` and required for pushes |
 | `STRIPE_WEBHOOK_ENDPOINT_ID` | to claim ready | Registered endpoint verified through Stripe |
 | `STRIPE_WEBHOOK_ENDPOINT_URL` | to claim ready | Exact public `/billing/webhook/stripe` URL |
@@ -181,7 +180,6 @@ not authorise a charge. The credentials stay in Key Vault.
 |---|---|
 | `DSG_STRIPE_PRODUCT_ID` | `STRIPE_PRODUCT_ID` |
 | `DSG_STRIPE_PRICE_ID` | `STRIPE_PRICE_ID` |
-| `DSG_STRIPE_PAYMENT_LINK_ID` | `STRIPE_PAYMENT_LINK_ID` |
 | `DSG_STRIPE_METER_ID` | `STRIPE_METER_ID` |
 | `DSG_STRIPE_METER_EVENT_NAME` | `STRIPE_METER_EVENT_NAME` (defaults to `dsg_verified_execution`) |
 | `DSG_STRIPE_WEBHOOK_ENDPOINT_ID` | `STRIPE_WEBHOOK_ENDPOINT_ID` |
@@ -255,7 +253,10 @@ many writers.
 
 - **No active checkout link.** `checkout_status` stays
   `NOT_VERIFIED_NOT_LINKED` until Stripe independently confirms the configured
-  product, price, Payment Link, meter, and webhook endpoint; the landing page continues to say so.
+  product, price, meter, and webhook endpoint; the landing page continues to
+  say so. Stripe Payment Links do not support metered prices, so this catalog
+  has no self-serve Payment Link — checkout is a server-created Checkout
+  Session against the same product/price.
 - **Durable storage is arranged by the deployment, not by this repository.**
   The share is created on first deploy; until that deploy has run against the
   subscription, the stores are memory-only and enforcement stays refused.
@@ -283,10 +284,12 @@ Each step is independently verifiable, in order:
    to Postgres) and point `DSG_REVENUE_LEDGER_STORE` and
    `DSG_REVENUE_ACCOUNT_STORE` at it. Until this is done, do not enable
    enforcement — this is the one genuine blocker to charging.
-5. **Link Stripe.** Create the product, price, Payment Link, meter, and webhook matching
-   the catalog, then configure all Stripe variables above. Confirm
-   `GET /billing/status` reports `LINKED_VERIFIED`, and update the landing page's
-   checkout line in the same change so the public claim stays true.
+5. **Link Stripe.** Create the product, price, meter, and webhook matching
+   the catalog (a Payment Link cannot be used — Stripe does not support
+   metered prices on Payment Links), then configure all Stripe variables
+   above. Confirm `GET /billing/status` reports `LINKED_VERIFIED`, and update
+   the landing page's checkout line in the same change so the public claim
+   stays true.
 6. **Turn on enforcement.** Run a single writer, set both storage attestations,
    then set `DSG_REVENUE_ENFORCE=1` and redeploy. If any prerequisite is absent,
    verification fails closed with `BILLING_STORAGE_NOT_READY` instead of
