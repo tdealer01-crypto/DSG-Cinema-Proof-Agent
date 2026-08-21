@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "observed_at_utc": "2026-08-21T12:40:18Z",
+  "client": "GitHub Copilot CLI",
+  "client_version": "1.0.80",
+  "runner": "ubuntu-24.04",
+  "workflow_run_id": 32482954936,
+  "workflow_job_id": 96773122774,
+  "marketplace_repository": "tdealer01-crypto/DSG-Cinema-Proof-Agent",
+  "marketplace_name": "dsg-agent-plugins",
+  "plugin_name": "dsg-governance",
+  "plugin_version": "1.0.0",
+  "results": {
+    "copilot_cli_install": "PASS",
+    "marketplace_add": "PASS",
+    "marketplace_browse": "PASS",
+    "plugin_install": "PASS",
+    "plugin_list": "PASS"
+  },
+  "artifact": {
+    "id": 9446759500,
+    "digest": "sha256:7d0fa9252a72822aede8c439be9502095fd9162122c136304f7904dcd045c316",
+    "expires_at": "2026-11-19T12:39:50Z"
+  },
+  "authenticated_mcp_tool_call": "NOT_RUN",
+  "truth_boundary": "This proves GitHub Copilot CLI marketplace discovery and plugin installation only. It does not prove authenticated access to the DSG MCP endpoint or a governed execution/proof receipt from Copilot CLI."
+}
