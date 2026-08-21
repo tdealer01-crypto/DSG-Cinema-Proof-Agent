@@ -603,10 +603,36 @@ jobs:
               --request OPTIONS "$VERIFY_URL" \
               --header "Origin: $origin" \
               --header 'Access-Control-Request-Method: POST' \
-              --header 'Access-Control-Request-Headers: content-type')
+              --header 'Access-Control-Request-Headers: content-type,x-dsg-api-key')
             test "$CORS_CODE" = '200'
             tr -d '\r' < /tmp/cors-headers.txt | grep -Fxi "access-control-allow-origin: $origin"
+            # The landing page sends the key header on every evaluation once
+            # enforcement is on. If the preflight does not permit it the browser
+            # refuses the request before it is ever made, so assert it here
+            # rather than discovering it from a blank panel in production.
+            tr -d '\r' < /tmp/cors-headers.txt \
+              | grep -i '^access-control-allow-headers:' | grep -qi 'x-dsg-api-key'
           done
+
+          # Enforcement refuses an unauthenticated evaluation, so these checks
+          # have to present a key the way a real caller does. Activation is the
+          # self-serve route to one: it can only ever grant the free capped
+          # plan, so this proves the visitor's path without granting billable
+          # capacity. Without it, turning enforcement on would fail this step
+          # after the deployment had already switched production to gated.
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data "$(jq -n --arg id "production-deploy-$GITHUB_RUN_ID" \
+              '{channel:"api",activation_id:$id,display_name:"production deployment check"}')" \
+            > /tmp/activation.json
+          E2E_API_KEY=$(jq -r '.api_key // empty' /tmp/activation.json)
+          if [[ -z "$E2E_API_KEY" ]]; then
+            echo 'Activation issued no API key; the deployment cannot verify an authenticated evaluation.' >&2
+            jq -c '{decision, activated}' /tmp/activation.json >&2 || true
+            exit 1
+          fi
+          echo "::add-mask::$E2E_API_KEY"
 
           : > /tmp/marketplace-e2e.jsonl
           for channel in github aws azure jetbrains openai_plugin api; do
@@ -620,6 +646,7 @@ jobs:
             curl --fail-with-body --silent --show-error \
               --request POST "$VERIFY_URL" \
               --header "Origin: $AZURE_ORIGIN" \
+              --header "X-DSG-API-Key: $E2E_API_KEY" \
               --header 'Content-Type: application/json' \
               --data @/tmp/marketplace-request.json \
               > /tmp/marketplace-response.json
@@ -639,8 +666,8 @@ jobs:
           jq -n '{stripe_account_id:"acct_production_e2e",object_type:"charge",object_id:"ch_production_e2e",amount_cents:5000,currency:"usd",stripe_status:"succeeded",risk_level:"low"}' > /tmp/stripe-low-request.json
           jq -n '{stripe_account_id:"acct_production_e2e",object_type:"payout",object_id:"po_production_e2e",amount_cents:6000000,currency:"thb",stripe_status:"pending",risk_level:"critical"}' > /tmp/stripe-critical-request.json
 
-          curl --fail-with-body --silent --show-error --request POST "$CINEMA_URL/stripe/evaluate" --header 'Content-Type: application/json' --data @/tmp/stripe-low-request.json > /tmp/stripe-low-response.json
-          curl --fail-with-body --silent --show-error --request POST "$CINEMA_URL/stripe/evaluate" --header 'Content-Type: application/json' --data @/tmp/stripe-critical-request.json > /tmp/stripe-critical-response.json
+          curl --fail-with-body --silent --show-error --request POST "$CINEMA_URL/stripe/evaluate" --header "X-DSG-API-Key: $E2E_API_KEY" --header 'Content-Type: application/json' --data @/tmp/stripe-low-request.json > /tmp/stripe-low-response.json
+          curl --fail-with-body --silent --show-error --request POST "$CINEMA_URL/stripe/evaluate" --header "X-DSG-API-Key: $E2E_API_KEY" --header 'Content-Type: application/json' --data @/tmp/stripe-critical-request.json > /tmp/stripe-critical-response.json
           jq -e '.decision == "ALLOW" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and .risk_score == 0' /tmp/stripe-low-response.json >/dev/null
           jq -e '.decision == "BLOCK" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and .risk_score == 100' /tmp/stripe-critical-response.json >/dev/null
           jq -s '.' /tmp/marketplace-e2e.jsonl > /tmp/marketplace-e2e.json
