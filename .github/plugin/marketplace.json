@@ -1,0 +1,31 @@
+{
+  "name": "dsg-agent-plugins",
+  "owner": {
+    "name": "DSG ONE"
+  },
+  "metadata": {
+    "description": "DSG ONE plugins for governed agent execution, evidence, replay, and deterministic proof.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "dsg-governance",
+      "description": "Govern agent actions against approved plans and retain deterministic evidence and proof receipts through DSG ONE.",
+      "version": "1.0.0",
+      "source": "./marketplace/agent-plugin",
+      "author": {
+        "name": "DSG ONE"
+      },
+      "homepage": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
+      "repository": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent",
+      "keywords": [
+        "agent-governance",
+        "mcp",
+        "evidence",
+        "conformance",
+        "deterministic-verification"
+      ],
+      "strict": true
+    }
+  ]
+}

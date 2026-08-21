@@ -2,6 +2,18 @@
 
 Portable Agent Plugins v1 package for using DSG ONE as an independent evidence and conformance plane around agent executions.
 
+## Install from the DSG Agent Plugin marketplace
+
+The repository exposes a GitHub Copilot plugin marketplace named `dsg-agent-plugins` from `.github/plugin/marketplace.json`.
+
+```bash
+copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent
+copilot plugin marketplace browse dsg-agent-plugins
+copilot plugin install dsg-governance@dsg-agent-plugins
+```
+
+These commands describe the intended distribution path. A repository package passing CI is not by itself evidence that a specific Copilot client completed a real install/connect/tool-call run; client compatibility remains tracked separately below.
+
 ## Package contents
 
 ```text
@@ -55,6 +67,7 @@ Checkout creation never grants entitlement. The existing DSG signed Stripe webho
 | Target | Current evidence | Status |
 |---|---|---|
 | Agent Plugins v1 package structure | Repository conformance test validates manifest, MCP config, Skill frontmatter, HTTPS endpoint, and absence of embedded credentials | CI-GATED |
+| DSG Copilot marketplace catalog | Repository conformance test validates `.github/plugin/marketplace.json`, the `dsg-governance` source path, version alignment, and strict loading | CI-GATED |
 | DSG MCP protocol contract | Existing API tests exercise `initialize`, `tools/list`, tool calls, refusal handling, and no caller-supplied verdicts | CI-GATED |
 | DSG execution semantics | Existing API tests cover approved execution, out-of-plan BLOCK, replay REVIEW, deterministic constraints, and fail-closed verifier behavior | CI-GATED |
 | VS Code / GitHub Copilot client install | No real client run is stored in this repository yet | NOT VERIFIED |
@@ -65,7 +78,9 @@ Package conformance is not client compatibility. Do not change a client row to P
 
 ## Authentication
 
-The portable package deliberately contains no `X-DSG-API-Key` header. Store DSG credentials using the client/application's credential mechanism. If a client cannot attach the required authorization to the remote MCP connection, metered tool calls are not proven compatible with that client.
+The portable package deliberately contains no `X-DSG-API-Key` header. Store DSG credentials using the client/application's credential mechanism. Agent Plugins 1.0 does not define a portable secret-reference field for remote HTTP headers, so this package does not fake one.
+
+If a client cannot attach the required authorization to the remote MCP connection, metered tool calls are not proven compatible with that client.
 
 ## User-visible result
 
@@ -79,4 +94,4 @@ A useful integration must show, without requiring log inspection:
 
 ## Truth boundary
 
-This directory is a portable package and CI target. It is not evidence that every Agent Plugins client can install it. Client compatibility remains a separate end-to-end test surface.
+This directory is a portable package and CI target. The marketplace catalog makes it discoverable/installable by compatible GitHub Copilot clients, but it is not evidence that every client can authenticate to DSG or complete metered governed execution. Client compatibility remains a separate end-to-end test surface.
