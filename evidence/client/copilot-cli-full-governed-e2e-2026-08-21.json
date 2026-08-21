@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.1",
+  "observed_at_utc": "2026-08-21T15:44:37Z",
+  "client": "GitHub Copilot CLI",
+  "client_version": "1.0.80",
+  "workflow_run_id": 32499134400,
+  "workflow_job_id": 96824515223,
+  "workflow_run_attempt": 1,
+  "pull_request": 76,
+  "tested_head_sha": "530b2c7c0a39fb76fb4ff45add1fcd71a478e01b",
+  "merged_main_sha": "08862b629e7b449a225f293291c5688c27e4dceb",
+  "marketplace_repository": "tdealer01-crypto/DSG-Cinema-Proof-Agent",
+  "marketplace_name": "dsg-agent-plugins",
+  "plugin_name": "dsg-governance",
+  "mcp_url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp",
+  "results": {
+    "plugin_install": "PASS",
+    "copilot_agent_authentication": "PASS",
+    "ephemeral_dsg_key_activation": "PASS",
+    "authenticated_mcp_registration": "PASS",
+    "direct_authenticated_dsg_status": "PASS",
+    "agent_full_governed_flow": "PASS",
+    "independent_proof_plan_execution_evidence_replay_verification": "PASS"
+  },
+  "receipt": {
+    "plan_id": "plan_01m0jfwfhpgxhtg5e8vxpp",
+    "execution_id": "exec_01m0jfwzhktq61f2gww5fn",
+    "proof_id": "proof_01m0jfx6fvcm1fbxt6w4vh",
+    "decision": "ALLOW",
+    "verification": "VERIFIED_GLOBAL_OPTIMUM",
+    "receipt_hash_verified": true,
+    "computed": {
+      "authorized": true,
+      "plan_aligned": true,
+      "constraints_pass": true,
+      "execution_succeeded": true,
+      "replay_match": true,
+      "evidence_complete": true,
+      "evidence_completeness": 1.0
+    }
+  },
+  "artifact": {
+    "id": 9452825751,
+    "digest": "sha256:2c5ff68de1ccb36c764e361c1a5b4e1a5eef698e2d2c29582f6efc00fe7832c1",
+    "expires_at": "2026-11-19T15:43:22Z"
+  },
+  "run_bound_evidence": true,
+  "dsg_key_created_only_after_copilot_auth": true,
+  "credentials_retained": false,
+  "truth_boundary": "This proves one benign GitHub Copilot CLI client-conformance execution completed the DSG plan, approval, alignment, constraints, execution record, content evidence, replay, exact Z3 verification, proof receipt, and receipt-hash readback path against the Azure production MCP endpoint. The exercised action was a CI conformance record only; this evidence does not claim that Copilot deployed or changed an external production resource."
+}
