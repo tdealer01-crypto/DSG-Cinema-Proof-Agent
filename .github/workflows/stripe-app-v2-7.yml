@@ -140,7 +140,7 @@ jobs:
                 --header 'Content-Type: application/json' \
                 --data "$(jq -n --arg id "stripe-app-package-$GITHUB_RUN_ID" \
                   '{channel:"api",activation_id:$id,display_name:"stripe app packaging check"}')" || true)
-              if [[ "$ACTIVATION" == "200" ]]; then
+              if [[ "$ACTIVATION" == "201" ]]; then
                 API_KEY=$(jq -r '.api_key // empty' /tmp/activation.json)
                 if [[ -n "$API_KEY" ]]; then
                   echo "::add-mask::$API_KEY"
