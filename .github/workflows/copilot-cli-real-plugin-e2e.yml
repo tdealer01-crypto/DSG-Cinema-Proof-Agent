@@ -24,7 +24,7 @@ jobs:
       MARKETPLACE_REPO: tdealer01-crypto/DSG-Cinema-Proof-Agent
       MARKETPLACE_NAME: dsg-agent-plugins
       PLUGIN_NAME: dsg-governance
-      MCP_SERVER_NAME: dsg-one-e2e
+      MCP_SERVER_NAME: dsg-one
       EXPECTED_OUTPUT: DSG_COPILOT_E2E_OK
       EXPECTED_OUTPUT_SHA256: b6811fb2f0dba5fd7b6c6f5946ef362c995e93259cf884deb13b939036cdaee5
 
@@ -109,22 +109,34 @@ jobs:
           printf 'DSG_API_KEY=%s\n' "$DSG_API_KEY" >> "$GITHUB_ENV"
           rm -f /tmp/dsg-activate.json
 
-      - name: Register authenticated DSG MCP in Copilot CLI
+      - name: Build session-only authenticated DSG MCP override
         if: steps.copilot_auth.outputs.ready == 'true'
         shell: bash
-        env:
-          HOME: ${{ runner.temp }}/copilot-real-home
-          COPILOT_HOME: ${{ runner.temp }}/copilot-real-home/.copilot
         run: |
           set -euo pipefail
-          copilot mcp add \
-            --transport http \
-            --header "X-DSG-API-Key: $DSG_API_KEY" \
-            --tools '*' \
-            "$MCP_SERVER_NAME" "$MCP_URL" >/tmp/mcp-add.txt
-          rm -f /tmp/mcp-add.txt
+          jq -cn \
+            --arg url "$MCP_URL" \
+            --arg key "$DSG_API_KEY" \
+            --arg name "$MCP_SERVER_NAME" \
+            '{mcpServers:{($name):{type:"http",url:$url,headers:{"X-DSG-API-Key":$key},tools:["*"],timeout:30000}}}' \
+            >/tmp/dsg-auth-mcp.json
+          chmod 600 /tmp/dsg-auth-mcp.json
 
-      - name: Ask Copilot to call dsg_status
+          jq -cn '{jsonrpc:"2.0",id:"auth-preflight",method:"tools/call",params:{name:"dsg_status",arguments:{}}}' \
+            >/tmp/dsg-auth-preflight-request.json
+          code=$(curl --silent --show-error \
+            --output /tmp/dsg-auth-preflight-response.json \
+            --write-out '%{http_code}' \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --header "X-DSG-API-Key: $DSG_API_KEY" \
+            --data @/tmp/dsg-auth-preflight-request.json || true)
+          [[ "$code" == '200' ]]
+          jq -e '.result.isError == false and .result.structuredContent.status == "READY"' \
+            /tmp/dsg-auth-preflight-response.json >/dev/null
+          rm -f /tmp/dsg-auth-preflight-request.json /tmp/dsg-auth-preflight-response.json
+
+      - name: Ask Copilot to call authenticated dsg_status
         id: agent_call
         if: steps.copilot_auth.outputs.ready == 'true'
         shell: bash
@@ -136,7 +148,8 @@ jobs:
         run: |
           set -euo pipefail
           copilot -sp \
-            'Use only the DSG MCP server. Call dsg_status exactly once. Return one compact JSON object with keys tool and ready.' \
+            'Use only the MCP server named dsg-one. Call dsg_status exactly once. Return one compact JSON object with keys tool and ready.' \
+            --additional-mcp-config=@/tmp/dsg-auth-mcp.json \
             --allow-tool="$MCP_SERVER_NAME" \
             >/tmp/copilot-dsg-status.out
           test -s /tmp/copilot-dsg-status.out
@@ -155,7 +168,7 @@ jobs:
         run: |
           set -euo pipefail
           prompt=$(cat <<'PROMPT'
-          Use only the DSG MCP server and follow the installed dsg-governed-execution skill.
+          Follow the installed dsg-governed-execution skill. Use only MCP tools from the server named dsg-one. The session MCP override already supplies the client-managed credential; do not try to use or inspect any credential yourself.
 
           This CI workflow is the operator authorization for exactly one synthetic bounded test action: emit the literal text DSG_COPILOT_E2E_OK. Do not perform or claim any other action.
 
@@ -184,11 +197,12 @@ jobs:
           10. Return RAW JSON ONLY, no markdown, with exactly these keys copied from the verified proof response:
               decision, verification, proof_id, receipt_hash.
 
-          Do not invent any identifier, hash, verdict, proof, or evidence. If any tool refuses or fails, return raw JSON with decision="ERROR" and do not claim a proof.
+          Do not invent any identifier, hash, verdict, proof, or evidence. If any tool refuses or fails, return raw JSON with decision="ERROR" and include the actual tool error text in verification. Do not claim a proof after any refusal.
           PROMPT
           )
 
           copilot -sp "$prompt" \
+            --additional-mcp-config=@/tmp/dsg-auth-mcp.json \
             --allow-tool="$MCP_SERVER_NAME" \
             >/tmp/copilot-governed.out
 
@@ -283,12 +297,12 @@ jobs:
               'receipt_hash': os.environ['AGENT_RECEIPT_HASH'] or None,
               'expected_output_sha256': os.environ['EXPECTED_OUTPUT_SHA256'],
               'credentials_retained': False,
-              'truth_boundary': 'Full real-client E2E is PASS only when marketplace install, Copilot authentication, authenticated DSG MCP use, governed execution, and independent proof read-back all pass.'
+              'truth_boundary': 'Full real-client E2E is PASS only when marketplace install, Copilot authentication, session-authenticated DSG MCP override, governed execution, and independent proof read-back all pass.'
           }
           Path('copilot-cli-real-plugin-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
           PY
           cat copilot-cli-real-plugin-e2e.json >> "$GITHUB_STEP_SUMMARY"
-          rm -f /tmp/copilot-dsg-status.out /tmp/copilot-governed.out /tmp/copilot-governed-result.json
+          rm -f /tmp/copilot-dsg-status.out /tmp/copilot-governed.out /tmp/copilot-governed-result.json /tmp/dsg-auth-mcp.json
 
       - name: Upload sanitized evidence
         if: always()
