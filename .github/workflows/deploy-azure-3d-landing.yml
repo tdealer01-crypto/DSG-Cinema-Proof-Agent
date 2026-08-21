@@ -62,7 +62,24 @@ jobs:
           test -f "$RECEIPT"
           ORIGIN=$(jq -er '.site_url | rtrimstr("/")' "$RECEIPT")
           [[ "$ORIGIN" =~ ^https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net$ ]]
-          VERIFY_URL='https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate'
+
+          CINEMA_ORIGIN='https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io'
+          VERIFY_URL="$CINEMA_ORIGIN/verify/evaluate"
+
+          # Production can require X-DSG-API-Key when DSG_REVENUE_ENFORCE=1.
+          # Exercise the same self-serve path available to a real browser user:
+          # activate a free capped key, never paid capacity, and use it only for
+          # this release gate. A unique activation id avoids relying on any old
+          # key or secret and the key is masked immediately.
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_ORIGIN/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data "$(jq -n --arg id "azure-landing-deploy-$GITHUB_RUN_ID" \
+              '{channel:"api",activation_id:$id,display_name:"Azure landing deployment check"}')" \
+            > /tmp/azure-landing-activation.json
+          E2E_API_KEY=$(jq -er '.api_key' /tmp/azure-landing-activation.json)
+          echo "::add-mask::$E2E_API_KEY"
+
           jq -n '{channel:"openai_plugin",approved_plan_hash:("1"*64),proposed_action_hash:("2"*64),execution_id:"azure-release-gate",trace_id:"azure-release-gate",agent_identity:"github-actions-azure-release-gate",authorized:true,plan_aligned:true,constraints_pass:true,execution_succeeded:true,replay_match:true,evidence_complete:true,cost_microunits:0}' > /tmp/browser-contract-request.json
 
           for attempt in $(seq 1 180); do
@@ -70,13 +87,24 @@ jobs:
               --request OPTIONS "$VERIFY_URL" \
               --header "Origin: $ORIGIN" \
               --header 'Access-Control-Request-Method: POST' \
-              --header 'Access-Control-Request-Headers: content-type' || true)
+              --header 'Access-Control-Request-Headers: content-type,x-dsg-api-key' || true)
             VERIFY_CODE='000'
-            if [[ "$CORS_CODE" == '200' ]] && tr -d '\r' < /tmp/browser-contract-cors.txt | grep -Fxiq "access-control-allow-origin: $ORIGIN"; then
+            CORS_ORIGIN_OK=false
+            CORS_KEY_OK=false
+            if [[ "$CORS_CODE" == '200' ]]; then
+              if tr -d '\r' < /tmp/browser-contract-cors.txt | grep -Fxiq "access-control-allow-origin: $ORIGIN"; then
+                CORS_ORIGIN_OK=true
+              fi
+              if tr -d '\r' < /tmp/browser-contract-cors.txt | grep -Eiq '^access-control-allow-headers:.*x-dsg-api-key'; then
+                CORS_KEY_OK=true
+              fi
+            fi
+            if [[ "$CORS_ORIGIN_OK" == 'true' && "$CORS_KEY_OK" == 'true' ]]; then
               VERIFY_CODE=$(curl --silent --show-error --output /tmp/browser-contract-response.json --write-out '%{http_code}' \
                 --request POST "$VERIFY_URL" \
                 --header "Origin: $ORIGIN" \
                 --header 'Content-Type: application/json' \
+                --header "X-DSG-API-Key: $E2E_API_KEY" \
                 --data @/tmp/browser-contract-request.json || true)
             fi
 
