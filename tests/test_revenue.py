@@ -366,6 +366,54 @@ def test_free_plan_quota_is_fail_closed_at_the_cap(engine):
     assert summary["upgrade"]["checkout_endpoint"] == "/billing/checkout/session"
 
 
+def test_usage_upgrade_signal_uses_exact_80_percent_boundary(engine):
+    account, _api_key = engine.accounts.issue(
+        display_name="Boundary",
+        plan="free",
+        hard_cap_units=100,
+    )
+    for index in range(79):
+        engine.ledger.append(
+            account_id=account.account_id,
+            channel="api",
+            sku="verified_execution",
+            quantity=1,
+            unit_price_micros=0,
+            amount_micros=0,
+            proof_hash=f"{index:064x}",
+            context_hash=f"{index + 100:064x}",
+            idempotency_key=f"boundary-{index}",
+            units_before=index,
+        )
+    summary = engine.usage_summary(account)
+    assert summary["usage_percent"] == 79.0
+    assert summary["upgrade"]["recommended"] is False
+
+    engine.ledger.append(
+        account_id=account.account_id,
+        channel="api",
+        sku="verified_execution",
+        quantity=1,
+        unit_price_micros=0,
+        amount_micros=0,
+        proof_hash="f" * 64,
+        context_hash="e" * 64,
+        idempotency_key="boundary-80",
+        units_before=79,
+    )
+    summary = engine.usage_summary(account)
+    assert summary["usage_percent"] == 80.0
+    assert summary["upgrade"]["recommended"] is True
+    assert summary["upgrade"]["reason"] == "QUOTA_80_PERCENT"
+
+
+def test_uncapped_plan_has_no_quota_upgrade_signal(engine):
+    account, _api_key = engine.accounts.issue(display_name="Paid", plan="metered")
+    summary = engine.usage_summary(account)
+    assert summary["usage_percent"] is None
+    assert summary["upgrade"]["recommended"] is False
+
+
 def test_atomic_append_prevents_two_pre_authorized_requests_crossing_a_cap(engine):
     account, api_key = engine.accounts.issue(
         display_name="Acme",

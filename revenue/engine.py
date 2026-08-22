@@ -338,7 +338,10 @@ class RevenueEngine:
         total_micros = base_recognized + usage_micros
         cap = account.hard_cap_units if account.hard_cap_units is not None else plan.hard_cap_units
         usage_percent = None if cap is None or cap == 0 else round((units / cap) * 100, 2)
-        if account.plan == "free" and usage_percent is not None and usage_percent >= 80:
+        upgrade_threshold_reached = (
+            cap is not None and cap > 0 and units * 100 >= cap * 80
+        )
+        if account.plan == "free" and upgrade_threshold_reached:
             upgrade = {
                 "recommended": True,
                 "reason": "QUOTA_EXHAUSTED" if cap is not None and units >= cap else "QUOTA_80_PERCENT",
