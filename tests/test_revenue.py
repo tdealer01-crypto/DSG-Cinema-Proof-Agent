@@ -1450,6 +1450,55 @@ def test_usage_history_requires_a_valid_key(engine):
     assert client.get("/billing/usage/history").status_code == 401
 
 
+def test_billing_subscription_state_is_customer_scoped(engine):
+    account, api_key = engine.accounts.issue(
+        display_name="Subscriber",
+        plan="metered",
+        stripe_customer_id="cus_state",
+    )
+    engine.accounts.update(
+        account.account_id,
+        payment_linked=True,
+        stripe_subscription_id="sub_state",
+    )
+    response = client.get(
+        "/billing/subscription",
+        headers={"X-DSG-API-Key": api_key},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "account_id": account.account_id,
+        "plan": "metered",
+        "billing_channel": "stripe",
+        "payment_linked": True,
+        "subscription_active": True,
+        "can_manage_in_portal": True,
+        "portal_endpoint": "/billing/portal/session",
+    }
+    assert "stripe_customer_id" not in body
+    assert "stripe_subscription_id" not in body
+
+
+def test_github_billing_state_never_offers_stripe_portal(engine):
+    _account, api_key = engine.accounts.issue(
+        display_name="GitHub",
+        plan="github_pro",
+        channel="github_marketplace",
+    )
+    body = client.get(
+        "/billing/subscription",
+        headers={"X-DSG-API-Key": api_key},
+    ).json()
+    assert body["billing_channel"] == "github_marketplace"
+    assert body["can_manage_in_portal"] is False
+    assert body["portal_endpoint"] is None
+
+
+def test_billing_subscription_requires_a_valid_key(engine):
+    assert client.get("/billing/subscription").status_code == 401
+
+
 def test_webhook_is_unavailable_until_a_signing_secret_is_configured(engine):
     response = client.post("/billing/webhook/stripe", json={"type": "invoice.paid"})
     assert response.status_code == 503

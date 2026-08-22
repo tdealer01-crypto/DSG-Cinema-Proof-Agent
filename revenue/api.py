@@ -429,6 +429,31 @@ async def billing_status() -> dict:
     }
 
 
+@router.get("/subscription")
+def billing_subscription(
+    x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict:
+    account = _require_account(x_dsg_api_key)
+    github_billed = account.plan.startswith("github_")
+    billing_channel = "github_marketplace" if github_billed else "stripe"
+    can_manage = (
+        not github_billed
+        and account.mode == "live"
+        and account.stripe_customer_id is not None
+    )
+    return {
+        "account_id": account.account_id,
+        "plan": account.plan,
+        "billing_channel": billing_channel,
+        "payment_linked": account.payment_linked,
+        "subscription_active": account.stripe_subscription_id is not None
+        if not github_billed
+        else account.status == "active",
+        "can_manage_in_portal": can_manage,
+        "portal_endpoint": "/billing/portal/session" if can_manage else None,
+    }
+
+
 @router.get("/usage/history")
 def billing_usage_history(
     limit: int = Query(default=20, ge=1, le=100),

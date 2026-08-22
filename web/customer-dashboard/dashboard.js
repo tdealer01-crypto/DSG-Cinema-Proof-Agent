@@ -45,6 +45,10 @@ function reset() {
   $("progressBar").style.width = "0";
   $("progressText").textContent = "Connect to load progress";
   $("steps").replaceChildren();
+  $("billingChannel").textContent = "○ channel";
+  $("paymentState").textContent = "○ payment";
+  $("subscriptionState").textContent = "○ subscription";
+  for (const id of ["billingChannel", "paymentState", "subscriptionState"]) $(id).className = "step";
   renderHistory([]);
   $("upgrade").disabled = $("portal").disabled = true;
 }
@@ -62,10 +66,11 @@ async function load() {
   key = supplied;
   $("message").textContent = "Loading…";
   try {
-    const [onboarding, usage, history] = await Promise.all([
+    const [onboarding, usage, history, subscription] = await Promise.all([
       api("/onboarding/status"),
       api("/billing/usage"),
-      api("/billing/usage/history?limit=10")
+      api("/billing/usage/history?limit=10"),
+      api("/billing/subscription")
     ]);
     $("apiKey").value = "";
     $("connection").textContent = "CONNECTED";
@@ -83,11 +88,17 @@ async function load() {
       $("steps").appendChild(node);
     });
     renderHistory(history.items);
+    $("billingChannel").textContent = `✓ ${subscription.billing_channel}`;
+    $("billingChannel").className = "step done";
+    $("paymentState").textContent = `${subscription.payment_linked ? "✓" : "○"} payment ${subscription.payment_linked ? "linked" : "not linked"}`;
+    $("paymentState").className = `step ${subscription.payment_linked ? "done" : ""}`;
+    $("subscriptionState").textContent = `${subscription.subscription_active ? "✓" : "○"} subscription ${subscription.subscription_active ? "active" : "inactive"}`;
+    $("subscriptionState").className = `step ${subscription.subscription_active ? "done" : ""}`;
     $("next").textContent = onboarding.next_action
       ? `${onboarding.next_action.method} ${onboarding.next_action.endpoint}`
       : "Onboarding complete";
     $("upgrade").disabled = !usage.upgrade?.recommended;
-    $("portal").disabled = !usage.account.payment_linked;
+    $("portal").disabled = !subscription.can_manage_in_portal;
     $("message").textContent = usage.upgrade?.recommended
       ? `Upgrade recommended: ${usage.upgrade.reason}`
       : "Account ready";
