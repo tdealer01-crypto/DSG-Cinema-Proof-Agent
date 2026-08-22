@@ -567,6 +567,7 @@ async def onboarding_first_proof(
     account = billing.get_engine().accounts.authenticate((x_dsg_api_key or "").strip())
     if account is None:
         raise HTTPException(status_code=401, detail="missing or invalid DSG API key")
+    billing.authorize_request(x_dsg_api_key, VERIFIED_EXECUTION_SKU)
     fixture_hash = hashlib.sha256(b"dsg-one-guided-first-proof-v1").hexdigest()
     request = VerificationRequest(
         execution_id=f"onboarding-{account.account_id}",
@@ -583,7 +584,37 @@ async def onboarding_first_proof(
         evidence_complete=True,
         cost_microunits=0,
     )
-    return await verify_evaluate(request, x_dsg_api_key)
+    context_hash = verification_context_hash(request)
+    duplicate_key = billing.idempotency_key(
+        account.account_id,
+        VERIFIED_EXECUTION_SKU,
+        context_hash,
+    )
+    existing = billing.get_engine().ledger.find_by_idempotency_key(duplicate_key)
+    if existing is not None:
+        return {
+            "receipt_version": RECEIPT_VERSION,
+            "policy_version": POLICY_VERSION,
+            "execution_id": request.execution_id,
+            "trace_id": request.trace_id,
+            "channel": request.channel,
+            "decision": "ALLOW",
+            "reason": "synthetic onboarding proof already verified",
+            "synthetic": True,
+            "purpose": "onboarding",
+            "verified": True,
+            "verification": "VERIFIED_GLOBAL_OPTIMUM",
+            "proof_hash": existing.proof_hash,
+            "context_hash": existing.context_hash,
+            "billing": {"metered": False, "duplicate": True},
+        }
+    receipt = await verify_evaluate(request, x_dsg_api_key)
+    receipt["synthetic"] = True
+    receipt["purpose"] = "onboarding"
+    receipt["authorized_action_completion"] = False
+    receipt["replay_match"] = False
+    receipt["evidence_completeness"] = 0.0
+    return receipt
 
 
 @app.post("/verify/evaluate")

@@ -521,6 +521,16 @@ def test_guided_first_proof_returns_a_real_metered_receipt(engine, monkeypatch):
     assert body["verification"] == "VERIFIED_GLOBAL_OPTIMUM"
     assert len(body["proof_hash"]) == 64
     assert body["billing"]["metered"] is True
+    assert body["synthetic"] is True
+    assert body["purpose"] == "onboarding"
+    assert body["authorized_action_completion"] is False
+
+    duplicate = client.post(
+        "/onboarding/first-proof",
+        headers={"X-DSG-API-Key": key},
+    ).json()
+    assert duplicate["proof_hash"] == body["proof_hash"]
+    assert duplicate["billing"] == {"metered": False, "duplicate": True}
 
     status = client.get(
         "/onboarding/status", headers={"X-DSG-API-Key": key}

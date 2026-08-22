@@ -125,8 +125,10 @@ $("firstProof").onclick = async () => {
     if (receipt.verified !== true || receipt.verification !== "VERIFIED_GLOBAL_OPTIMUM") {
       throw new Error("First proof did not return an exact verified receipt");
     }
-    $("message").textContent = `${receipt.decision} · ${receipt.verification} · ${receipt.proof_hash.slice(0, 16)}…`;
+    const resultMessage = `${receipt.decision} · ${receipt.verification} · ${receipt.proof_hash.slice(0, 16)}…`;
     await loadWithCurrentKey();
+    $("message").textContent = resultMessage;
+    $("message").className = "status";
   } catch (error) {
     $("message").textContent = error.message;
     $("message").className = "status error";
