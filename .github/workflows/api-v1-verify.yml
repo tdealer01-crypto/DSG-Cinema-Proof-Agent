@@ -107,17 +107,16 @@ jobs:
             tests/test_decision_core_channels.py \
             tests/test_execution_boundary.py
 
-      - name: Assert all execution adapters share the decision core
+      - name: Assert all authorization adapters share the decision core
         shell: bash
         run: |
           set -euo pipefail
           grep -q 'evaluate_plan_authorization' api_v1/control.py
           grep -q 'evaluate_plan_authorization' api_v1/mobile_control.py
           grep -q 'evaluate_unified_preflight' api_v1/mcp.py
-          grep -q 'record_execution_if_authorized' api_v1/router.py
-          grep -q 'record_execution_if_authorized' api_v1/mcp.py
-          grep -q 'evaluate_execution_trace' api_v1/control.py
           grep -q 'caller_can_assert_availability.*False' api_v1/control.py
+          grep -q 'preserves observed reality' api_v1/router.py
+          grep -q 'preserve that raw trace' api_v1/mcp.py
           python - <<'PY'
           from api_v1.control import control_contract
           import asyncio
@@ -126,8 +125,9 @@ jobs:
           assert body['core'] == 'dsg-decision-core'
           assert set(body['decisions']) == {'ALLOW', 'WAITING_PERMISSION', 'BLOCK'}
           assert body['capabilities']['caller_can_assert_availability'] is False
-          assert 'revalidate' in body['execution_boundary']
-          print('REST, MCP and mobile share the DSG decision-core contract and execution boundary')
+          assert 'preflight is the authorization gate' in body['audit_boundary']
+          assert 'audit evidence is never discarded' in body['audit_boundary']
+          print('REST, MCP and mobile share preflight authorization; audit recording preserves observed reality')
           PY
 
       - name: Assert the API cannot be talked into a verdict
@@ -135,8 +135,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Every computed verdict must be on the rejection list, or an agent could
-          # submit the one field nobody remembered to guard.
           python - <<'PY'
           from api_v1.models import ASSERTED_VERDICT_FIELDS
 
@@ -158,7 +156,6 @@ jobs:
           print(f"{len(ASSERTED_VERDICT_FIELDS)} verdict fields refused on input")
           PY
 
-          # No route may return a verified state without an exact proof.
           grep -q 'VERIFIED_GLOBAL_OPTIMUM' api_v1/verifier.py
           grep -q 'raise ProofUnavailable' api_v1/verifier.py
           ! grep -n '"verified": True' api_v1/service.py | grep -v 'proof\[' || true
@@ -166,15 +163,12 @@ jobs:
           from pathlib import Path
 
           source = Path("api_v1/service.py").read_text()
-          # The only place a receipt is marked verified is the block that already
-          # holds a validated proof.
           block = source.split("proof = await _prove(")[1]
           assert '"verified": True' in block, "a receipt is marked verified outside the proved block"
           assert '"proof_hash": proof["proof_hash"]' in block
           print("verified receipts are only built behind an exact proof")
           PY
 
-          # The published console must not ship a verification state in its markup.
           MARKUP=$(python -c "print(open('web/dsg-one-3d/index.html').read().split('<script>')[0])")
           for forbidden in PASS VERIFIED COMPLETE MATCH SUCCESS; do
             if grep -q "$forbidden" <<<"$MARKUP"; then
