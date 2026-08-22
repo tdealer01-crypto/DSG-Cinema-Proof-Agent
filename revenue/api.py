@@ -394,7 +394,16 @@ async def billing_status() -> dict:
     """Public, non-secret description of how this deployment can be paid."""
     engine = get_engine()
     config = config_from_env()
-    operational = await verify_operational_link(config)
+    try:
+        operational = await verify_operational_link(config)
+    except Exception as exc:
+        from logging_config import logger
+        logger.warning(
+            f"Stripe operational verification failed: {type(exc).__name__}: {exc}",
+            extra={"extra_data": {"error_type": type(exc).__name__}},
+        )
+        operational = {"verified": False, "checks": {"stripe_api": "TIMEOUT_OR_ERROR"}}
+
     stripe_status = config.status(operational)
     return {
         "billing_version": "dsg-revenue-1.1.0",
