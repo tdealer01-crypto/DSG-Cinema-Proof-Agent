@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,6 +16,7 @@ client = TestClient(cinema_main.app)
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.delenv("DSG_REVENUE_ENFORCE", raising=False)
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
     reset_store(RecordStore(str(tmp_path / "decision-channels.json")))
     yield
     reset_store(RecordStore(None))
@@ -47,7 +46,7 @@ def approved_plan():
     )
 
 
-def payload(plan_id: str, *, available: bool):
+def payload(plan_id: str):
     return {
         "plan_id": plan_id,
         "agent_identity": "dsg-executor",
@@ -57,13 +56,7 @@ def payload(plan_id: str, *, available: bool):
             "target": "production/app",
             "parameters": {"environment": "production"},
         },
-        "capability_needs": [
-            {
-                "capability": "production_deploy_credential",
-                "available": available,
-                "source": "server-secret-store",
-            }
-        ],
+        "required_capabilities": [{"capability": "stripe_api"}],
         "channel": "test",
         "trace_id": "cross-channel-1",
     }
@@ -76,17 +69,32 @@ def test_rest_contract_exposes_single_core_semantics():
     assert body["core"] == "dsg-decision-core"
     assert "WAITING_PERMISSION" in body["decisions"]
     assert "Missing tools or credentials are provisioning" in body["invariant"]
+    assert body["capabilities"]["caller_can_assert_availability"] is False
 
 
-def test_rest_approved_action_with_missing_capability_is_not_blocked():
+def test_rest_approved_action_with_missing_server_capability_is_not_blocked():
     plan = approved_plan()
-    response = client.post("/api/v1/control/preflight", json=payload(plan["plan_id"], available=False))
+    response = client.post("/api/v1/control/preflight", json=payload(plan["plan_id"]))
     assert response.status_code == 200
     body = response.json()
     assert body["decision"] == "WAITING_PERMISSION"
     assert body["allowed"] is True
     assert body["execution_ready"] is False
     assert body["computed_by"] == "dsg-decision-core"
+    assert body["capability_resolution"]["caller_can_assert_availability"] is False
+
+
+def test_rest_becomes_allow_when_server_capability_exists(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_server_only_value")
+    plan = approved_plan()
+    response = client.post("/api/v1/control/preflight", json=payload(plan["plan_id"]))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "ALLOW"
+    assert body["allowed"] is True
+    assert body["execution_ready"] is True
+    assert body["capability_grant"]["status"] == "GRANTED"
+    assert "sk_test_server_only_value" not in response.text
 
 
 def test_mcp_uses_same_waiting_permission_decision():
@@ -97,7 +105,7 @@ def test_mcp_uses_same_waiting_permission_decision():
         "method": "tools/call",
         "params": {
             "name": "dsg_preflight_action",
-            "arguments": payload(plan["plan_id"], available=False),
+            "arguments": payload(plan["plan_id"]),
         },
     }
     response = client.post("/api/v1/mcp", json=message)
