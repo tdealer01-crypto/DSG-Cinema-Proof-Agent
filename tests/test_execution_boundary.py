@@ -64,6 +64,10 @@ def execution_payload(plan_id: str, *, target: str = "production/app"):
     }
 
 
+def execution_count() -> int:
+    return int(service.store_summary()["records"].get("executions", 0))
+
+
 def test_rest_persists_exact_approved_trace_with_core_receipt():
     plan = approved_plan()
     response = client.post("/api/v1/executions", json=execution_payload(plan["plan_id"]))
@@ -73,6 +77,7 @@ def test_rest_persists_exact_approved_trace_with_core_receipt():
     assert body["authorization_control"]["computed_by"] == "dsg-decision-core"
     stored = service.read_execution(body["execution_id"])
     assert stored["plan_id"] == plan["plan_id"]
+    assert execution_count() == 1
 
 
 def test_rest_blocks_out_of_plan_trace_before_persistence():
@@ -85,7 +90,7 @@ def test_rest_blocks_out_of_plan_trace_before_persistence():
     body = response.json()
     assert body["error"] == "OUT_OF_PLAN_ACTION"
     assert body["details"]["decision"] == "BLOCK"
-    assert service.store_summary()["executions"] == 0
+    assert execution_count() == 0
 
 
 def test_mcp_record_execution_cannot_bypass_same_boundary():
@@ -106,7 +111,7 @@ def test_mcp_record_execution_cannot_bypass_same_boundary():
     body = tool["structuredContent"]
     assert body["error"] == "OUT_OF_PLAN_ACTION"
     assert body["details"]["decision"] == "BLOCK"
-    assert service.store_summary()["executions"] == 0
+    assert execution_count() == 0
 
 
 def test_draft_plan_preflight_returns_canonical_block_not_transport_409():
