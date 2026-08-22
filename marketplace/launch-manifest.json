@@ -12,7 +12,9 @@
     "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
     "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
     "support_contact": "t.dealer01@dsg.pics",
-    "rights_holder": "Thanawat Suparongsuwan"
+    "rights_holder": "Thanawat Suparongsuwan",
+    "publisher_organization": "DSG-ONE-pics",
+    "publisher_organization_url": "https://github.com/DSG-ONE-pics"
   },
   "truth_boundary": {
     "supported": [
@@ -38,6 +40,8 @@
       "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
       "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
       "support_contact": "t.dealer01@dsg.pics",
+      "publisher_organization": "DSG-ONE-pics",
+      "publisher_organization_url": "https://github.com/DSG-ONE-pics",
       "v2_package": "marketplace/github-action-v2/",
       "next": "publish the prepared Verified Execution v2 package from the dedicated Action repository",
       "commercial_role": "free acquisition channel; paid verification service sold separately"
