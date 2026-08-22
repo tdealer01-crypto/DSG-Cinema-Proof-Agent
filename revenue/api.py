@@ -429,6 +429,40 @@ async def billing_status() -> dict:
     }
 
 
+@router.get("/usage/history")
+def billing_usage_history(
+    limit: int = 20,
+    x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict:
+    account = _require_account(x_dsg_api_key)
+    bounded_limit = max(1, min(limit, 100))
+    entries = [
+        entry
+        for entry in get_engine().ledger.entries()
+        if entry.account_id == account.account_id
+    ]
+    selected = sorted(entries, key=lambda entry: entry.sequence, reverse=True)[:bounded_limit]
+    return {
+        "account_id": account.account_id,
+        "count": len(selected),
+        "items": [
+            {
+                "sequence": entry.sequence,
+                "period": entry.period,
+                "channel": entry.channel,
+                "sku": entry.sku,
+                "quantity": entry.quantity,
+                "amount_micros": entry.amount_micros,
+                "proof_hash": entry.proof_hash,
+                "context_hash": entry.context_hash,
+                "recorded_at": entry.recorded_at,
+                "entry_hash": entry.entry_hash,
+            }
+            for entry in selected
+        ],
+    }
+
+
 @router.get("/usage")
 def billing_usage(
     period: Optional[str] = None,

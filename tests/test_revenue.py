@@ -1381,6 +1381,55 @@ def test_usage_endpoint_rejects_a_missing_key(engine):
     assert client.get("/billing/usage").status_code == 401
 
 
+def test_usage_history_returns_only_the_callers_recent_proofs(engine):
+    account, api_key = engine.accounts.issue(display_name="History", plan="metered")
+    other, _other_key = engine.accounts.issue(display_name="Other", plan="metered")
+    for index in range(3):
+        engine.ledger.append(
+            account_id=account.account_id,
+            channel="api",
+            sku="verified_execution",
+            quantity=1,
+            unit_price_micros=50_000,
+            amount_micros=50_000,
+            proof_hash=f"{index + 1:064x}",
+            context_hash=f"{index + 100:064x}",
+            idempotency_key=f"history-{index}",
+            units_before=index,
+            recorded_at=f"2026-08-0{index + 1}T00:00:00Z",
+        )
+    engine.ledger.append(
+        account_id=other.account_id,
+        channel="api",
+        sku="verified_execution",
+        quantity=1,
+        unit_price_micros=50_000,
+        amount_micros=50_000,
+        proof_hash="f" * 64,
+        context_hash="e" * 64,
+        idempotency_key="other-history",
+        units_before=0,
+    )
+
+    response = client.get(
+        "/billing/usage/history?limit=2",
+        headers={"X-DSG-API-Key": api_key},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["account_id"] == account.account_id
+    assert body["count"] == 2
+    assert [item["proof_hash"] for item in body["items"]] == [
+        f"{3:064x}",
+        f"{2:064x}",
+    ]
+    assert all("idempotency_key" not in item for item in body["items"])
+
+
+def test_usage_history_requires_a_valid_key(engine):
+    assert client.get("/billing/usage/history").status_code == 401
+
+
 def test_webhook_is_unavailable_until_a_signing_secret_is_configured(engine):
     response = client.post("/billing/webhook/stripe", json={"type": "invoice.paid"})
     assert response.status_code == 503
