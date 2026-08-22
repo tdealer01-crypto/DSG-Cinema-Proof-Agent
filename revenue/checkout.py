@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from revenue import api as billing
 from .accounts import Account
+from .pricing import get_plan
 from .stripe_sync import (
     STRIPE_API_BASE,
     StripeConfig,
@@ -41,12 +42,34 @@ DEFAULT_CHECKOUT_RETURN_URL = "https://dsgoneverifiedweb.z1.web.core.windows.net
 class CheckoutSessionRequest(BaseModel):
     """A stable caller id makes retries idempotent without trusting a redirect."""
 
-    plan: Literal["metered"] = "metered"
+    plan: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     checkout_id: str = Field(
         min_length=8,
         max_length=128,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+
+
+def _checkout_plan(plan_id: str):
+    try:
+        plan = get_plan(plan_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "UNKNOWN_PLAN",
+                "message": "the requested checkout plan is not available",
+            },
+        ) from exc
+    if not plan.self_serve_checkout:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "PLAN_NOT_SELF_SERVE",
+                "message": f"plan '{plan_id}' is not available through self-serve Stripe checkout",
+            },
+        )
+    return plan
 
 
 def _configuration_error(message: str, *, checks: Optional[dict] = None) -> HTTPException:
@@ -289,6 +312,7 @@ async def create_checkout_session(
 ) -> dict[str, Any]:
     """Create Stripe-hosted metered checkout without granting entitlement."""
     account = _require_live_account(x_dsg_api_key)
+    plan = _checkout_plan(request.plan)
     config = config_from_env()
     await _require_verified_live_catalog(config)
     account = await _ensure_stripe_customer(account, config)
@@ -312,16 +336,16 @@ async def create_checkout_session(
             "metadata[dsg_account_id]": account.account_id,
             "metadata[dsg_product_id]": config.product_id,
             "metadata[dsg_price_id]": config.price_id,
-            "metadata[dsg_plan]": request.plan,
+            "metadata[dsg_plan]": plan.plan,
             # Subscription metadata is what subscription.created/updated uses
             # to promote the account from free to the metered entitlement.
             "subscription_data[metadata][dsg_account_id]": account.account_id,
-            "subscription_data[metadata][dsg_plan]": request.plan,
+            "subscription_data[metadata][dsg_plan]": plan.plan,
         },
         idempotency_key=_idempotency_key(
             "checkout",
             account.account_id,
-            request.plan,
+            plan.plan,
             request.checkout_id,
         ),
     )
@@ -351,7 +375,7 @@ async def create_checkout_session(
         "entitled": False,
         "session_id": session_id,
         "checkout_url": checkout_url,
-        "requested_plan": request.plan,
+        "requested_plan": plan.plan,
         "account": current.public_view(),
         "next_step": (
             "Complete Stripe Checkout. DSG keeps the current entitlement until "
