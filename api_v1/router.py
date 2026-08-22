@@ -18,6 +18,7 @@ from marketplace_verification import POLICY_VERSION, RECEIPT_VERSION
 from revenue import api as billing
 
 from . import API_VERSION, ENGINE_VERSION
+from .control import record_execution_if_authorized
 from .errors import AGENT_ASSERTED_VERDICT_REJECTED, ApiError
 from .models import (
     ApprovePlanRequest,
@@ -165,7 +166,7 @@ async def create_execution(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ) -> dict[str, Any]:
     _authorize(_api_key(x_dsg_api_key))
-    return service.record_execution(request)
+    return record_execution_if_authorized(request)
 
 
 @router.get("/executions/{execution_id}")
