@@ -1,4 +1,4 @@
-"""Transport-neutral REST adapter for the unified DSG decision core."""
+"""Transport-neutral adapter for the unified DSG decision core."""
 
 from __future__ import annotations
 
@@ -16,8 +16,13 @@ from .capability_broker import (
     known_capabilities,
     resolve_capabilities,
 )
-from .decision_core import CorePreflightRequest, evaluate_plan_authorization
-from .models import ObservedAction, Strict
+from .decision_core import (
+    CorePreflightRequest,
+    evaluate_execution_trace,
+    evaluate_plan_authorization,
+)
+from .errors import ApiError
+from .models import ExecutionCreate, ObservedAction, Strict
 
 router = APIRouter(prefix="/api/v1/control", tags=["dsg-decision-core"])
 
@@ -58,6 +63,45 @@ def evaluate_unified_preflight(request: UnifiedPreflightRequest) -> dict:
     return result
 
 
+def record_execution_if_authorized(request: ExecutionCreate) -> dict:
+    """Persist an execution only when its observed trace stays inside the plan.
+
+    Both REST and MCP call this boundary. This prevents a client from skipping
+    preflight and persisting an out-of-plan trace for later verification.
+    """
+    plan_record = service.get_plan_record(request.plan_id)
+    document = service.plan_document(plan_record)
+    control = evaluate_execution_trace(
+        plan_id=plan_record["plan_id"],
+        plan_hash=plan_record["plan_hash"],
+        plan_status=plan_record["status"],
+        approved_agent_identity=document.agent_identity,
+        agent_identity=request.agent_identity,
+        actions=request.actions,
+        plan_document=document,
+        trace_id=request.trace_id,
+    )
+    if control["decision"] == "BLOCK":
+        raise ApiError(
+            409,
+            control["code"],
+            control.get("reason") or "execution trace is outside the approved plan",
+            decision="BLOCK",
+            control_hash=control["control_hash"],
+            findings=control.get("findings", []),
+            plan_id=request.plan_id,
+        )
+
+    result = service.record_execution(request)
+    result["authorization_control"] = {
+        "decision": control["decision"],
+        "code": control["code"],
+        "control_hash": control["control_hash"],
+        "computed_by": control["computed_by"],
+    }
+    return result
+
+
 @router.get("/contract")
 async def control_contract() -> dict:
     return {
@@ -81,6 +125,10 @@ async def control_contract() -> dict:
         "invariant": (
             "DSG must not block plan-authorized execution. Missing tools or credentials are provisioning "
             "states, not policy denials."
+        ),
+        "execution_boundary": (
+            "REST and MCP execution recording revalidate the complete observed trace with the same core "
+            "before persistence, so preflight cannot be bypassed."
         ),
         "post_execution": ["record_execution", "submit_evidence", "verify", "proof"],
     }
@@ -107,4 +155,10 @@ def install(app) -> None:
     app.include_router(router)
 
 
-__all__ = ["UnifiedPreflightRequest", "evaluate_unified_preflight", "install", "router"]
+__all__ = [
+    "UnifiedPreflightRequest",
+    "evaluate_unified_preflight",
+    "record_execution_if_authorized",
+    "install",
+    "router",
+]
