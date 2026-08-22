@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 let key = "";
 let busy = false;
+let activationId = "";
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}), "X-DSG-API-Key": key };
@@ -113,10 +114,11 @@ $("activate").onclick = async () => {
   if (busy) return;
   const displayName = $("displayName").value.trim();
   if (!displayName) return showError(new Error("Organization name required"));
+  if (!$("newKey").hidden) return showError(new Error("Clear or use the existing one-time key before activating again"));
   busy = true;
   $("activate").disabled = true;
   try {
-    const activationId = crypto.randomUUID();
+    if (!activationId) activationId = crypto.randomUUID();
     const response = await fetch("/billing/activate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -126,6 +128,7 @@ $("activate").onclick = async () => {
     if (!response.ok) throw new Error(body.detail?.message || body.remediation?.next_step || `HTTP ${response.status}`);
     if (typeof body.api_key !== "string" || !body.api_key.startsWith("dsg_live_")) throw new Error("Activation did not return a valid one-time key");
     $("issuedKey").textContent = body.api_key;
+    activationId = "";
     $("newKey").hidden = false;
     $("displayName").value = "";
     $("message").textContent = "Account activated. Copy the key before continuing.";
@@ -140,10 +143,17 @@ $("useIssuedKey").onclick = () => {
   const issued = $("issuedKey").textContent;
   if (!issued) return;
   $("apiKey").value = issued;
-  $("issuedKey").textContent = "";
-  $("newKey").hidden = true;
   load();
 };
+$("clearIssuedKey").onclick = () => {
+  $("issuedKey").textContent = "";
+  $("newKey").hidden = true;
+};
+window.addEventListener("pagehide", () => {
+  key = "";
+  $("apiKey").value = "";
+  $("issuedKey").textContent = "";
+});
 $("upgrade").onclick = async () => {
   if (busy) return;
   busy = true;
