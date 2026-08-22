@@ -21,6 +21,7 @@ on:
       - 'tests/test_mobile_control.py'
       - 'tests/test_decision_core.py'
       - 'tests/test_decision_core_channels.py'
+      - 'tests/test_execution_boundary.py'
       - '.github/workflows/api-v1-verify.yml'
       - '.github/workflows/configure-github-marketplace-production.yml'
   push:
@@ -39,6 +40,7 @@ on:
       - 'tests/test_mobile_control.py'
       - 'tests/test_decision_core.py'
       - 'tests/test_decision_core_channels.py'
+      - 'tests/test_execution_boundary.py'
       - '.github/workflows/api-v1-verify.yml'
       - '.github/workflows/configure-github-marketplace-production.yml'
   workflow_dispatch:
@@ -102,7 +104,8 @@ jobs:
             tests/test_cinema_main.py \
             tests/test_mobile_control.py \
             tests/test_decision_core.py \
-            tests/test_decision_core_channels.py
+            tests/test_decision_core_channels.py \
+            tests/test_execution_boundary.py
 
       - name: Assert all execution adapters share the decision core
         shell: bash
@@ -111,6 +114,9 @@ jobs:
           grep -q 'evaluate_plan_authorization' api_v1/control.py
           grep -q 'evaluate_plan_authorization' api_v1/mobile_control.py
           grep -q 'evaluate_unified_preflight' api_v1/mcp.py
+          grep -q 'record_execution_if_authorized' api_v1/router.py
+          grep -q 'record_execution_if_authorized' api_v1/mcp.py
+          grep -q 'evaluate_execution_trace' api_v1/control.py
           grep -q 'caller_can_assert_availability.*False' api_v1/control.py
           python - <<'PY'
           from api_v1.control import control_contract
@@ -120,7 +126,8 @@ jobs:
           assert body['core'] == 'dsg-decision-core'
           assert set(body['decisions']) == {'ALLOW', 'WAITING_PERMISSION', 'BLOCK'}
           assert body['capabilities']['caller_can_assert_availability'] is False
-          print('REST, MCP and mobile share the DSG decision-core contract')
+          assert 'revalidate' in body['execution_boundary']
+          print('REST, MCP and mobile share the DSG decision-core contract and execution boundary')
           PY
 
       - name: Assert the API cannot be talked into a verdict
