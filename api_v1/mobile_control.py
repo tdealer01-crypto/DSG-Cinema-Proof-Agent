@@ -135,7 +135,9 @@ def evaluate_preflight(request: MobilePreflightRequest) -> dict[str, Any]:
             "evaluated_at": utc_now(),
         }
 
-    plan_record = service._require_approved_plan(request.plan_id)
+    # Do not use _require_approved_plan here: the shared core must produce the
+    # canonical PLAN_NOT_APPROVED -> BLOCK response for every channel.
+    plan_record = service.get_plan_record(request.plan_id)
     document = service.plan_document(plan_record)
     observed = ObservedAction(
         action=request.action.action,
