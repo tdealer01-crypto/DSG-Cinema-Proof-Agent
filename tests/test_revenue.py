@@ -1450,6 +1450,50 @@ def test_usage_history_requires_a_valid_key(engine):
     assert client.get("/billing/usage/history").status_code == 401
 
 
+def test_usage_history_detail_is_tenant_scoped(engine):
+    account, api_key = engine.accounts.issue(display_name="Proof detail", plan="metered")
+    other, other_key = engine.accounts.issue(display_name="Other detail", plan="metered")
+    entry, created = engine.ledger.append(
+        account_id=account.account_id,
+        channel="api",
+        sku="verified_execution",
+        quantity=1,
+        unit_price_micros=50_000,
+        amount_micros=50_000,
+        proof_hash="a" * 64,
+        context_hash="b" * 64,
+        idempotency_key="proof-detail",
+        units_before=0,
+    )
+    assert created is True
+
+    response = client.get(
+        f"/billing/usage/history/{entry.sequence}",
+        headers={"X-DSG-API-Key": api_key},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "sequence": entry.sequence,
+        "period": entry.period,
+        "channel": "api",
+        "sku": "verified_execution",
+        "quantity": 1,
+        "amount_micros": 50_000,
+        "proof_hash": "a" * 64,
+        "context_hash": "b" * 64,
+        "recorded_at": entry.recorded_at,
+        "entry_hash": entry.entry_hash,
+    }
+    assert client.get(
+        f"/billing/usage/history/{entry.sequence}",
+        headers={"X-DSG-API-Key": other_key},
+    ).status_code == 404
+
+
+def test_usage_history_detail_requires_a_valid_key(engine):
+    assert client.get("/billing/usage/history/1").status_code == 401
+
+
 def test_billing_subscription_state_is_customer_scoped(engine):
     account, api_key = engine.accounts.issue(
         display_name="Subscriber",

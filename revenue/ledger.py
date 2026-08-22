@@ -148,7 +148,12 @@ class LedgerStore:
         """Serialize against other threads and other processes, then refresh."""
         with self._lock:
             with self._file_lock():
-                self._reload_if_changed()
+                # The lock serializes writers, but filesystem metadata signatures are
+                # not a correctness primitive on SMB/NFS/Azure Files. Always reload
+                # the authoritative snapshot after acquiring the process lock so a
+                # stale in-memory replica cannot overwrite a preceding writer.
+                if self._path is not None and self._path.exists():
+                    self._load()
                 yield
 
     def _persist(self) -> None:
@@ -187,6 +192,13 @@ class LedgerStore:
                 for entry in self._entries
                 if entry.account_id == account_id and entry.period == period
             )
+
+    def find_account_entry(self, account_id: str, sequence: int) -> Optional[LedgerEntry]:
+        with self._critical_section():
+            if sequence < 0 or sequence >= len(self._entries):
+                return None
+            entry = self._entries[sequence]
+            return entry if entry.sequence == sequence and entry.account_id == account_id else None
 
     def account_entries_before(
         self,

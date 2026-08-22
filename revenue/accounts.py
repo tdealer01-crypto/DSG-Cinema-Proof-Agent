@@ -157,7 +157,11 @@ class AccountStore:
         """Serialize against other threads and other processes, then refresh."""
         with self._lock:
             with self._file_lock():
-                self._reload_if_changed()
+                # Reload unconditionally while holding the inter-process lock. Cached
+                # mtime/size metadata on shared filesystems cannot prevent stale
+                # whole-file updates from overwriting another replica.
+                if self._path is not None and self._path.exists():
+                    self._load()
                 yield
 
     def _persist(self) -> None:
