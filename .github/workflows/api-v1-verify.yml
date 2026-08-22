@@ -115,7 +115,7 @@ jobs:
           grep -q 'evaluate_plan_authorization' api_v1/mobile_control.py
           grep -q 'evaluate_unified_preflight' api_v1/mcp.py
           grep -q 'caller_can_assert_availability.*False' api_v1/control.py
-          grep -q 'preserves observed reality' api_v1/router.py
+          grep -q 'records observed reality for audit' api_v1/router.py
           grep -q 'preserve that raw trace' api_v1/mcp.py
           python - <<'PY'
           from api_v1.control import control_contract
