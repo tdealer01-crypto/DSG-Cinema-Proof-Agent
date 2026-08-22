@@ -190,5 +190,9 @@ def test_production_deployments_have_one_coordinated_owner():
     assert "    environment: production" in azure
     assert "SOLVE_CODE=$(curl" in cinema
     assert "Cinema production did not converge to the new authenticated revision" in cinema
+    assert "KEY_VAULT_Z3_SECRET_NAME" in cinema
+    assert "az keyvault secret show" in cinema
+    assert "az keyvault secret set" in cinema
+    assert "if [[ -z \"$Z3_SECRET\" ]]" in cinema
     assert "  push:\n    branches: [main]" not in z3
     assert "deploy-cinema-production.yml" in z3
