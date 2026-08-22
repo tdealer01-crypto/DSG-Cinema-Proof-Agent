@@ -337,6 +337,24 @@ class RevenueEngine:
         )
         total_micros = base_recognized + usage_micros
         cap = account.hard_cap_units if account.hard_cap_units is not None else plan.hard_cap_units
+        usage_percent = None if cap is None or cap == 0 else round((units / cap) * 100, 2)
+        upgrade_threshold_reached = (
+            cap is not None and cap > 0 and units * 100 >= cap * 80
+        )
+        if account.plan == "free" and upgrade_threshold_reached:
+            upgrade = {
+                "recommended": True,
+                "reason": "QUOTA_EXHAUSTED" if cap is not None and units >= cap else "QUOTA_80_PERCENT",
+                "target_plan": "metered",
+                "checkout_endpoint": "/billing/checkout/session",
+            }
+        else:
+            upgrade = {
+                "recommended": False,
+                "reason": None,
+                "target_plan": None,
+                "checkout_endpoint": None,
+            }
 
         by_sku: dict[str, dict] = {}
         for entry in entries:
@@ -353,6 +371,8 @@ class RevenueEngine:
             "units": units,
             "units_included": plan.included_units,
             "units_remaining": None if cap is None else max(cap - units, 0),
+            "usage_percent": usage_percent,
+            "upgrade": upgrade,
             "hard_cap_units": cap,
             "catalog_base_price_micros": plan.base_price_micros,
             "paid_invoice_amount_micros": paid_invoice_micros,
