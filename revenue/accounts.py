@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import threading
+import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -166,20 +167,28 @@ class AccountStore:
         if self._path is None:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
         payload = json.dumps([account.to_dict() for account in self._accounts.values()], indent=2)
-        with open(temporary, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self._path)
+        fd, temporary_name = tempfile.mkstemp(
+            dir=self._path.parent,
+            prefix=f".{self._path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._path)
+        finally:
+            temporary.unlink(missing_ok=True)
         try:
             directory_fd = os.open(self._path.parent, os.O_DIRECTORY)
             try:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-        except (AttributeError, OSError):
+        except AttributeError:
             pass
         self._loaded_signature = self._file_signature()
 
