@@ -6,6 +6,7 @@ COPY requirements-cinema.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY cinema_main.py marketplace_verification.py ./
+COPY logging_config.py middleware.py metrics.py error_monitoring.py sentry_config.py ./
 COPY revenue ./revenue
 COPY api_v1 ./api_v1
 COPY web ./web

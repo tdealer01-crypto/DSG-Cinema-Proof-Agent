@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: DSG ONE Verification API
-  version: 1.0.0
-  summary: Independent verification of agent executions, behind an exact Z3 proof.
+  version: 1.1.0
+  summary: Plan-authorized execution control plus independent verification behind an exact Z3 proof.
   description: |
     DSG ONE verifies that an agent execution conforms to an approved plan and to
     policy, and issues a proof receipt for that conformance.
@@ -47,6 +47,15 @@ info:
     `POST /executions/{execution_id}/verify` -> `GET /proofs/{proof_id}`
 
     The same flow is available to MCP clients as tools on `POST /mcp`.
+
+    ## Plan-authorized execution core
+
+    Before an executor acts, `POST /api/v1/control/preflight` applies one production rule:
+    exact approved work is `ALLOW`; exact approved work with a missing server-side capability
+    is `WAITING_PERMISSION` and remains authorized while provisioning is resolved; only work
+    outside the approved plan is `BLOCK`. REST, MCP and the audited Android adapter share this
+    Decision Core. `POST /api/v1/executions` remains an audit/evidence surface and preserves
+    observed violation traces rather than deleting evidence.
   license:
     name: Repository license
     url: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent
@@ -63,6 +72,10 @@ servers:
 tags:
   - name: status
     description: Readiness of the verification backend and the record store.
+  - name: control
+    description: Canonical plan authorization and server-side capability resolution.
+  - name: mobile
+    description: Audited Android adapter to the same DSG Decision Core.
   - name: plans
     description: Registering and approving the plan a proof is measured against.
   - name: verification
@@ -96,6 +109,117 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ServiceStatus'
+
+  /api/v1/control/contract:
+    get:
+      tags: [control]
+      operationId: getControlContract
+      summary: Read the canonical Decision Core contract
+      description: |
+        Describes ALLOW, WAITING_PERMISSION and BLOCK semantics, the server-side
+        capability broker, and the distinction between authorization and audit.
+      security: []
+      responses:
+        '200':
+          description: Decision Core contract.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlContract'
+
+  /api/v1/control/capabilities:
+    get:
+      tags: [control]
+      operationId: getControlCapabilities
+      summary: Read server-side capability readiness without exposing secrets
+      description: |
+        Returns capability names and readiness derived by the trusted server.
+        Secret values are never returned and callers cannot write readiness.
+      security: []
+      responses:
+        '200':
+          description: Current capability readiness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityStatus'
+
+  /api/v1/control/preflight:
+    post:
+      tags: [control]
+      operationId: preflightAction
+      summary: Authorize one exact proposed step through the DSG Decision Core
+      description: |
+        This is the canonical execution gate for REST and MCP adapters. The caller
+        names the exact proposed action and any capability requirements. DSG reads
+        the stored plan, resolves capability availability server-side, and returns
+        ALLOW, WAITING_PERMISSION, or BLOCK. An approved action is never turned
+        into BLOCK merely because a credential or tool is temporarily unavailable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnifiedPreflightRequest'
+      responses:
+        '200':
+          description: Canonical authorization decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlDecisionResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/AssertedVerdict'
+
+  /api/v1/mobile/client-contract:
+    get:
+      tags: [mobile]
+      operationId: getMobileClientContract
+      summary: Read the audited Android identity and control path
+      security: []
+      responses:
+        '200':
+          description: Audited mobile client contract.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileClientContract'
+
+  /api/v1/mobile/control/preflight:
+    post:
+      tags: [mobile]
+      operationId: mobilePreflightAction
+      summary: Validate the audited Android build and delegate to the Decision Core
+      description: |
+        The mobile adapter first pins package/version/APK/signing identity. If the
+        build is trusted it delegates plan authorization and server-side capability
+        resolution to the same DSG Decision Core used by REST and MCP. The trusted
+        bridge authenticates with a server-side bearer secret or DSG API key; the
+        end user is not asked to re-approve every already-approved action.
+      security:
+        - ApiKeyAuth: []
+        - BridgeBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MobilePreflightRequest'
+      responses:
+        '200':
+          description: Mobile identity and plan authorization decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlDecisionResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/AssertedVerdict'
 
   /api/v1/plans:
     post:
@@ -233,10 +357,11 @@ paths:
     post:
       tags: [executions]
       operationId: createExecution
-      summary: Record what the agent actually did
+      summary: Record observed execution reality for audit
       description: |
-        Requires an approved plan and the agent identity that plan approves. The
-        response includes DSG's alignment preview over the submitted trace.
+        Requires an approved plan and matching agent identity. This endpoint records
+        observed reality for audit; preflight is the authorization gate. If an executor
+        violates a prior BLOCK, the raw trace is preserved so verification can prove it.
       requestBody:
         required: true
         content:
@@ -435,6 +560,11 @@ components:
         unmetered public evaluation. Presenting a key opts into metering, and an
         unusable key is refused rather than silently served.
 
+    BridgeBearerAuth:
+      type: http
+      scheme: bearer
+      description: Trusted server-side Cinema/RevenuePilot bridge credential.
+
   parameters:
     PlanId:
       name: plan_id
@@ -473,6 +603,12 @@ components:
             $ref: '#/components/schemas/Error'
     Denied:
       description: Entitlement refused the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Trusted bridge authentication is required.
       content:
         application/json:
           schema:
@@ -568,6 +704,276 @@ components:
         details:
           type: object
           additionalProperties: true
+
+    ControlDecision:
+      type: string
+      description: Pre-execution authorization vocabulary from the unified Decision Core.
+      enum: [ALLOW, WAITING_PERMISSION, BLOCK]
+
+    CapabilityRequirement:
+      type: object
+      additionalProperties: false
+      required: [capability]
+      description: |
+        A capability name required by the approved step. Availability is deliberately
+        absent: only the trusted server-side broker may compute it.
+      properties:
+        capability:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    CapabilityNeed:
+      type: object
+      required: [capability, available]
+      properties:
+        capability:
+          type: string
+        available:
+          type: boolean
+          readOnly: true
+        source:
+          type: [string, 'null']
+          readOnly: true
+        remediation:
+          type: [string, 'null']
+          readOnly: true
+
+    CapabilityGrant:
+      type: object
+      properties:
+        status:
+          type: string
+          const: GRANTED
+        scope:
+          type: object
+          additionalProperties: true
+        scope_hash:
+          $ref: '#/components/schemas/Sha256'
+        permissions:
+          type: array
+          items:
+            type: string
+        credential_policy:
+          type: string
+
+    ControlDecisionResult:
+      type: object
+      required: [allowed, execution_ready, decision, code, computed_by]
+      properties:
+        allowed:
+          type: boolean
+          readOnly: true
+        execution_ready:
+          type: boolean
+          readOnly: true
+        decision:
+          $ref: '#/components/schemas/ControlDecision'
+        code:
+          type: string
+          readOnly: true
+        reason:
+          type: string
+          readOnly: true
+        plan_id:
+          type: string
+        plan_hash:
+          $ref: '#/components/schemas/Sha256'
+        plan_status:
+          type: string
+        step_id:
+          type: [string, 'null']
+        action:
+          type: string
+        target:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        capability_grant:
+          oneOf:
+            - $ref: '#/components/schemas/CapabilityGrant'
+            - type: 'null'
+        capability_needs:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityNeed'
+        pending_capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityNeed'
+        capability_resolution:
+          type: object
+          additionalProperties: true
+        control_hash:
+          $ref: '#/components/schemas/Sha256'
+        computed_by:
+          type: string
+          readOnly: true
+        next_step:
+          type: string
+          readOnly: true
+        evaluated_at:
+          type: string
+          readOnly: true
+
+    ControlContract:
+      type: object
+      properties:
+        core:
+          type: string
+          const: dsg-decision-core
+        preflight:
+          type: string
+        capabilities:
+          type: object
+          additionalProperties: true
+        decisions:
+          type: object
+          additionalProperties:
+            type: string
+        invariant:
+          type: string
+        audit_boundary:
+          type: string
+        post_execution:
+          type: array
+          items:
+            type: string
+
+    CapabilityStatus:
+      type: object
+      properties:
+        known:
+          type: integer
+        available:
+          type: array
+          items:
+            type: string
+        pending:
+          type: array
+          items:
+            type: string
+        details:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityNeed'
+        secrets_exposed:
+          type: boolean
+          const: false
+
+    UnifiedPreflightRequest:
+      type: object
+      additionalProperties: false
+      required: [plan_id, agent_identity, action]
+      properties:
+        plan_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        agent_identity:
+          type: string
+          minLength: 1
+          maxLength: 255
+        action:
+          $ref: '#/components/schemas/ObservedAction'
+        required_capabilities:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/CapabilityRequirement'
+        channel:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: api
+        trace_id:
+          type: [string, 'null']
+          maxLength: 128
+
+    MobileClientIdentity:
+      type: object
+      additionalProperties: false
+      required: [package_name, version_name, version_code, apk_sha256, signing_cert_sha256]
+      properties:
+        package_name:
+          type: string
+          maxLength: 255
+        version_name:
+          type: string
+          maxLength: 64
+        version_code:
+          type: integer
+          minimum: 1
+        apk_sha256:
+          $ref: '#/components/schemas/Sha256'
+        signing_cert_sha256:
+          $ref: '#/components/schemas/Sha256'
+
+    MobileProposedAction:
+      type: object
+      additionalProperties: false
+      required: [action, target, step_id]
+      properties:
+        action:
+          type: string
+          minLength: 1
+          maxLength: 64
+        target:
+          type: string
+          minLength: 1
+          maxLength: 255
+        step_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        parameters:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            $ref: '#/components/schemas/Scalar'
+
+    MobilePreflightRequest:
+      type: object
+      additionalProperties: false
+      required: [client, plan_id, agent_identity, action]
+      properties:
+        client:
+          $ref: '#/components/schemas/MobileClientIdentity'
+        plan_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        agent_identity:
+          type: string
+          minLength: 1
+          maxLength: 255
+        action:
+          $ref: '#/components/schemas/MobileProposedAction'
+        required_capabilities:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/CapabilityRequirement'
+        trace_id:
+          type: [string, 'null']
+          maxLength: 128
+
+    MobileClientContract:
+      type: object
+      properties:
+        client:
+          type: object
+          additionalProperties: true
+        decision_core:
+          type: string
+        control:
+          type: object
+          additionalProperties: true
+        rule:
+          type: string
 
     PlanStep:
       type: object

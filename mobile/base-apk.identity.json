@@ -1,0 +1,45 @@
+{
+  "artifact": "base.apk",
+  "artifact_role": "audited Android client identity; binary distributed outside source tree",
+  "package_name": "com.dsg.architect",
+  "app_name": "DSG Verified Execution",
+  "version_name": "1.0.0",
+  "version_code": 13,
+  "min_sdk": 24,
+  "target_sdk": 36,
+  "apk_sha256": "2d4674909e6aff8282dd39f9d198df592e047cb7e0742fe7bab8f62caa6cbf23",
+  "signing": {
+    "schemes": ["v2", "v3"],
+    "signing_cert_sha256": "8262d16fbd2c58d4b7492648894fec6102001f6ddbc71ef74f9a44dc8467cfa7",
+    "source_stamp_cert_sha256": "3257d599a49d2c961a471ca9843f59d341a405884583fc087df4237b733bbd6d",
+    "source_stamp": "https://play.google.com/store"
+  },
+  "runtime_evidence": {
+    "framework": "React Native + Expo",
+    "javascript_engine": "Hermes bytecode v98",
+    "dex_files": 3,
+    "custom_scheme": "dsgverify://",
+    "observed_backend_host": "https://revenuepilot-k8qsuydx.manus.space"
+  },
+  "dsg_control_contract": {
+    "client_contract": "GET /api/v1/mobile/client-contract",
+    "preflight": "POST /api/v1/mobile/control/preflight",
+    "record_execution": "POST /api/v1/executions",
+    "submit_evidence": "POST /api/v1/executions/{execution_id}/evidence",
+    "verify_execution": "POST /api/v1/executions/{execution_id}/verify",
+    "read_proof": "GET /api/v1/proofs/{proof_id}"
+  },
+  "policy": {
+    "approved_exact_action": "ALLOW",
+    "unapproved_build_or_action": "BLOCK",
+    "undeclared_parameters": "REVIEW and do not execute",
+    "verdict_source": "DSG computes verdicts; mobile callers do not assert them"
+  },
+  "known_static_apk_review_items": [
+    "SYSTEM_ALERT_WINDOW should be removed if unused",
+    "dsgverify custom-scheme handler requires state/nonce/replay validation",
+    "allowBackup=true requires all credentials to remain in excluded SecureStore",
+    "RNCWebView external FileProvider path is broader than necessary",
+    "ABI split native libraries were not present in the supplied base split"
+  ]
+}

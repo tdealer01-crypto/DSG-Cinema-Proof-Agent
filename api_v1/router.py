@@ -88,7 +88,6 @@ async def _backend_state() -> dict[str, Any]:
     }
 
 
-# -------------------------------------------------------------------- status
 @router.get("/status")
 async def status() -> dict[str, Any]:
     backend = await _backend_state()
@@ -114,7 +113,6 @@ async def status() -> dict[str, Any]:
     }
 
 
-# --------------------------------------------------------------------- plans
 @router.post("/plans", status_code=201)
 async def create_plan(
     document: PlanDocument,
@@ -139,7 +137,6 @@ async def approve_plan(
     return service.approve_plan(plan_id, request)
 
 
-# ---------------------------------------------------------------- verify legs
 @router.post("/verify/plan-alignment")
 async def verify_plan_alignment(
     request: PlanAlignmentRequest,
@@ -158,13 +155,15 @@ async def verify_constraints(
     return await service.verify_constraints(request)
 
 
-# ---------------------------------------------------------------- executions
 @router.post("/executions", status_code=201)
 async def create_execution(
     request: ExecutionCreate,
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ) -> dict[str, Any]:
     _authorize(_api_key(x_dsg_api_key))
+    # This endpoint records observed reality for audit. Authorization must happen
+    # before an executor acts via /control/preflight; an out-of-plan action that
+    # nevertheless occurred is preserved here so evidence is not destroyed.
     return service.record_execution(request)
 
 
@@ -198,13 +197,11 @@ async def verify_execution(
     )
 
 
-# -------------------------------------------------------------------- proofs
 @router.get("/proofs/{proof_id}")
 async def read_proof(proof_id: str) -> dict[str, Any]:
     return service.read_proof(proof_id)
 
 
-# ----------------------------------------------------------------------- mcp
 @router.post("/mcp")
 async def mcp_endpoint(
     message: dict[str, Any] = Body(...),
@@ -226,7 +223,6 @@ async def mcp_transport_hint() -> JSONResponse:
     )
 
 
-# ----------------------------------------------------------------- app wiring
 async def api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=exc.payload())
 
