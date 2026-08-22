@@ -303,6 +303,7 @@ def _stripe_context_hash(request: StripeVerifyRequest, risk_score: int) -> str:
 
 
 PROTOTYPE_PATH = Path(__file__).resolve().parent / "web" / "dsg-one-3d" / "index.html"
+CUSTOMER_DASHBOARD_PATH = Path(__file__).resolve().parent / "web" / "customer-dashboard" / "index.html"
 
 
 @app.get("/app", include_in_schema=False)
@@ -318,6 +319,21 @@ async def prototype_console() -> FileResponse:
         PROTOTYPE_PATH,
         media_type="text/html",
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def customer_dashboard() -> FileResponse:
+    if not CUSTOMER_DASHBOARD_PATH.exists():
+        raise HTTPException(status_code=404, detail="the customer dashboard bundle is not present")
+    return FileResponse(
+        CUSTOMER_DASHBOARD_PATH,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+        },
     )
 
 
