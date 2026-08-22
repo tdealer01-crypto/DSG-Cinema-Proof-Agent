@@ -50,6 +50,7 @@ jobs:
       # live key never passes through this workflow. See SECRET_MANAGEMENT.md.
       KEY_VAULT_NAME: ${{ vars.DSG_KEY_VAULT_NAME }}
       KEY_VAULT_Z3_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_Z3_SECRET_NAME || 'z3-backend-shared-secret' }}
+      CONFIGURED_Z3_SHARED_SECRET: ${{ secrets.DSG_Z3_SHARED_SECRET }}
       KEY_VAULT_STRIPE_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_SECRET_NAME || 'stripe-secret-key' }}
       KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
       CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -103,20 +104,14 @@ jobs:
             --query id --output tsv)
           test -n "$PULL_IDENTITY_ID"
 
-          if [[ -z "$KEY_VAULT_NAME" ]]; then
-            echo 'DSG_KEY_VAULT_NAME is required for the stable Cinema-to-Z3 credential.' >&2
+          Z3_SECRET="${CONFIGURED_Z3_SHARED_SECRET:-}"
+          if [[ -z "$Z3_SECRET" ]]; then
+            echo 'DSG_Z3_SHARED_SECRET is required; refusing to mint a deployment credential.' >&2
             exit 1
           fi
-          Z3_SECRET=$(az keyvault secret show \
-            --vault-name "$KEY_VAULT_NAME" \
-            --name "$KEY_VAULT_Z3_SECRET_NAME" \
-            --query value --output tsv 2>/dev/null || true)
-          if [[ -z "$Z3_SECRET" ]]; then
-            Z3_SECRET=$(openssl rand -hex 32)
-            az keyvault secret set \
-              --vault-name "$KEY_VAULT_NAME" \
-              --name "$KEY_VAULT_Z3_SECRET_NAME" \
-              --value "$Z3_SECRET" --output none
+          if [[ ${#Z3_SECRET} -lt 32 ]]; then
+            echo 'DSG_Z3_SHARED_SECRET must contain at least 32 characters.' >&2
+            exit 1
           fi
           CINEMA_SECRET=$(openssl rand -hex 32)
           echo "::add-mask::$Z3_SECRET"
