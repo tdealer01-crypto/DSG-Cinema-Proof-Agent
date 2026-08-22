@@ -1,151 +1,234 @@
-# DSG ONE v1 — independent verification API
+# DSG ONE v1 — plan-authorized execution + independent verification
 
 The machine-readable contract is [`openapi/dsg-one-v1.yaml`](../openapi/dsg-one-v1.yaml)
-(OpenAPI 3.1). This page is the reasoning behind it.
+(OpenAPI 3.1). This page explains the production behavior behind it.
 
-## Why the old shape was not verification
+## One rule before execution
 
-The pre-v1 marketplace endpoint (`POST /verify/evaluate`) takes booleans:
+DSG does **not** block work merely because it is powerful, writes to production,
+or needs a credential. The authorization question is narrower and deterministic:
+
+- **`ALLOW`** — the exact action is inside an approved plan and its required
+  server-side capabilities are ready. DSG emits a scoped capability grant and the
+  executor may run that exact step.
+- **`WAITING_PERMISSION`** — the exact action is still inside the approved plan,
+  but a required server-side credential/tool/infrastructure capability is not ready.
+  The plan remains authorized. The orchestrator resolves the capability and retries
+  the same step **without asking the user to approve it again**.
+- **`BLOCK`** — the action is outside the approved boundary: the plan is not
+  approved, the executing agent is different, or the action/target/parameters do
+  not match the approved step. The audited Android adapter also blocks a different
+  mobile build identity.
+
+This rule lives in `api_v1/decision_core.py`. REST, MCP and the Android adapter call
+that same core rather than implementing their own approval semantics.
+
+## Capabilities are resolved server-side
+
+A caller may say which capability an approved step requires, but it cannot say that
+capability is already available. `api_v1/capability_broker.py` derives readiness
+from trusted server configuration and never returns secret values.
+
+Current registered capability names include:
+
+- `dsg_verifier`
+- `cinema_bridge`
+- `revenue_admin`
+- `stripe_api`
+- `stripe_webhook`
+- `azure_oidc`
+- `sentry`
+
+An unknown or unconfigured capability produces `WAITING_PERMISSION`, not an
+out-of-plan `BLOCK`. That distinction prevents DSG governance from turning into a
+blanket execution blocker.
+
+Useful endpoints:
+
+```text
+GET  /api/v1/control/contract       canonical decision semantics
+GET  /api/v1/control/capabilities   server-derived capability readiness, no secrets
+POST /api/v1/control/preflight      authorize one exact approved step
+```
+
+## Why the old verification shape was insufficient
+
+The pre-v1 marketplace endpoint (`POST /verify/evaluate`) takes booleans such as:
 
 ```json
 { "plan_aligned": true, "constraints_pass": true, "replay_match": true, "evidence_complete": true }
 ```
 
-Those fields come from the agent being verified. An exact Z3 proof over them proves
-that the *decision policy* was applied correctly — it cannot prove the inputs were
-true. An agent that reports `plan_aligned: true` after going outside its plan gets
-an ALLOW receipt, and the receipt is not wrong about anything it actually claims.
-That endpoint stays as it is, for the integrations already built on it.
+Those values come from the agent being verified. An exact Z3 proof over them can
+prove that the decision policy was applied correctly, but it cannot prove that the
+inputs themselves were true.
 
-v1 removes the gap. It accepts raw material only, and computes every verdict itself.
+v1 therefore accepts raw material and computes its own verdicts.
 
 | Verdict | v1 computes it from |
 |---|---|
-| `plan_aligned` | each observed action matched against the approved plan's steps and parameters |
-| `constraints_pass` | the declared constraints evaluated over facts DSG derived from the execution |
-| `execution_succeeded` | recorded action statuses plus coverage of every non-optional approved step |
-| `replay_match` | each action's declared `output_sha256` against digests DSG computed over submitted artifacts |
-| `evidence_complete` | artifacts covering the steps the plan says require evidence, content-verified |
-| `authorized` | plan approval state, plan-hash identity, and agent identity |
+| `plan_aligned` | each observed action matched against approved steps and parameters |
+| `constraints_pass` | declared constraints evaluated over facts DSG derives from the execution |
+| `execution_succeeded` | recorded action statuses plus coverage of required approved steps |
+| `replay_match` | action `output_sha256` values compared with digests DSG computes over submitted artifacts |
+| `evidence_complete` | content-verified artifacts covering steps that require evidence |
+| `authorized` | plan approval state, plan-hash identity and agent identity |
 
-A request that carries any of those fields is refused with **422
-`AGENT_ASSERTED_VERDICT_REJECTED`** before it reaches the engine. The rejection is
-part of the contract, and `tests/test_api_contract.py` fails the build if the
-published schema ever offers one of those fields as input.
+A request carrying DSG-computed verdict fields is refused with **422
+`AGENT_ASSERTED_VERDICT_REJECTED`** before it reaches the verification engine.
+`tests/test_api_contract.py` also checks that the published OpenAPI request schemas
+do not offer those fields.
 
-## The flow
+## Canonical production flow
 
+```text
+POST /api/v1/plans                          register raw plan → DSG-computed plan_hash
+POST /api/v1/plans/{id}/approve             approve and lock that exact plan_hash
+POST /api/v1/control/preflight              ALLOW / WAITING_PERMISSION / BLOCK
+                                            ↓
+                                  provision if needed, then execute exact granted step
+                                            ↓
+POST /api/v1/executions                     record observed reality for audit
+POST /api/v1/executions/{id}/evidence       submit artifacts; DSG hashes content itself
+POST /api/v1/executions/{id}/verify         recompute everything + exact Z3 proof
+GET  /api/v1/proofs/{id}                    read receipt and recomputed receipt hash
 ```
-POST /api/v1/plans                          register the raw plan   → plan_hash (computed by DSG)
-POST /api/v1/plans/{id}/approve             approve, echoing plan_hash → plan locked
-POST /api/v1/verify/plan-alignment          per-action alignment findings
-POST /api/v1/verify/constraints             constraint evaluation + exact Z3 proof
-POST /api/v1/executions                     record the observed action trace
-POST /api/v1/executions/{id}/evidence       submit artifacts; DSG hashes them itself
-POST /api/v1/executions/{id}/verify         recompute everything, prove, issue the receipt
-GET  /api/v1/proofs/{id}                    read the receipt with its hash recomputed
-POST /api/v1/mcp                            the same flow as MCP tools (JSON-RPC 2.0)
-GET  /api/v1/status                         readiness — the console shows NOT CONNECTED without it
-```
+
+`POST /api/v1/verify/plan-alignment` and
+`POST /api/v1/verify/constraints` remain available as explicit diagnostic /
+verification legs. They do not replace the pre-execution Decision Core.
+
+### Authorization is not audit storage
+
+`POST /api/v1/control/preflight` is the gate that decides whether the executor may
+perform a proposed action.
+
+`POST /api/v1/executions` is deliberately different: it records what actually
+happened. If an executor ever violates a prior `BLOCK`, the raw trace is preserved
+so the audit trail can prove the violation. Discarding that record would destroy
+evidence; storing it does **not** retroactively authorize the action.
 
 ### Approval names exactly what was read
 
-`POST /plans` returns the `plan_hash` DSG computed over its canonical encoding of the
-plan. The approval must echo that hash; a mismatch is `PLAN_HASH_MISMATCH`. An
-approver therefore cannot approve one text while a different one is stored, and the
-receipt's `approval_hash` commits to both.
+`POST /plans` returns the `plan_hash` DSG computed over the canonical plan. Approval
+must echo that hash. A mismatch is `PLAN_HASH_MISMATCH`. An approved plan is locked;
+changed work requires a changed plan.
 
-### Evidence: hashed, or explicitly not verified
+### Evidence is hashed, or explicitly not verified
 
-* `content` / `content_base64` — DSG hashes the bytes. A `declared_sha256` that
-  disagrees is **422 `EVIDENCE_HASH_MISMATCH`**; the submission is rejected, not
-  flagged.
-* `declared_sha256` alone — recorded as `HASH_ONLY`. It never satisfies a step that
-  requires evidence and never counts toward `replay_match`. Attestation is not
-  verification, and the receipt says which it had.
+- `content` / `content_base64` — DSG hashes the bytes. A `declared_sha256` that
+  disagrees is **422 `EVIDENCE_HASH_MISMATCH`**.
+- `declared_sha256` alone — recorded as hash-only evidence. It does not satisfy a
+  content-required step and does not prove replay by itself.
 
-### Replay is a hash comparison, not a claim
+### Replay is a comparison, not a claim
 
-An action may declare the digest of the output it produced. Replay matches only when
-some content-verified artifact hashes to exactly that digest. No declared digests at
-all means `replay_match: false` with reason `NO_DECLARED_OUTPUT` — silence is not a
-match.
+An action may record the digest of the output it produced. Replay matches only when
+content-verified evidence hashes to that same digest. No matching submitted bytes
+means no replay proof.
 
-### Facts DSG derives beat facts the agent reports
+### Facts DSG derives override caller-reported facts
 
-`observed_facts` on an execution is merged *under* the facts DSG derives itself
-(`cost_microunits`, `environment`, `channel`, `agent_identity`, `actions_failed`,
-`targets`, `actions`, `evidence_artifacts`). An agent cannot report a cheaper cost
-than the one it recorded to slip past a cost cap.
+`observed_facts` is merged under facts DSG derives itself, including environment,
+channel, agent identity, action counts, failed/skipped actions, targets and evidence
+count. A caller cannot override those derived values to make a constraint pass.
 
-### Decision, then proof
+## Verification decision and exact proof
 
-```
-BLOCK   not authorized, or out of plan, or a block-severity constraint violated
-REVIEW  review-severity findings, incomplete execution, replay mismatch, or incomplete evidence
+The post-execution verification vocabulary remains:
+
+```text
+BLOCK   not authorized / out of plan / block-severity constraint violation
+REVIEW  review finding, incomplete execution, replay mismatch or incomplete evidence
 ALLOW   none of the above
 ```
 
-The decision is encoded as a bounded 3-variable QUBO (`api_v1/verifier.py`, shared
-with the pre-v1 routes) and the Z3 backend must prove its global optimum *and* return
-the witness matching the decision DSG derived. If the verifier is unreachable, the
-call is **502** and no receipt exists. There is no degraded mode.
+This is distinct from the pre-execution `WAITING_PERMISSION` state. A missing
+credential is an orchestration/provisioning state, not a final proof verdict.
 
-### The receipt commits to its own inputs
+The verification decision is encoded as a bounded 3-variable QUBO and the Z3
+backend must prove the global optimum and return the witness matching the decision
+DSG derived. If the verifier is unreachable, verification returns **502** and no
+verified receipt exists. There is no fabricated/degraded PASS.
 
-Every hash a verdict was computed from is in `inputs`: `plan_hash`, `approval_hash`,
-`action_trace_hash`, `alignment_hash`, `constraints_hash`, `facts_hash`,
-`evidence_hash`, `replay_hash`. `receipt_hash` covers the whole receipt except
-itself and the billing block, and `GET /proofs/{id}` recomputes it on read
-(`receipt_hash_verified`).
+## Receipt integrity
+
+The receipt commits to the hashes of the material used to derive its verdict,
+including the approved plan, observed action trace, alignment, constraints, facts,
+evidence and replay. `receipt_hash` covers the receipt, and `GET /proofs/{id}`
+recomputes it when read.
 
 ## Universal MCP Connect
 
-`POST /api/v1/mcp` speaks JSON-RPC 2.0 — no SSE, no session to keep alive.
-`GET` returns 405 with the transport explained rather than hanging a client that
-expects a stream.
+`POST /api/v1/mcp` uses JSON-RPC 2.0. `GET` returns 405 with the transport hint.
 
 Methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`,
-`prompts/list`. Tools: `dsg_status`, `dsg_create_plan`, `dsg_read_plan`,
-`dsg_approve_plan`, `dsg_verify_plan_alignment`, `dsg_verify_constraints`,
-`dsg_record_execution`, `dsg_submit_evidence`, `dsg_verify_execution`,
-`dsg_get_proof`. Tool arguments go through the same verdict rejection, so an MCP
-client has no shortcut the REST caller does not have. A refusal comes back as a tool
-result with `isError: true` carrying the same `{error, message, remediation}` body.
+`prompts/list`.
 
-## Auth, metering, storage
+Tools include:
 
-* `X-DSG-API-Key` is optional while `DSG_REVENUE_ENFORCE` is off — anonymous callers
-  get unmetered public evaluation, and an unusable key is rejected rather than
-  silently served. With a key, `POST /executions/{id}/verify` meters one
-  `verified_execution` unit through the existing ledger.
-* `DSG_V1_STORE_PATH` selects the record store. Set, it is a lock-guarded JSON file:
-  durable for one replica. Unset, records live in process memory and are lost on
-  restart. `GET /api/v1/status` reports `storage.mode` and `storage.durable`, so a
-  client never has to guess. Multi-replica deployments need a transactional store —
-  the same boundary as the revenue ledger (see `REVENUE_AUTOMATION.md`).
+- `dsg_status`
+- `dsg_create_plan`
+- `dsg_read_plan`
+- `dsg_approve_plan`
+- **`dsg_preflight_action`** — the same Decision Core as REST
+- `dsg_verify_plan_alignment`
+- `dsg_verify_constraints`
+- `dsg_record_execution` — audit recording, including violation traces
+- `dsg_submit_evidence`
+- `dsg_verify_execution`
+- `dsg_get_proof`
 
-## The console
+MCP therefore has no alternate approval logic or shortcut around the core.
 
-`web/dsg-one-3d/index.html` is served by the API itself at **`GET /app`**, same
-origin, so it needs no CORS grant and no configured base URL. It renders only what
-the API returned: every tile starts at NOT CONNECTED, becomes PENDING once
-`/api/v1/status` answers, and only shows PASS / MATCH / COMPLETE / a decision when a
-response carried the corresponding computed field. When the flow fails, it says NOT
-VERIFIED and shows the remediation — it has no code path that invents a verdict.
-`tests/test_console_prototype.py` enforces that.
+## Audited Android adapter
 
-## Error codes
+The supplied `base.apk` is pinned in `mobile/base-apk.identity.json` and the mobile
+adapter exposes:
 
-| Code | Meaning |
+```text
+GET  /api/v1/mobile/client-contract
+POST /api/v1/mobile/control/preflight
+```
+
+The adapter validates the audited package/version/APK/signing identity, authenticates
+the trusted bridge, then delegates plan authorization and capability resolution to
+the same Decision Core. Mobile does not get a second policy implementation.
+
+The signed APK itself remains a release/workflow artifact rather than source code.
+
+## Auth, metering and storage
+
+- `X-DSG-API-Key` remains the DSG account/metering credential where enforcement is
+  enabled. Transport/account authentication is separate from plan authorization.
+- The Android bridge can use the trusted server-side Cinema bearer credential or a
+  DSG API key; credentials remain server-side and are never returned to the APK.
+- `DSG_V1_STORE_PATH` selects the v1 record store. Without durable multi-replica
+  storage, `GET /api/v1/status` exposes the storage mode so callers do not have to
+  guess durability.
+
+## Console behavior
+
+`web/dsg-one-3d/index.html` is served at `GET /app`. It renders API-returned state;
+it does not invent PASS/MATCH/COMPLETE values. `tests/test_console_prototype.py`
+enforces that behavior.
+
+## Key error / state vocabulary
+
+| Code / state | Meaning |
 |---|---|
-| `AGENT_ASSERTED_VERDICT_REJECTED` | the body carried a verdict DSG computes |
-| `PLAN_NOT_FOUND` / `PLAN_NOT_APPROVED` / `PLAN_ALREADY_APPROVED` | plan lifecycle |
-| `PLAN_HASH_MISMATCH` | the approval names text other than what is stored |
-| `AGENT_IDENTITY_MISMATCH` | the executing agent is not the approved one |
-| `EXECUTION_NOT_FOUND` / `EXECUTION_ALREADY_VERIFIED` | execution lifecycle |
-| `EVIDENCE_HASH_MISMATCH` / `EVIDENCE_DECODE_FAILED` | the artifact misdescribes itself |
-| `PROOF_NOT_FOUND` | no such receipt |
-| `BACKEND_UNAVAILABLE` / `VERIFICATION_NOT_PROVED` | fail-closed: no proof, no receipt |
+| `PLAN_AUTHORIZED_ACTION` | exact approved action, execution-ready |
+| `PLAN_AUTHORIZED_CAPABILITY_PENDING` | exact approved action, capability provisioning required; not policy-blocked |
+| `AGENT_ASSERTED_VERDICT_REJECTED` | request attempted to supply a DSG-computed verdict |
+| `PLAN_NOT_FOUND` | no stored plan with that id |
+| `PLAN_NOT_APPROVED` | plan has not been approved/locked; preflight returns `BLOCK` |
+| `PLAN_HASH_MISMATCH` | approval does not name the stored plan exactly |
+| `AGENT_IDENTITY_MISMATCH` | executor differs from the approved agent |
+| `OUT_OF_PLAN_ACTION` | action or target differs from approved scope |
+| `PARAMETER_MISMATCH` / `UNDECLARED_PARAMETER` | proposed parameters differ from approved scope |
+| `EVIDENCE_HASH_MISMATCH` / `EVIDENCE_DECODE_FAILED` | evidence misdescribes its bytes |
+| `BACKEND_UNAVAILABLE` / `VERIFICATION_NOT_PROVED` | fail-closed proof path; no verified receipt |
 
-Every one carries a `remediation` block with the single next action that resolves it.
+The essential invariant is simple: **DSG opens the path for work already approved,
+provisions what that work needs, blocks only boundary violations, and keeps evidence
+of what actually happened.**
