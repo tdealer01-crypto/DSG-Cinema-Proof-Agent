@@ -10,7 +10,13 @@ from pydantic import Field
 from revenue import api as billing
 
 from . import service
-from .decision_core import CapabilityNeed, CorePreflightRequest, evaluate_plan_authorization
+from .capability_broker import (
+    CapabilityRequirement,
+    capability_status,
+    known_capabilities,
+    resolve_capabilities,
+)
+from .decision_core import CorePreflightRequest, evaluate_plan_authorization
 from .models import ObservedAction, Strict
 
 router = APIRouter(prefix="/api/v1/control", tags=["dsg-decision-core"])
@@ -20,7 +26,7 @@ class UnifiedPreflightRequest(Strict):
     plan_id: str = Field(min_length=1, max_length=64)
     agent_identity: str = Field(min_length=1, max_length=255)
     action: ObservedAction
-    capability_needs: list[CapabilityNeed] = Field(default_factory=list, max_length=32)
+    required_capabilities: list[CapabilityRequirement] = Field(default_factory=list, max_length=32)
     channel: str = Field(default="api", min_length=1, max_length=64)
     trace_id: str | None = Field(default=None, max_length=128)
 
@@ -28,6 +34,7 @@ class UnifiedPreflightRequest(Strict):
 def evaluate_unified_preflight(request: UnifiedPreflightRequest) -> dict:
     plan_record = service._require_approved_plan(request.plan_id)
     document = service.plan_document(plan_record)
+    resolved = resolve_capabilities(request.required_capabilities)
     core_request = CorePreflightRequest(
         plan_id=plan_record["plan_id"],
         plan_hash=plan_record["plan_hash"],
@@ -35,11 +42,18 @@ def evaluate_unified_preflight(request: UnifiedPreflightRequest) -> dict:
         approved_agent_identity=document.agent_identity,
         agent_identity=request.agent_identity,
         action=request.action,
-        capability_needs=request.capability_needs,
+        capability_needs=resolved,
         channel=request.channel,
         trace_id=request.trace_id,
     )
-    return evaluate_plan_authorization(request=core_request, plan_document=document)
+    result = evaluate_plan_authorization(request=core_request, plan_document=document)
+    result["capability_resolution"] = {
+        "source": "server-side-dsg-capability-broker",
+        "requested": [item.capability for item in request.required_capabilities],
+        "caller_can_assert_availability": False,
+        "secrets_exposed": False,
+    }
+    return result
 
 
 @router.get("/contract")
@@ -47,6 +61,13 @@ async def control_contract() -> dict:
     return {
         "core": "dsg-decision-core",
         "preflight": "POST /api/v1/control/preflight",
+        "capabilities": {
+            "resolver": "server-side-dsg-capability-broker",
+            "known": known_capabilities(),
+            "caller_declares_requirement_only": True,
+            "caller_can_assert_availability": False,
+            "status": "/api/v1/control/capabilities",
+        },
         "decisions": {
             "ALLOW": "approved exact action; capability is granted and execution may proceed",
             "WAITING_PERMISSION": (
@@ -61,6 +82,11 @@ async def control_contract() -> dict:
         ),
         "post_execution": ["record_execution", "submit_evidence", "verify", "proof"],
     }
+
+
+@router.get("/capabilities")
+async def capabilities() -> dict:
+    return capability_status()
 
 
 @router.post("/preflight")
