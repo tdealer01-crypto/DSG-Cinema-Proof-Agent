@@ -9,6 +9,7 @@ import cinema_main
 from revenue import api as billing
 from revenue import checkout
 from revenue.engine import RevenueEngine
+from revenue.pricing import catalog_snapshot
 from revenue.stripe_sync import apply_webhook_event, config_from_env
 
 
@@ -70,6 +71,21 @@ def test_checkout_rejects_missing_or_invalid_api_key(checkout_account):
         json={"plan": "metered", "checkout_id": "checkout-002"},
     )
     assert response.status_code == 401
+
+
+def test_checkout_rejects_non_self_serve_catalog_plans(checkout_account):
+    _engine, _account, api_key = checkout_account
+    snapshot = catalog_snapshot()
+    assert [plan["plan"] for plan in snapshot["plans"] if plan["self_serve_checkout"]] == [
+        "metered"
+    ]
+    for plan in ("free", "team", "enterprise"):
+        response = client.post(
+            "/billing/checkout/session",
+            headers={"X-DSG-API-Key": api_key},
+            json={"plan": plan, "checkout_id": f"checkout-{plan}"},
+        )
+        assert response.status_code == 422
 
 
 def test_checkout_fails_closed_until_live_stripe_catalog_is_verified(

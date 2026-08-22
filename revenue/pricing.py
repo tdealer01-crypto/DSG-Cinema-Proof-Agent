@@ -36,6 +36,7 @@ class Plan:
     unit_price_micros: Optional[int]
     hard_cap_units: Optional[int]
     requires_linked_payment: bool
+    self_serve_checkout: bool = False
 
 
 SKU_CATALOG: dict[str, Sku] = {
@@ -71,6 +72,7 @@ PLAN_CATALOG: dict[str, Plan] = {
         unit_price_micros=None,
         hard_cap_units=None,
         requires_linked_payment=True,
+        self_serve_checkout=True,
     ),
     "team": Plan(
         plan="team",
@@ -218,6 +220,7 @@ def catalog_snapshot() -> dict:
                 "unit_price_micros": plan.unit_price_micros,
                 "hard_cap_units": plan.hard_cap_units,
                 "requires_linked_payment": plan.requires_linked_payment,
+                "self_serve_checkout": plan.self_serve_checkout,
             }
             for plan in PLAN_CATALOG.values()
         ],
