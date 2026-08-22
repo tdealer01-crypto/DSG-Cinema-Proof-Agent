@@ -8,7 +8,11 @@
     "public_landing": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
     "receipt_version": "dsg-proof-receipt-1.0.0",
     "policy_version": "dsg-verified-execution-1.0.0",
-    "checkout_status": "NOT_VERIFIED_NOT_LINKED"
+    "checkout_status": "NOT_VERIFIED_NOT_LINKED",
+    "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
+    "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
+    "support_contact": "t.dealer01@dsg.pics",
+    "rights_holder": "Thanawat Suparongsuwan"
   },
   "truth_boundary": {
     "supported": [
@@ -31,6 +35,9 @@
       "listing": "DSG Secure Deploy Gate",
       "public_url": "https://github.com/marketplace/actions/dsg-secure-deploy-gate",
       "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
+      "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
+      "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
+      "support_contact": "t.dealer01@dsg.pics",
       "v2_package": "marketplace/github-action-v2/",
       "next": "publish the prepared Verified Execution v2 package from the dedicated Action repository",
       "commercial_role": "free acquisition channel; paid verification service sold separately"
