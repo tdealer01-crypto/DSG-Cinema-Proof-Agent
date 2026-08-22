@@ -499,7 +499,44 @@ def test_onboarding_status_guides_an_activated_customer_to_first_proof(engine, m
         "first_proof_completed": False,
     }
     assert body["next_action"]["method"] == "POST"
-    assert body["next_action"]["endpoint"] == "/verify/evaluate"
+    assert body["next_action"]["endpoint"] == "/onboarding/first-proof"
+
+
+def test_guided_first_proof_requires_a_valid_key(engine, monkeypatch):
+    configure_backend(monkeypatch)
+    assert client.post("/onboarding/first-proof").status_code == 401
+
+
+def test_guided_first_proof_returns_a_real_metered_receipt(engine, monkeypatch):
+    configure_backend(monkeypatch)
+    key = activate(activation_id="guided-proof").json()["api_key"]
+    response = client.post(
+        "/onboarding/first-proof",
+        headers={"X-DSG-API-Key": key},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "ALLOW"
+    assert body["verified"] is True
+    assert body["verification"] == "VERIFIED_GLOBAL_OPTIMUM"
+    assert len(body["proof_hash"]) == 64
+    assert body["billing"]["metered"] is True
+    assert body["synthetic"] is True
+    assert body["purpose"] == "onboarding"
+    assert body["authorized_action_completion"] is False
+
+    duplicate = client.post(
+        "/onboarding/first-proof",
+        headers={"X-DSG-API-Key": key},
+    ).json()
+    assert duplicate["proof_hash"] == body["proof_hash"]
+    assert duplicate["billing"] == {"metered": False, "duplicate": True}
+
+    status = client.get(
+        "/onboarding/status", headers={"X-DSG-API-Key": key}
+    ).json()
+    assert status["current_step"] == "COMPLETE"
+    assert status["progress"] == 100
 
 
 def test_onboarding_status_completes_after_first_billable_proof(engine, monkeypatch):
