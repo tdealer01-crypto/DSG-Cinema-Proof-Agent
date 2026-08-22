@@ -7,6 +7,7 @@ plan, actions and evidence DSG stored, and no receipt exists without a proof.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 
 import cinema_main
 from api_v1 import service
+from api_v1.models import ExecutionVerifyRequest
 from api_v1.store import RecordStore, reset_store
 
 client = TestClient(cinema_main.app)
@@ -418,6 +420,26 @@ def test_clean_run_is_allowed_only_behind_a_proof(monkeypatch):
     proof = client.get(f"/api/v1/proofs/{receipt['proof_id']}").json()
     assert proof["receipt_hash_verified"] is True
     assert proof["decision"] == "ALLOW"
+
+
+def test_billed_receipt_hash_verifies_on_read(monkeypatch):
+    run = clean_run(monkeypatch)
+
+    async def fake_meter(authorization, *, sku, receipt, channel):
+        return {"metered": True, "ledger_entry_hash": "a" * 64}
+
+    receipt = asyncio.run(
+        service.verify_execution(
+            run["execution_id"],
+            ExecutionVerifyRequest(),
+            authorization=object(),
+            meter=fake_meter,
+        )
+    )
+
+    proof = service.read_proof(receipt["proof_id"])
+    assert proof["billing"]["metered"] is True
+    assert proof["receipt_hash_verified"] is True
 
 
 def test_out_of_plan_action_blocks_even_though_the_agent_cannot_say_otherwise(monkeypatch):

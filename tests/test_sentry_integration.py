@@ -291,17 +291,7 @@ class TestSentryIntegrationEndToEnd:
             result = filter_transactions(event, {})
             assert result == event, f"Path {path} should not be filtered"
 
-    def test_transaction_filtering_samples_verify_endpoints(self):
-        """Test that verify endpoints are sampled (50% kept, 50% filtered)."""
-        with patch("sentry_config.random.random") as mock_random:
-            event = {"request": {"url": "http://localhost:8000/api/verify"}}
-
-            # Test when random <= 0.5 (transaction kept, because condition is > 0.5)
-            mock_random.return_value = 0.4
-            result = filter_transactions(event, {})
-            assert result == event
-
-            # Test when random > 0.5 (transaction filtered)
-            mock_random.return_value = 0.6
-            result = filter_transactions(event, {})
-            assert result is None
+    def test_transaction_filtering_preserves_verify_endpoints(self):
+        """Verification traces are never dropped by an extra random sampler."""
+        event = {"request": {"url": "http://localhost:8000/api/verify"}}
+        assert filter_transactions(event, {}) == event

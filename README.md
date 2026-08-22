@@ -176,7 +176,7 @@ activation gates.
 ## Local verification
 
 ```bash
-python3 -m pip install -r requirements.txt -r requirements-cinema.txt pytest pyyaml
+python3 -m pip install -r requirements-cinema.txt pyyaml
 python3 -m pytest -q
 bash landing/validate.sh
 bash marketplace/openai-plugin/scripts/validate.sh

@@ -496,8 +496,6 @@ async def verify_execution(
         "independent_verification": INDEPENDENT_VERIFICATION,
         "verified_at": utc_now(),
     }
-    receipt["receipt_hash"] = canonical_hash(receipt)
-
     if meter is not None and authorization is not None:
         billing_block = await meter(
             authorization,
@@ -507,6 +505,8 @@ async def verify_execution(
         )
         if billing_block is not None:
             receipt["billing"] = billing_block
+
+    receipt["receipt_hash"] = canonical_hash(receipt)
 
     store = get_store()
     store.put("proofs", receipt["proof_id"], receipt)
@@ -527,7 +527,7 @@ def read_proof(proof_id: str) -> dict[str, Any]:
     if record is None:
         raise ApiError(404, PROOF_NOT_FOUND, f"no proof with id '{proof_id}'", proof_id=proof_id)
     stored_hash = record.get("receipt_hash")
-    recomputed = canonical_hash({k: v for k, v in record.items() if k not in {"receipt_hash", "billing"}})
+    recomputed = canonical_hash({k: v for k, v in record.items() if k != "receipt_hash"})
     view = dict(record)
     view["receipt_hash_verified"] = stored_hash == recomputed
     view["receipt_hash_recomputed"] = recomputed
@@ -554,10 +554,6 @@ def flow_definition() -> list[dict[str, str]]:
         {"step": "replay_verify", "endpoint": "POST /api/v1/executions/{execution_id}/verify"},
         {"step": "proof", "endpoint": "GET /api/v1/proofs/{proof_id}"},
     ]
-
-
-def receipt_without_billing(receipt: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in receipt.items() if key != "billing"}
 
 
 __all__ = [
