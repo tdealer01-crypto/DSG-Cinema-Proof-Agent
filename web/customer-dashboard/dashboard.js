@@ -50,7 +50,7 @@ function reset() {
   $("subscriptionState").textContent = "○ subscription";
   for (const id of ["billingChannel", "paymentState", "subscriptionState"]) $(id).className = "step";
   renderHistory([]);
-  $("upgrade").disabled = $("portal").disabled = true;
+  $("upgrade").disabled = $("portal").disabled = $("firstProof").disabled = true;
 }
 
 function showError(error) {
@@ -59,14 +59,10 @@ function showError(error) {
   $("message").className = "status error";
 }
 
-async function load() {
-  const supplied = $("apiKey").value.trim();
-  if (!supplied) return showError(new Error("API key required"));
-  reset();
-  key = supplied;
+async function loadWithCurrentKey() {
+  if (!key) throw new Error("API key required");
   $("message").textContent = "Loading…";
-  try {
-    const [onboarding, usage, history, subscription] = await Promise.all([
+  const [onboarding, usage, history, subscription] = await Promise.all([
       api("/onboarding/status"),
       api("/billing/usage"),
       api("/billing/usage/history?limit=10"),
@@ -97,18 +93,48 @@ async function load() {
     $("next").textContent = onboarding.next_action
       ? `${onboarding.next_action.method} ${onboarding.next_action.endpoint}`
       : "Onboarding complete";
+    $("firstProof").disabled = onboarding.current_step !== "RUN_FIRST_PROOF";
     $("upgrade").disabled = subscription.billing_channel === "github_marketplace" || !usage.upgrade?.recommended;
     $("portal").disabled = !subscription.can_manage_in_portal;
     $("message").textContent = usage.upgrade?.recommended
       ? `Upgrade recommended: ${usage.upgrade.reason}`
       : "Account ready";
     $("message").className = "status";
+}
+
+async function load() {
+  const supplied = $("apiKey").value.trim();
+  if (!supplied) return showError(new Error("API key required"));
+  reset();
+  key = supplied;
+  try {
+    await loadWithCurrentKey();
   } catch (error) {
     showError(error);
   }
 }
 
 $("connect").onclick = load;
+$("firstProof").onclick = async () => {
+  if (busy || !key) return;
+  busy = true;
+  $("firstProof").disabled = true;
+  $("message").textContent = "Running exact Z3 proof…";
+  try {
+    const receipt = await api("/onboarding/first-proof", { method: "POST" });
+    if (receipt.verified !== true || receipt.verification !== "VERIFIED_GLOBAL_OPTIMUM") {
+      throw new Error("First proof did not return an exact verified receipt");
+    }
+    $("message").textContent = `${receipt.decision} · ${receipt.verification} · ${receipt.proof_hash.slice(0, 16)}…`;
+    await loadWithCurrentKey();
+  } catch (error) {
+    $("message").textContent = error.message;
+    $("message").className = "status error";
+    $("firstProof").disabled = false;
+  } finally {
+    busy = false;
+  }
+};
 $("activate").onclick = async () => {
   if (busy) return;
   const displayName = $("displayName").value.trim();

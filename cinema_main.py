@@ -538,7 +538,7 @@ async def onboarding_status(
     elif not first_proof_completed:
         status = "ACTION_REQUIRED"
         current_step = "RUN_FIRST_PROOF"
-        next_action = {"method": "POST", "endpoint": "/verify/evaluate"}
+        next_action = {"method": "POST", "endpoint": "/onboarding/first-proof"}
     elif not backend_connected:
         status = "SERVICE_UNAVAILABLE"
         current_step = "COMPLETE"
@@ -557,6 +557,33 @@ async def onboarding_status(
         "account": account.public_view(),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.post("/onboarding/first-proof")
+async def onboarding_first_proof(
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
+    """Run one bounded, non-mutating proof through the production verification path."""
+    account = billing.get_engine().accounts.authenticate((x_dsg_api_key or "").strip())
+    if account is None:
+        raise HTTPException(status_code=401, detail="missing or invalid DSG API key")
+    fixture_hash = hashlib.sha256(b"dsg-one-guided-first-proof-v1").hexdigest()
+    request = VerificationRequest(
+        execution_id=f"onboarding-{account.account_id}",
+        trace_id="guided-first-proof-v1",
+        channel="api",
+        agent_identity="dsg-one-onboarding",
+        approved_plan_hash=fixture_hash,
+        proposed_action_hash=fixture_hash,
+        authorized=True,
+        plan_aligned=True,
+        constraints_pass=True,
+        execution_succeeded=True,
+        replay_match=True,
+        evidence_complete=True,
+        cost_microunits=0,
+    )
+    return await verify_evaluate(request, x_dsg_api_key)
 
 
 @app.post("/verify/evaluate")
