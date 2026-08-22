@@ -285,3 +285,72 @@ def test_checkout_does_not_rebill_an_already_entitled_account(
     )
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "ALREADY_ENTITLED"
+
+
+def test_billing_portal_requires_an_existing_stripe_customer(checkout_account):
+    _engine, _account, api_key = checkout_account
+    response = client.post(
+        "/billing/portal/session",
+        headers={"X-DSG-API-Key": api_key},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "STRIPE_CUSTOMER_REQUIRED"
+
+
+def test_billing_portal_returns_a_trusted_stripe_url(checkout_account, monkeypatch):
+    engine, account, api_key = checkout_account
+    engine.accounts.update(
+        account.account_id,
+        plan="metered",
+        payment_linked=True,
+        stripe_customer_id="cus_portal",
+    )
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    async def fake_stripe_post(
+        _config,
+        path: str,
+        *,
+        data: dict[str, str],
+        idempotency_key: str,
+        timeout_seconds: float = 15.0,
+    ) -> dict[str, Any]:
+        calls.append((path, dict(data)))
+        return {
+            "id": "bps_portal",
+            "url": "https://billing.stripe.com/p/session/test_portal",
+        }
+
+    monkeypatch.setattr(checkout, "_stripe_post", fake_stripe_post)
+    response = client.post(
+        "/billing/portal/session",
+        headers={"X-DSG-API-Key": api_key},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["portal_url"].startswith("https://billing.stripe.com/")
+    assert calls == [
+        (
+            "/v1/billing_portal/sessions",
+            {
+                "customer": "cus_portal",
+                "return_url": "https://dsg.example.test/pricing?portal=return",
+            },
+        )
+    ]
+
+
+def test_billing_portal_rejects_untrusted_stripe_url(checkout_account, monkeypatch):
+    engine, account, api_key = checkout_account
+    engine.accounts.update(account.account_id, stripe_customer_id="cus_portal_bad")
+
+    async def fake_stripe_post(*args, **kwargs):
+        return {"id": "bps_bad", "url": "https://evil.example/phish"}
+
+    monkeypatch.setattr(checkout, "_stripe_post", fake_stripe_post)
+    response = client.post(
+        "/billing/portal/session",
+        headers={"X-DSG-API-Key": api_key},
+    )
+    assert response.status_code == 502
+    assert response.json()["detail"]["error"] == "STRIPE_PORTAL_INVALID_RESPONSE"
