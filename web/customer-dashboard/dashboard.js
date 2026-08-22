@@ -38,7 +38,10 @@ function renderHistory(items) {
 }
 
 function reset() {
-  key = "";
+  $("apiKey").value = "";
+  $("issuedKey").textContent = "";
+  $("newKey").hidden = true;
+  $("disconnect").disabled = true;
   $("connection").textContent = "NOT CONNECTED";
   $("connection").style.color = "";
   $("plan").textContent = $("usage").textContent = $("remaining").textContent = "—";
@@ -53,8 +56,13 @@ function reset() {
   $("upgrade").disabled = $("portal").disabled = $("firstProof").disabled = true;
 }
 
-function showError(error) {
+function clearCredentials() {
+  key = "";
   reset();
+}
+
+function showError(error) {
+  clearCredentials();
   $("message").textContent = error.message;
   $("message").className = "status error";
 }
@@ -70,6 +78,7 @@ async function loadWithCurrentKey() {
     ]);
     $("apiKey").value = "";
     $("connection").textContent = "CONNECTED";
+    $("disconnect").disabled = false;
     $("connection").style.color = "var(--green)";
     $("plan").textContent = usage.account.plan;
     $("usage").textContent = usage.units;
@@ -115,6 +124,12 @@ async function load() {
 }
 
 $("connect").onclick = load;
+$("disconnect").onclick = () => {
+  clearCredentials();
+  $("message").textContent = "Disconnected. Credentials cleared from this page.";
+  $("message").className = "status";
+};
+window.addEventListener("pagehide", clearCredentials);
 $("firstProof").onclick = async () => {
   if (busy || !key) return;
   busy = true;
