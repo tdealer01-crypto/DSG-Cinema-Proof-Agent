@@ -1,52 +1,68 @@
 openapi: 3.1.0
 info:
   title: DSG ONE Verification API
-  version: 1.0.0
-  summary: Independent verification of agent executions, behind an exact Z3 proof.
+  version: 1.1.0
+  summary: Plan-authorized execution control plus independent verification behind exact proof.
   description: |
-    DSG ONE verifies that an agent execution conforms to an approved plan and to
-    policy, and issues a proof receipt for that conformance.
+    DSG ONE has two distinct responsibilities that use the same stored approved plan:
 
-    ## The one rule this contract exists to enforce
+    1. **Authorization before execution.** `POST /api/v1/control/preflight` is the
+       canonical DSG Decision Core. Exact approved work returns `ALLOW`; approved
+       work whose trusted server-side capability is not ready returns
+       `WAITING_PERMISSION` while remaining authorized; only work outside the
+       approved plan returns `BLOCK`.
+    2. **Independent verification after execution.** The agent submits raw actions
+       and evidence. DSG recomputes conformance and issues a receipt only behind an
+       exact Z3 proof.
 
-    An agent submits **raw material**, never a verdict:
+    An agent submits raw material, **never a verdict**. DSG computes
+    `plan_aligned`, `constraints_pass`, `execution_succeeded`, `replay_match`,
+    `evidence_complete`, `decision`, `verified` and proof hashes itself. A request
+    body carrying a DSG verdict is refused with
+    `AGENT_ASSERTED_VERDICT_REJECTED` (422).
 
-    * the plan a human approved,
-    * the actions it actually took,
-    * the evidence those actions produced.
+    ## Plan-authorized execution rule
 
-    DSG computes `plan_aligned`, `constraints_pass`, `execution_succeeded`,
-    `replay_match` and `evidence_complete` itself, from the records it stored.
-    A request body carrying any of those fields — or `verified`, `decision`,
-    `proof_hash` — is refused with `AGENT_ASSERTED_VERDICT_REJECTED` (422). This
-    is the difference between verification and a self-report, so it is part of
-    the contract rather than an implementation detail.
+    `ALLOW` means the proposed action exactly matches an approved plan step and
+    the required server-side capabilities are currently available. DSG emits a
+    scoped capability grant for that exact plan hash, agent, step, action, target
+    and parameters.
 
-    ## What a PASS means, and what it does not
+    `WAITING_PERMISSION` is **not** a policy denial. The exact action remains
+    authorized, but a required credential, tool or infrastructure capability is
+    not configured yet. The orchestrator resolves the capability server-side and
+    retries the same approved step without asking the user to approve it again.
+    Callers declare only which capability is required; callers cannot assert that
+    it is available, and secret values are never returned.
 
-    A receipt says: the observed actions matched the approved plan, the declared
-    constraints held over the facts DSG observed, the submitted evidence covers
-    the steps that require it, the declared output digests match content DSG
-    hashed itself, and Z3 proved the resulting ALLOW/REVIEW/BLOCK decision is the
-    global optimum of its encoding.
+    `BLOCK` is reserved for work outside the approved boundary: an unapproved
+    plan, wrong agent, wrong action or target, changed/undeclared parameters, or a
+    mobile build that does not match the audited client identity.
 
-    A receipt does not certify real-world outcomes beyond that evidence. Evidence
-    supplied as a bare digest (`declared_sha256` with no content) is recorded as
-    `HASH_ONLY` and never counts as independently verified.
+    ## Audit boundary
 
-    ## Fail-closed
+    Preflight is the execution authorization gate. `POST /api/v1/executions` is
+    an audit/evidence endpoint and records observed reality. If an executor ever
+    violates a prior BLOCK, DSG preserves that raw trace rather than deleting the
+    evidence; verification then proves the non-conformance.
 
-    If the Z3 verifier is unreachable, verification returns 502 and no receipt is
-    issued. There is no degraded mode that returns a verdict without a proof.
+    ## Fail-closed verification
 
-    ## Flow
+    Fail-closed applies to unsupported claims and final proof issuance. If the
+    exact Z3 verifier is unreachable, verification returns 502 and no verified
+    receipt is issued. DSG does not convert a missing proof into a PASS.
 
-    `POST /plans` -> `POST /plans/{plan_id}/approve` -> `POST /verify/plan-alignment`
-    -> `POST /verify/constraints` -> `POST /executions` ->
-    `POST /executions/{execution_id}/evidence` ->
-    `POST /executions/{execution_id}/verify` -> `GET /proofs/{proof_id}`
+    ## Canonical flow
 
-    The same flow is available to MCP clients as tools on `POST /mcp`.
+    `POST /api/v1/plans` -> `POST /api/v1/plans/{plan_id}/approve` ->
+    `POST /api/v1/control/preflight` -> executor/provisioning ->
+    `POST /api/v1/executions` -> `POST /api/v1/executions/{execution_id}/evidence`
+    -> `POST /api/v1/executions/{execution_id}/verify` ->
+    `GET /api/v1/proofs/{proof_id}`.
+
+    MCP exposes the same Decision Core as `dsg_preflight_action`. The audited
+    Android adapter checks its APK identity and then delegates plan authorization
+    and capability resolution to the same core.
   license:
     name: Repository license
     url: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent
@@ -62,17 +78,21 @@ servers:
 
 tags:
   - name: status
-    description: Readiness of the verification backend and the record store.
+    description: Readiness of the verifier and record store.
+  - name: control
+    description: Canonical plan authorization and server-side capability resolution.
+  - name: mobile
+    description: Audited Android adapter to the same DSG Decision Core.
   - name: plans
-    description: Registering and approving the plan a proof is measured against.
+    description: Registering and approving the immutable plan boundary.
   - name: verification
     description: Independent alignment and constraint checks.
   - name: executions
-    description: Recording what an agent did, and the evidence it produced.
+    description: Recording observed execution and evidence for audit.
   - name: proofs
-    description: Reading issued proof receipts.
+    description: Reading independently verified proof receipts.
   - name: mcp
-    description: Universal MCP Connect - the same flow as JSON-RPC tools.
+    description: JSON-RPC tools backed by the same production core.
 
 security:
   - ApiKeyAuth: []
@@ -84,10 +104,6 @@ paths:
       tags: [status]
       operationId: getStatus
       summary: Report service readiness
-      description: |
-        Whether the exact Z3 verifier is reachable and whether the record store is
-        durable. A client that cannot reach this endpoint must show NOT CONNECTED
-        rather than any verification state.
       security: []
       responses:
         '200':
@@ -97,15 +113,125 @@ paths:
               schema:
                 $ref: '#/components/schemas/ServiceStatus'
 
+  /api/v1/control/contract:
+    get:
+      tags: [control]
+      operationId: getControlContract
+      summary: Read the canonical Decision Core contract
+      description: |
+        Describes ALLOW, WAITING_PERMISSION and BLOCK semantics, the server-side
+        capability broker, and the distinction between authorization and audit.
+      security: []
+      responses:
+        '200':
+          description: Decision Core contract.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlContract'
+
+  /api/v1/control/capabilities:
+    get:
+      tags: [control]
+      operationId: getControlCapabilities
+      summary: Read server-side capability readiness without exposing secrets
+      description: |
+        Returns capability names and readiness derived by the trusted server.
+        Secret values are never returned and callers cannot write readiness.
+      security: []
+      responses:
+        '200':
+          description: Current capability readiness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityStatus'
+
+  /api/v1/control/preflight:
+    post:
+      tags: [control]
+      operationId: preflightAction
+      summary: Authorize one exact proposed step through the DSG Decision Core
+      description: |
+        This is the canonical execution gate for REST and MCP adapters. The caller
+        names the exact proposed action and any capability requirements. DSG reads
+        the stored plan, resolves capability availability server-side, and returns
+        ALLOW, WAITING_PERMISSION, or BLOCK. An approved action is never turned
+        into BLOCK merely because a credential or tool is temporarily unavailable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnifiedPreflightRequest'
+      responses:
+        '200':
+          description: Canonical authorization decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlDecisionResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/AssertedVerdict'
+
+  /api/v1/mobile/client-contract:
+    get:
+      tags: [mobile]
+      operationId: getMobileClientContract
+      summary: Read the audited Android identity and control path
+      security: []
+      responses:
+        '200':
+          description: Audited mobile client contract.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileClientContract'
+
+  /api/v1/mobile/control/preflight:
+    post:
+      tags: [mobile]
+      operationId: mobilePreflightAction
+      summary: Validate the audited Android build and delegate to the Decision Core
+      description: |
+        The mobile adapter first pins package/version/APK/signing identity. If the
+        build is trusted it delegates plan authorization and server-side capability
+        resolution to the same DSG Decision Core used by REST and MCP. The trusted
+        bridge authenticates with a server-side bearer secret or DSG API key; the
+        end user is not asked to re-approve every already-approved action.
+      security:
+        - ApiKeyAuth: []
+        - BridgeBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MobilePreflightRequest'
+      responses:
+        '200':
+          description: Mobile identity and plan authorization decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlDecisionResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/AssertedVerdict'
+
   /api/v1/plans:
     post:
       tags: [plans]
       operationId: createPlan
       summary: Register a raw plan
       description: |
-        Stores the plan and returns the `plan_hash` DSG computed over its canonical
-        encoding. The caller does not supply a hash: an approval later has to echo
-        the hash DSG computed, so an approver can only approve text DSG holds.
+        Stores the plan and returns the plan_hash DSG computed over its canonical
+        encoding. The caller does not supply a verdict or computed hash.
       requestBody:
         required: true
         content:
@@ -132,7 +258,7 @@ paths:
         - $ref: '#/components/parameters/PlanId'
       responses:
         '200':
-          description: The plan, with DSG's recomputation of its hash.
+          description: Stored plan and DSG-computed hash.
           content:
             application/json:
               schema:
@@ -146,10 +272,8 @@ paths:
       operationId: approvePlan
       summary: Approve and lock a plan
       description: |
-        The approval must carry the `plan_hash` DSG computed. A mismatch is refused
-        with `PLAN_HASH_MISMATCH`, because an approval that names different text is
-        an approval of something the approver did not read. An approved plan is
-        immutable.
+        The approval echoes the plan_hash DSG computed. An approved plan is the
+        immutable execution boundary; changed work requires a changed plan.
       parameters:
         - $ref: '#/components/parameters/PlanId'
       requestBody:
@@ -176,11 +300,7 @@ paths:
     post:
       tags: [verification]
       operationId: verifyPlanAlignment
-      summary: Decide, action by action, whether a trace stays inside the plan
-      description: |
-        Send the approved plan (by `plan_id`) or an inline plan, plus the actions
-        the agent proposes or took. DSG matches each action to an approved step and
-        returns its own `plan_aligned` verdict with per-action findings.
+      summary: Independently compare actions with a plan
       requestBody:
         required: true
         content:
@@ -203,12 +323,11 @@ paths:
     post:
       tags: [verification]
       operationId: verifyConstraints
-      summary: Evaluate policy constraints and prove the decision with exact Z3
+      summary: Evaluate constraints and prove the resulting verification decision
       description: |
-        DSG evaluates each constraint over the submitted facts, derives
-        ALLOW / REVIEW / BLOCK, and requires Z3 to prove that decision is the global
-        optimum of its encoding. If the verifier is unreachable the call fails with
-        502 and returns no decision.
+        DSG evaluates each constraint over raw facts and requires the exact Z3
+        verifier for the resulting proof. If proof is unavailable, no verified
+        result is emitted.
       requestBody:
         required: true
         content:
@@ -217,7 +336,7 @@ paths:
               $ref: '#/components/schemas/ConstraintsRequest'
       responses:
         '200':
-          description: Constraint evaluation with its exact proof.
+          description: Constraint result with exact proof.
           content:
             application/json:
               schema:
@@ -233,10 +352,12 @@ paths:
     post:
       tags: [executions]
       operationId: createExecution
-      summary: Record what the agent actually did
+      summary: Record observed execution reality for audit
       description: |
-        Requires an approved plan and the agent identity that plan approves. The
-        response includes DSG's alignment preview over the submitted trace.
+        Requires an approved plan and matching agent identity. This endpoint is an
+        audit surface, not the execution permission gate. It preserves observed
+        traces, including out-of-plan behavior that occurred despite preflight, so
+        verification has evidence of the violation.
       requestBody:
         required: true
         content:
@@ -245,7 +366,7 @@ paths:
               $ref: '#/components/schemas/ExecutionCreate'
       responses:
         '201':
-          description: Execution recorded.
+          description: Execution recorded with DSG alignment preview.
           content:
             application/json:
               schema:
@@ -267,7 +388,7 @@ paths:
         - $ref: '#/components/parameters/ExecutionId'
       responses:
         '200':
-          description: The stored execution record.
+          description: Stored execution record.
           content:
             application/json:
               schema:
@@ -281,10 +402,9 @@ paths:
       operationId: submitEvidence
       summary: Submit evidence artifacts
       description: |
-        DSG hashes any submitted bytes itself. An artifact whose `declared_sha256`
-        disagrees with its content is refused with `EVIDENCE_HASH_MISMATCH`. An
-        artifact carrying only a digest is stored as `HASH_ONLY` and does not count
-        as independently verified evidence.
+        DSG hashes submitted bytes itself. A declared digest that disagrees with
+        content is refused. Hash-only attestations remain distinguishable from
+        content-verified evidence.
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
       requestBody:
@@ -295,7 +415,7 @@ paths:
               $ref: '#/components/schemas/EvidenceSubmission'
       responses:
         '201':
-          description: Evidence accepted, with DSG's completeness and replay assessment.
+          description: Evidence accepted and assessed.
           content:
             application/json:
               schema:
@@ -313,11 +433,9 @@ paths:
       operationId: verifyExecution
       summary: Recompute every verdict and issue a proof receipt
       description: |
-        Recomputes alignment, constraint satisfaction, evidence completeness and
-        replay match from the stored raw records, derives the decision, and requires
-        an exact Z3 global-optimum proof before issuing a receipt. Single-shot: an
-        execution that already has a proof is refused with
-        `EXECUTION_ALREADY_VERIFIED`.
+        Recomputes alignment, constraints, execution outcome, evidence completeness
+        and replay from stored raw records, then requires an exact Z3 proof before
+        issuing a verified receipt.
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
       requestBody:
@@ -328,7 +446,7 @@ paths:
               $ref: '#/components/schemas/ExecutionVerifyRequest'
       responses:
         '200':
-          description: Proof receipt.
+          description: Independently verified proof receipt.
           content:
             application/json:
               schema:
@@ -348,10 +466,7 @@ paths:
     get:
       tags: [proofs]
       operationId: readProof
-      summary: Read a proof receipt
-      description: |
-        Returns the stored receipt plus `receipt_hash_recomputed`, so a reader can
-        confirm the receipt has not been edited since it was issued.
+      summary: Read a proof receipt and recomputed receipt hash
       security: []
       parameters:
         - name: proof_id
@@ -362,7 +477,7 @@ paths:
             maxLength: 64
       responses:
         '200':
-          description: The receipt, with DSG's recomputation of its hash.
+          description: Stored proof receipt.
           content:
             application/json:
               schema:
@@ -374,12 +489,11 @@ paths:
     post:
       tags: [mcp]
       operationId: mcpJsonRpc
-      summary: Universal MCP Connect (JSON-RPC 2.0)
+      summary: Universal MCP Connect over JSON-RPC 2.0
       description: |
-        Speaks JSON-RPC 2.0 over POST - no SSE stream, no session to keep alive.
-        Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`,
-        `resources/list`, `prompts/list`. The tools mirror this contract, and the
-        same verdict-rejection rule applies to their arguments.
+        MCP exposes the same flow. `dsg_preflight_action` delegates to the unified
+        Decision Core. `dsg_record_execution` records raw observed reality for
+        audit and does not grant permission retroactively.
       requestBody:
         required: true
         content:
@@ -394,9 +508,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/JsonRpcResponse'
         '202':
-          description: A notification was accepted. No body is returned.
+          description: Notification accepted.
         '400':
-          description: A malformed or unsupported JSON-RPC message.
+          description: Malformed or unsupported JSON-RPC message.
           content:
             application/json:
               schema:
@@ -410,19 +524,12 @@ paths:
       security: []
       responses:
         '405':
-          description: This MCP server speaks JSON-RPC over POST.
+          description: MCP speaks JSON-RPC over POST.
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  error:
-                    type: string
-                    const: MCP_TRANSPORT_IS_POST
-                  message:
-                    type: string
-                  protocol_version:
-                    type: string
+                additionalProperties: true
 
 components:
   securitySchemes:
@@ -430,10 +537,11 @@ components:
       type: apiKey
       in: header
       name: X-DSG-API-Key
-      description: |
-        Optional while `DSG_REVENUE_ENFORCE` is off: an anonymous caller gets
-        unmetered public evaluation. Presenting a key opts into metering, and an
-        unusable key is refused rather than silently served.
+      description: DSG API key used for metering/account authentication when enabled.
+    BridgeBearerAuth:
+      type: http
+      scheme: bearer
+      description: Trusted server-side Cinema/RevenuePilot bridge credential.
 
   parameters:
     PlanId:
@@ -453,34 +561,37 @@ components:
 
   responses:
     AssertedVerdict:
-      description: |
-        The body carried a verdict DSG computes, or failed schema validation.
+      description: Caller supplied a DSG-computed verdict or request validation failed.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     NotFound:
-      description: No such plan, execution, or proof.
+      description: Referenced plan, execution or proof does not exist.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     Conflict:
-      description: The record is in a state that refuses this transition.
+      description: Stored state refuses the requested transition.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     Denied:
-      description: Entitlement refused the request.
+      description: Billing or entitlement refused the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Trusted bridge authentication is required.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     ProofUnavailable:
-      description: |
-        No exact proof could be obtained. Fail-closed: no decision and no receipt
-        are returned.
+      description: Exact proof unavailable; no verified receipt is issued.
       content:
         application/json:
           schema:
@@ -488,7 +599,7 @@ components:
 
   schemas:
     Scalar:
-      description: A bounded scalar value.
+      description: Bounded scalar value.
       anyOf:
         - type: string
           maxLength: 512
@@ -499,11 +610,16 @@ components:
     Sha256:
       type: string
       pattern: '^[0-9a-fA-F]{64}$'
-      description: Lowercase SHA-256 hex digest.
 
     Decision:
       type: string
+      description: Final verification/policy decision vocabulary.
       enum: [ALLOW, REVIEW, BLOCK]
+
+    ControlDecision:
+      type: string
+      description: Pre-execution authorization vocabulary from the unified Decision Core.
+      enum: [ALLOW, WAITING_PERMISSION, BLOCK]
 
     Severity:
       type: string
@@ -513,61 +629,174 @@ components:
       type: string
       enum: [github, stripe, openai_plugin, aws, azure, jetbrains, vscode, mcp, api, other]
 
-    IndependentVerification:
-      type: object
-      description: |
-        Restates, in every response, that the verdicts in it were computed by DSG.
-      properties:
-        verdicts_accepted_from_agent:
-          type: boolean
-          const: false
-        computed_by:
-          type: string
-          const: dsg
-        engine_version:
-          type: string
-        statement:
-          type: string
-
-    Remediation:
-      type: object
-      description: What happened, why, and the one next action that resolves it.
-      required: [code, problem, cause, next_step, self_service]
-      properties:
-        code:
-          type: string
-        problem:
-          type: string
-        cause:
-          type: string
-        next_step:
-          type: string
-        self_service:
-          type: boolean
-        endpoint:
-          type: string
-        docs:
-          type: string
-
     Error:
       type: object
       required: [error, message]
       properties:
         error:
           type: string
-          description: |
-            Machine-readable refusal code, for example
-            AGENT_ASSERTED_VERDICT_REJECTED, PLAN_NOT_APPROVED, PLAN_HASH_MISMATCH,
-            AGENT_IDENTITY_MISMATCH, EVIDENCE_HASH_MISMATCH,
-            EXECUTION_ALREADY_VERIFIED, PROOF_NOT_FOUND, BACKEND_UNAVAILABLE,
-            VERIFICATION_NOT_PROVED.
         message:
           type: string
         remediation:
-          $ref: '#/components/schemas/Remediation'
+          type: object
+          additionalProperties: true
         details:
           type: object
           additionalProperties: true
+
+    CapabilityRequirement:
+      type: object
+      additionalProperties: false
+      required: [capability]
+      description: |
+        A capability name required by the approved step. Availability is deliberately
+        absent: only the trusted server-side broker may compute it.
+      properties:
+        capability:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    CapabilityNeed:
+      type: object
+      required: [capability, available]
+      properties:
+        capability:
+          type: string
+        available:
+          type: boolean
+          readOnly: true
+        source:
+          type: [string, 'null']
+          readOnly: true
+        remediation:
+          type: [string, 'null']
+          readOnly: true
+
+    CapabilityGrant:
+      type: object
+      properties:
+        status:
+          type: string
+          const: GRANTED
+        scope:
+          type: object
+          additionalProperties: true
+        scope_hash:
+          $ref: '#/components/schemas/Sha256'
+        permissions:
+          type: array
+          items:
+            type: string
+        credential_policy:
+          type: string
+
+    ControlDecisionResult:
+      type: object
+      required: [allowed, execution_ready, decision, code, computed_by]
+      properties:
+        allowed:
+          type: boolean
+          readOnly: true
+        execution_ready:
+          type: boolean
+          readOnly: true
+        decision:
+          $ref: '#/components/schemas/ControlDecision'
+        code:
+          type: string
+          readOnly: true
+        reason:
+          type: string
+          readOnly: true
+        plan_id:
+          type: string
+        plan_hash:
+          $ref: '#/components/schemas/Sha256'
+        plan_status:
+          type: string
+        step_id:
+          type: [string, 'null']
+        action:
+          type: string
+        target:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        capability_grant:
+          oneOf:
+            - $ref: '#/components/schemas/CapabilityGrant'
+            - type: 'null'
+        capability_needs:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityNeed'
+        pending_capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityNeed'
+        capability_resolution:
+          type: object
+          additionalProperties: true
+        control_hash:
+          $ref: '#/components/schemas/Sha256'
+        computed_by:
+          type: string
+          readOnly: true
+        next_step:
+          type: string
+          readOnly: true
+        evaluated_at:
+          type: string
+          readOnly: true
+
+    ControlContract:
+      type: object
+      properties:
+        core:
+          type: string
+          const: dsg-decision-core
+        preflight:
+          type: string
+        capabilities:
+          type: object
+          additionalProperties: true
+        decisions:
+          type: object
+          additionalProperties:
+            type: string
+        invariant:
+          type: string
+        audit_boundary:
+          type: string
+        post_execution:
+          type: array
+          items:
+            type: string
+
+    CapabilityStatus:
+      type: object
+      properties:
+        known:
+          type: integer
+        available:
+          type: array
+          items:
+            type: string
+        pending:
+          type: array
+          items:
+            type: string
+        details:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityNeed'
+        secrets_exposed:
+          type: boolean
+          const: false
 
     PlanStep:
       type: object
@@ -579,16 +808,17 @@ components:
           maxLength: 64
         action:
           type: string
+          minLength: 1
           maxLength: 64
         target:
           type: string
+          minLength: 1
           maxLength: 255
         parameters:
           type: object
           maxProperties: 32
           additionalProperties:
             $ref: '#/components/schemas/Scalar'
-          description: Approved parameter values. An action must match every one of them.
         requires_evidence:
           type: boolean
           default: true
@@ -633,9 +863,11 @@ components:
       properties:
         title:
           type: string
+          minLength: 1
           maxLength: 255
         agent_identity:
           type: string
+          minLength: 1
           maxLength: 255
         channel:
           $ref: '#/components/schemas/Channel'
@@ -655,20 +887,6 @@ components:
           additionalProperties:
             $ref: '#/components/schemas/Scalar'
 
-    Approval:
-      type: object
-      properties:
-        approver:
-          type: string
-        approved_at:
-          type: string
-        approval_note:
-          type: [string, 'null']
-        plan_hash:
-          $ref: '#/components/schemas/Sha256'
-        approval_hash:
-          $ref: '#/components/schemas/Sha256'
-
     PlanRecord:
       type: object
       required: [plan_id, status, plan_hash, document]
@@ -682,12 +900,12 @@ components:
           $ref: '#/components/schemas/Sha256'
         plan_hash_verified:
           type: boolean
+          readOnly: true
         document:
           $ref: '#/components/schemas/PlanDocument'
         approval:
-          oneOf:
-            - $ref: '#/components/schemas/Approval'
-            - type: 'null'
+          type: [object, 'null']
+          additionalProperties: true
         api_version:
           type: string
         policy_version:
@@ -697,7 +915,8 @@ components:
         next_step:
           type: string
         independent_verification:
-          $ref: '#/components/schemas/IndependentVerification'
+          type: object
+          additionalProperties: true
 
     ApprovePlanRequest:
       type: object
@@ -706,6 +925,7 @@ components:
       properties:
         approver:
           type: string
+          minLength: 1
           maxLength: 255
         plan_hash:
           $ref: '#/components/schemas/Sha256'
@@ -717,15 +937,15 @@ components:
       type: object
       additionalProperties: false
       required: [action, target]
-      description: |
-        One action the agent actually took. `status` is an observation of the tool
-        call, not a claim about conformance.
+      description: Raw observation; it is not a conformance verdict.
       properties:
         action:
           type: string
+          minLength: 1
           maxLength: 64
         target:
           type: string
+          minLength: 1
           maxLength: 255
         step_id:
           type: [string, 'null']
@@ -741,21 +961,131 @@ components:
           default: succeeded
         started_at:
           type: [string, 'null']
+          maxLength: 64
         finished_at:
           type: [string, 'null']
+          maxLength: 64
         output_sha256:
-          description: |
-            Digest of the output this action produced. Replay match holds only when
-            some content-verified artifact hashes to exactly this value.
           oneOf:
             - $ref: '#/components/schemas/Sha256'
             - type: 'null'
+
+    UnifiedPreflightRequest:
+      type: object
+      additionalProperties: false
+      required: [plan_id, agent_identity, action]
+      properties:
+        plan_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        agent_identity:
+          type: string
+          minLength: 1
+          maxLength: 255
+        action:
+          $ref: '#/components/schemas/ObservedAction'
+        required_capabilities:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/CapabilityRequirement'
+        channel:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: api
+        trace_id:
+          type: [string, 'null']
+          maxLength: 128
+
+    MobileClientIdentity:
+      type: object
+      additionalProperties: false
+      required: [package_name, version_name, version_code, apk_sha256, signing_cert_sha256]
+      properties:
+        package_name:
+          type: string
+          maxLength: 255
+        version_name:
+          type: string
+          maxLength: 64
+        version_code:
+          type: integer
+          minimum: 1
+        apk_sha256:
+          $ref: '#/components/schemas/Sha256'
+        signing_cert_sha256:
+          $ref: '#/components/schemas/Sha256'
+
+    MobileProposedAction:
+      type: object
+      additionalProperties: false
+      required: [action, target, step_id]
+      properties:
+        action:
+          type: string
+          minLength: 1
+          maxLength: 64
+        target:
+          type: string
+          minLength: 1
+          maxLength: 255
+        step_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        parameters:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            $ref: '#/components/schemas/Scalar'
+
+    MobilePreflightRequest:
+      type: object
+      additionalProperties: false
+      required: [client, plan_id, agent_identity, action]
+      properties:
+        client:
+          $ref: '#/components/schemas/MobileClientIdentity'
+        plan_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        agent_identity:
+          type: string
+          minLength: 1
+          maxLength: 255
+        action:
+          $ref: '#/components/schemas/MobileProposedAction'
+        required_capabilities:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/CapabilityRequirement'
+        trace_id:
+          type: [string, 'null']
+          maxLength: 128
+
+    MobileClientContract:
+      type: object
+      properties:
+        client:
+          type: object
+          additionalProperties: true
+        decision_core:
+          type: string
+        control:
+          type: object
+          additionalProperties: true
+        rule:
+          type: string
 
     PlanAlignmentRequest:
       type: object
       additionalProperties: false
       required: [actions]
-      description: Provide exactly one of `plan_id` or `plan`.
+      description: Exactly one of plan_id or plan is required by runtime validation.
       properties:
         plan_id:
           type: [string, 'null']
@@ -771,44 +1101,15 @@ components:
           items:
             $ref: '#/components/schemas/ObservedAction'
 
-    AlignmentFinding:
-      type: object
-      properties:
-        code:
-          type: string
-          enum:
-            - OUT_OF_PLAN_ACTION
-            - PARAMETER_MISMATCH
-            - UNKNOWN_STEP_ID
-            - STEP_REPEATED
-            - UNDECLARED_PARAMETER
-            - STEP_NOT_EXECUTED
-        severity:
-          $ref: '#/components/schemas/Severity'
-        detail:
-          type: string
-        action_index:
-          type: integer
-        step_id:
-          type: string
-        parameters:
-          type: array
-          items:
-            type: string
-
     PlanAlignmentResult:
       type: object
-      required: [plan_aligned, findings]
       properties:
         plan_aligned:
           type: boolean
-          description: Computed by DSG. Never accepted as input.
+          readOnly: true
         computed_by:
           type: string
-          const: dsg
-        plan_source:
-          type: string
-          enum: [stored, inline]
+          readOnly: true
         plan_id:
           type: [string, 'null']
         plan_status:
@@ -819,42 +1120,20 @@ components:
           $ref: '#/components/schemas/Sha256'
         alignment_hash:
           $ref: '#/components/schemas/Sha256'
-        steps_total:
-          type: integer
-        steps_matched:
-          type: integer
-        steps_missing:
-          type: array
-          items:
-            type: string
-        optional_steps_missing:
-          type: array
-          items:
-            type: string
         plan_complete:
           type: boolean
-        matches:
-          type: array
-          items:
-            type: object
-            properties:
-              action_index:
-                type: integer
-              step_id:
-                type: string
         findings:
           type: array
           items:
-            $ref: '#/components/schemas/AlignmentFinding'
-        independent_verification:
-          $ref: '#/components/schemas/IndependentVerification'
+            type: object
+            additionalProperties: true
         evaluated_at:
           type: string
 
     ConstraintsRequest:
       type: object
       additionalProperties: false
-      description: Provide exactly one of `plan_id` or `constraints`.
+      description: Exactly one of plan_id or constraints is required by runtime validation.
       properties:
         plan_id:
           type: [string, 'null']
@@ -869,90 +1148,35 @@ components:
         facts:
           type: object
           maxProperties: 64
-          description: Observed facts. Never a verdict about them.
           additionalProperties:
             anyOf:
               - $ref: '#/components/schemas/Scalar'
               - type: array
+                maxItems: 64
                 items:
                   $ref: '#/components/schemas/Scalar'
 
-    ConstraintEvaluation:
-      type: object
-      properties:
-        constraint_id:
-          type: string
-        field:
-          type: string
-        op:
-          type: string
-        expected: {}
-        actual: {}
-        fact_present:
-          type: boolean
-        severity:
-          $ref: '#/components/schemas/Severity'
-        satisfied:
-          type: boolean
-        reason:
-          type: string
-          enum: [MISSING_FACT, UNEXPECTED_FACT, TYPE_MISMATCH, CONSTRAINT_VIOLATED]
-
     ConstraintsResult:
       type: object
-      required: [constraints_pass, decision, verification, proof_hash]
       properties:
         constraints_pass:
           type: boolean
-          description: Computed by DSG. Never accepted as input.
+          readOnly: true
         requires_review:
           type: boolean
-        computed_by:
-          type: string
-          const: dsg
-        constraint_source:
-          type: string
-          enum: [stored, inline]
-        plan_id:
-          type: [string, 'null']
-        constraints_total:
-          type: integer
-        constraints_satisfied:
-          type: integer
-        violations:
-          type: array
-          items:
-            $ref: '#/components/schemas/ConstraintEvaluation'
-        evaluated:
-          type: array
-          items:
-            $ref: '#/components/schemas/ConstraintEvaluation'
-        constraints_hash:
-          $ref: '#/components/schemas/Sha256'
-        facts_hash:
-          $ref: '#/components/schemas/Sha256'
-        evaluation_hash:
-          $ref: '#/components/schemas/Sha256'
+          readOnly: true
         decision:
           $ref: '#/components/schemas/Decision'
         verified:
           type: boolean
-          const: true
+          readOnly: true
         verification:
           type: string
-          const: VERIFIED_GLOBAL_OPTIMUM
+          readOnly: true
         proof_hash:
           $ref: '#/components/schemas/Sha256'
         request_hash:
           $ref: '#/components/schemas/Sha256'
-        witness:
-          type: array
-          items:
-            type: integer
-        energy_exact:
-          type: [string, 'null']
-        independent_verification:
-          $ref: '#/components/schemas/IndependentVerification'
         evaluated_at:
           type: string
 
@@ -963,14 +1187,16 @@ components:
       properties:
         plan_id:
           type: string
+          minLength: 1
           maxLength: 64
         agent_identity:
           type: string
+          minLength: 1
           maxLength: 255
-          description: Must equal the agent identity the approved plan names.
         environment:
           type: string
           maxLength: 128
+          default: unknown
         channel:
           $ref: '#/components/schemas/Channel'
         actions:
@@ -982,10 +1208,6 @@ components:
         observed_facts:
           type: object
           maxProperties: 64
-          description: |
-            Additional observations for constraint evaluation. Facts DSG derives
-            itself - cost, environment, targets, failure counts - always override
-            these.
           additionalProperties:
             anyOf:
               - $ref: '#/components/schemas/Scalar'
@@ -997,8 +1219,10 @@ components:
           minimum: 0
         started_at:
           type: [string, 'null']
+          maxLength: 64
         finished_at:
           type: [string, 'null']
+          maxLength: 64
         trace_id:
           type: [string, 'null']
           maxLength: 128
@@ -1021,48 +1245,36 @@ components:
         environment:
           type: string
         channel:
-          $ref: '#/components/schemas/Channel'
+          type: string
         trace_id:
           type: [string, 'null']
         actions:
           type: array
           items:
             $ref: '#/components/schemas/ObservedAction'
-        observed_facts:
-          type: object
-          additionalProperties: true
-        cost_microunits:
-          type: integer
-        action_trace_hash:
-          $ref: '#/components/schemas/Sha256'
+        alignment_preview:
+          $ref: '#/components/schemas/PlanAlignmentResult'
         evidence:
           type: array
           items:
-            $ref: '#/components/schemas/EvidenceRecord'
+            type: object
+            additionalProperties: true
         proof_id:
           type: [string, 'null']
-        recorded_at:
-          type: string
-        alignment_preview:
-          $ref: '#/components/schemas/PlanAlignmentResult'
         next_step:
           type: string
-        independent_verification:
-          $ref: '#/components/schemas/IndependentVerification'
 
     EvidenceArtifact:
       type: object
       additionalProperties: false
       required: [artifact_id, source]
-      description: |
-        Supply `content` or `content_base64` for evidence DSG can verify, or
-        `declared_sha256` alone for an attestation it cannot.
       properties:
         artifact_id:
           type: string
           maxLength: 64
         source:
           type: string
+          minLength: 1
           maxLength: 128
         step_id:
           type: [string, 'null']
@@ -1082,6 +1294,7 @@ components:
             - type: 'null'
         recorded_at:
           type: [string, 'null']
+          maxLength: 64
 
     EvidenceSubmission:
       type: object
@@ -1094,109 +1307,6 @@ components:
           maxItems: 256
           items:
             $ref: '#/components/schemas/EvidenceArtifact'
-
-    EvidenceRecord:
-      type: object
-      properties:
-        artifact_id:
-          type: string
-        source:
-          type: string
-        step_id:
-          type: [string, 'null']
-        media_type:
-          type: string
-        sha256:
-          $ref: '#/components/schemas/Sha256'
-        declared_sha256:
-          type: [string, 'null']
-        size_bytes:
-          type: [integer, 'null']
-        verification:
-          type: string
-          enum: [CONTENT_VERIFIED, HASH_ONLY]
-        encoding:
-          type: [string, 'null']
-        recorded_at:
-          type: string
-        ingested_at:
-          type: string
-
-    EvidenceAssessment:
-      type: object
-      properties:
-        evidence_complete:
-          type: boolean
-          description: Computed by DSG. Never accepted as input.
-        computed_by:
-          type: string
-          const: dsg
-        evidence_completeness:
-          type: number
-          minimum: 0
-          maximum: 1
-        required_steps:
-          type: array
-          items:
-            type: string
-        covered_steps:
-          type: array
-          items:
-            type: string
-        executed_steps:
-          type: array
-          items:
-            type: string
-        gaps:
-          type: array
-          items:
-            type: object
-            properties:
-              step_id:
-                type: string
-              code:
-                type: string
-                enum: [EVIDENCE_MISSING, EVIDENCE_NOT_CONTENT_VERIFIED, EVIDENCE_FOR_UNKNOWN_STEP]
-              detail:
-                type: string
-        artifacts_total:
-          type: integer
-        artifacts_content_verified:
-          type: integer
-        artifacts_hash_only:
-          type: integer
-        unassigned_artifacts:
-          type: array
-          items:
-            type: string
-        evidence_hash:
-          $ref: '#/components/schemas/Sha256'
-
-    ReplayAssessment:
-      type: object
-      properties:
-        replay_match:
-          type: boolean
-          description: Computed by DSG. Never accepted as input.
-        computed_by:
-          type: string
-          const: dsg
-        actions_checked:
-          type: integer
-        actions_matched:
-          type: integer
-        mismatches:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        comparisons:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        replay_hash:
-          $ref: '#/components/schemas/Sha256'
 
     EvidenceResult:
       type: object
@@ -1212,13 +1322,14 @@ components:
         artifacts:
           type: array
           items:
-            $ref: '#/components/schemas/EvidenceRecord'
+            type: object
+            additionalProperties: true
         evidence:
-          $ref: '#/components/schemas/EvidenceAssessment'
+          type: object
+          additionalProperties: true
         replay:
-          $ref: '#/components/schemas/ReplayAssessment'
-        independent_verification:
-          $ref: '#/components/schemas/IndependentVerification'
+          type: object
+          additionalProperties: true
         next_step:
           type: string
         submitted_at:
@@ -1234,66 +1345,15 @@ components:
         require_content_evidence:
           type: boolean
           default: true
-          description: |
-            When true (the default), hash-only attestations do not satisfy a step
-            that requires evidence.
-
-    ComputedVerdicts:
-      type: object
-      description: Every field here is DSG's own computation over stored raw records.
-      required:
-        - authorized
-        - plan_aligned
-        - constraints_pass
-        - execution_succeeded
-        - replay_match
-        - evidence_complete
-      properties:
-        authorized:
-          type: boolean
-        plan_aligned:
-          type: boolean
-        constraints_pass:
-          type: boolean
-        execution_succeeded:
-          type: boolean
-        replay_match:
-          type: boolean
-        evidence_complete:
-          type: boolean
-        evidence_completeness:
-          type: number
 
     ProofReceipt:
       type: object
-      required:
-        - proof_id
-        - decision
-        - computed
-        - verified
-        - verification
-        - proof_hash
-        - context_hash
       properties:
         proof_id:
-          type: string
-        receipt_version:
-          type: string
-        policy_version:
-          type: string
-        api_version:
           type: string
         execution_id:
           type: string
         plan_id:
-          type: string
-        trace_id:
-          type: [string, 'null']
-        channel:
-          $ref: '#/components/schemas/Channel'
-        agent_identity:
-          type: string
-        environment:
           type: string
         decision:
           $ref: '#/components/schemas/Decision'
@@ -1302,60 +1362,14 @@ components:
           items:
             type: string
         computed:
-          $ref: '#/components/schemas/ComputedVerdicts'
-        inputs:
-          type: object
-          description: The hashes every verdict in this receipt was computed from.
-          properties:
-            plan_hash:
-              $ref: '#/components/schemas/Sha256'
-            approval_hash:
-              $ref: '#/components/schemas/Sha256'
-            action_trace_hash:
-              $ref: '#/components/schemas/Sha256'
-            alignment_hash:
-              $ref: '#/components/schemas/Sha256'
-            constraints_hash:
-              $ref: '#/components/schemas/Sha256'
-            facts_hash:
-              $ref: '#/components/schemas/Sha256'
-            evidence_hash:
-              $ref: '#/components/schemas/Sha256'
-            replay_hash:
-              $ref: '#/components/schemas/Sha256'
-        findings:
-          type: object
-          properties:
-            alignment:
-              type: array
-              items:
-                $ref: '#/components/schemas/AlignmentFinding'
-            constraints:
-              type: array
-              items:
-                $ref: '#/components/schemas/ConstraintEvaluation'
-            evidence:
-              type: array
-              items:
-                type: object
-                additionalProperties: true
-            replay:
-              type: array
-              items:
-                type: object
-                additionalProperties: true
-        evidence_summary:
           type: object
           additionalProperties: true
-        cost_microunits:
-          type: integer
-          description: Observed cost as recorded on the execution. DSG does not price it.
         verified:
           type: boolean
-          const: true
+          readOnly: true
         verification:
           type: string
-          const: VERIFIED_GLOBAL_OPTIMUM
+          readOnly: true
         proof_hash:
           $ref: '#/components/schemas/Sha256'
         request_hash:
@@ -1366,26 +1380,15 @@ components:
           $ref: '#/components/schemas/Sha256'
         receipt_hash_verified:
           type: boolean
-          description: Present on read. DSG recomputes the hash before returning a receipt.
+          readOnly: true
         receipt_hash_recomputed:
           $ref: '#/components/schemas/Sha256'
-        witness:
-          type: array
-          items:
-            type: integer
-        energy_exact:
-          type: [string, 'null']
-        billing:
-          type: object
-          additionalProperties: true
-        independent_verification:
-          $ref: '#/components/schemas/IndependentVerification'
         verified_at:
           type: string
 
     ServiceStatus:
       type: object
-      required: [service, status, verification_backend, storage]
+      required: [service, status]
       properties:
         service:
           type: string
@@ -1393,10 +1396,6 @@ components:
         status:
           type: string
           enum: [READY, DEGRADED]
-          description: |
-            DEGRADED means the exact verifier is unreachable, so no new proof can be
-            issued. A client that cannot reach this endpoint at all shows NOT
-            CONNECTED.
         api_version:
           type: string
         policy_version:
@@ -1407,48 +1406,21 @@ components:
           type: string
         verification_backend:
           type: object
-          properties:
-            configured:
-              type: boolean
-            ready:
-              type: boolean
-            detail: {}
+          additionalProperties: true
         storage:
           type: object
-          properties:
-            mode:
-              type: string
-              enum: [file, memory]
-            durable:
-              type: boolean
-            records:
-              type: object
-              additionalProperties:
-                type: integer
+          additionalProperties: true
         independent_verification:
-          $ref: '#/components/schemas/IndependentVerification'
+          type: object
+          additionalProperties: true
         flow:
           type: array
           items:
             type: object
-            properties:
-              step:
-                type: string
-              endpoint:
-                type: string
+            additionalProperties: true
         mcp:
           type: object
-          properties:
-            endpoint:
-              type: string
-            transport:
-              type: string
-            protocol_version:
-              type: string
-            tools:
-              type: array
-              items:
-                type: string
+          additionalProperties: true
         checked_at:
           type: string
 
@@ -1482,9 +1454,4 @@ components:
           additionalProperties: true
         error:
           type: object
-          properties:
-            code:
-              type: integer
-            message:
-              type: string
-            data: {}
+          additionalProperties: true
