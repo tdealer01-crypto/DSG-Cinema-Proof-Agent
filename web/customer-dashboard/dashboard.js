@@ -24,8 +24,10 @@ function renderHistory(items) {
     return;
   }
   items.forEach(item => {
-    const row = document.createElement("div");
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = "history-row";
+    row.onclick = () => loadProofDetail(item.sequence);
     const when = document.createElement("span");
     when.textContent = new Date(item.recorded_at).toLocaleDateString();
     const hash = document.createElement("span");
@@ -38,6 +40,29 @@ function renderHistory(items) {
     host.appendChild(row);
   });
 }
+
+async function loadProofDetail(sequence) {
+  if (!key || busy) return;
+  busy = true;
+  try {
+    const detail = await api(`/billing/usage/history/${sequence}`);
+    $("detailProofHash").textContent = detail.proof_hash;
+    $("detailContextHash").textContent = detail.context_hash;
+    $("detailEntryHash").textContent = detail.entry_hash;
+    $("detailAmount").textContent = `$${(detail.amount_micros / 1_000_000).toFixed(2)}`;
+    $("proofDetail").hidden = false;
+  } catch (error) {
+    $("message").textContent = error.message;
+    $("message").className = "status error";
+  } finally {
+    busy = false;
+  }
+}
+
+$("closeProofDetail").onclick = () => {
+  $("proofDetail").hidden = true;
+  for (const id of ["detailProofHash", "detailContextHash", "detailEntryHash", "detailAmount"]) $(id).textContent = "";
+};
 
 function reset() {
   $("apiKey").value = "";
@@ -55,6 +80,8 @@ function reset() {
   $("subscriptionState").textContent = "○ subscription";
   for (const id of ["billingChannel", "paymentState", "subscriptionState"]) $(id).className = "step";
   renderHistory([]);
+  $("proofDetail").hidden = true;
+  for (const id of ["detailProofHash", "detailContextHash", "detailEntryHash", "detailAmount"]) $(id).textContent = "";
   $("next").textContent = "Connect your account to continue.";
   $("message").textContent = "";
   $("message").className = "status";

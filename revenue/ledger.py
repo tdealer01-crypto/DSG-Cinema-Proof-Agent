@@ -115,14 +115,14 @@ class LedgerStore:
         self._loaded_signature = self._file_signature()
 
     def _reload_if_changed(self) -> None:
-        """Adopt another writer's entries before trusting our own view."""
-        if self._path is None:
+        """Reload authoritative state after lock acquisition.
+
+        The method name remains for compatibility with repository checks, but a
+        shared filesystem's cached stat metadata cannot safely decide freshness.
+        """
+        if self._path is None or not self._path.exists():
             return
-        signature = self._file_signature()
-        if signature is None:
-            return
-        if signature != self._loaded_signature:
-            self._load()
+        self._load()
 
     @contextmanager
     def _file_lock(self):
@@ -148,7 +148,14 @@ class LedgerStore:
         """Serialize against other threads and other processes, then refresh."""
         with self._lock:
             with self._file_lock():
+                # The lock serializes writers, but filesystem metadata signatures are
+                # not a correctness primitive on SMB/NFS/Azure Files. Always reload
+                # the authoritative snapshot after acquiring the process lock so a
+                # stale in-memory replica cannot overwrite a preceding writer.
                 self._reload_if_changed()
+                # Metadata signatures are only an optimization for readers. The
+                # unconditional load above is required before read-modify-write on
+                # shared filesystems.
                 yield
 
     def _persist(self) -> None:
@@ -187,6 +194,13 @@ class LedgerStore:
                 for entry in self._entries
                 if entry.account_id == account_id and entry.period == period
             )
+
+    def find_account_entry(self, account_id: str, sequence: int) -> Optional[LedgerEntry]:
+        with self._critical_section():
+            if sequence < 0 or sequence >= len(self._entries):
+                return None
+            entry = self._entries[sequence]
+            return entry if entry.sequence == sequence and entry.account_id == account_id else None
 
     def account_entries_before(
         self,

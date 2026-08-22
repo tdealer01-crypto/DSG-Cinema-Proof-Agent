@@ -124,14 +124,10 @@ class AccountStore:
         self._loaded_signature = self._file_signature()
 
     def _reload_if_changed(self) -> None:
-        """Adopt another replica's changes before trusting our own view."""
-        if self._path is None:
+        """Reload authoritative account state after lock acquisition."""
+        if self._path is None or not self._path.exists():
             return
-        signature = self._file_signature()
-        if signature is None:
-            return
-        if signature != self._loaded_signature:
-            self._load()
+        self._load()
 
     @contextmanager
     def _file_lock(self):
@@ -157,7 +153,13 @@ class AccountStore:
         """Serialize against other threads and other processes, then refresh."""
         with self._lock:
             with self._file_lock():
+                # Reload unconditionally while holding the inter-process lock. Cached
+                # mtime/size metadata on shared filesystems cannot prevent stale
+                # whole-file updates from overwriting another replica.
                 self._reload_if_changed()
+                # Metadata signatures are only an optimization for readers. The
+                # unconditional load above is required before read-modify-write on
+                # shared filesystems.
                 yield
 
     def _persist(self) -> None:

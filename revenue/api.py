@@ -459,6 +459,29 @@ def billing_subscription(
     }
 
 
+@router.get("/usage/history/{sequence}")
+def billing_usage_history_detail(
+    sequence: int,
+    x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict:
+    account = _require_account(x_dsg_api_key)
+    entry = get_engine().ledger.find_account_entry(account.account_id, sequence)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="proof usage entry not found")
+    return {
+        "sequence": entry.sequence,
+        "period": entry.period,
+        "channel": entry.channel,
+        "sku": entry.sku,
+        "quantity": entry.quantity,
+        "amount_micros": entry.amount_micros,
+        "proof_hash": entry.proof_hash,
+        "context_hash": entry.context_hash,
+        "recorded_at": entry.recorded_at,
+        "entry_hash": entry.entry_hash,
+    }
+
+
 @router.get("/usage/history")
 def billing_usage_history(
     limit: int = Query(default=20, ge=1, le=100),
