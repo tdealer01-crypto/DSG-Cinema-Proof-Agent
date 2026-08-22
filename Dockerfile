@@ -19,3 +19,5 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
 
 # Run application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+
+# Production retry marker; no runtime effect.
