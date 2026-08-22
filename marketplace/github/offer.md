@@ -18,13 +18,13 @@ Product website for the v2 listing: https://dsgoneverifiedweb.z1.web.core.window
 - Third-party Processors: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md
 - Support contact: t.dealer01@dsg.pics
 - Rights holder and primary contact: Thanawat Suparongsuwan
-- Publisher organization for transfer: DSG-ONE-pics (https://github.com/DSG-ONE-pics)
+- Publisher account: tdealer01-crypto (https://github.com/tdealer01-crypto)
 
 v2 adds a Verified Execution mode backed by Cinema `/verify/evaluate` and exact Z3 verification while keeping marketplace-side logic bounded. The Action writes `dsg-proof-receipt.json` and exposes `decision`, `proof_hash`, and `context_hash` outputs.
 
-### Publisher transfer
+### Publisher ownership
 
-The selected publisher organization is **DSG-ONE-pics**. The organization is visible on the rights holder's GitHub profile and is the brand-aligned organization for the DSG ONE product. GitHub owner/admin verification and Marketplace eligibility must still be completed in the GitHub account before an actual transfer or publication.
+The current GitHub App and Marketplace draft are owned by the personal GitHub account **tdealer01-crypto**. The listing will remain under that account; no publisher transfer to an Organization is planned for this version. The rights holder and primary contact is Thanawat Suparongsuwan.
 
 ### v2 positioning
 
