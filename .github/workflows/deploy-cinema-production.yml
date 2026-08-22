@@ -49,6 +49,8 @@ jobs:
       # them from Key Vault through the app's managed identity instead, so the
       # live key never passes through this workflow. See SECRET_MANAGEMENT.md.
       KEY_VAULT_NAME: ${{ vars.DSG_KEY_VAULT_NAME }}
+      KEY_VAULT_Z3_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_Z3_SECRET_NAME || 'z3-backend-shared-secret' }}
+      CONFIGURED_Z3_SHARED_SECRET: ${{ secrets.DSG_Z3_SHARED_SECRET }}
       KEY_VAULT_STRIPE_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_SECRET_NAME || 'stripe-secret-key' }}
       KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
       CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -102,7 +104,15 @@ jobs:
             --query id --output tsv)
           test -n "$PULL_IDENTITY_ID"
 
-          Z3_SECRET=$(openssl rand -hex 32)
+          Z3_SECRET="${CONFIGURED_Z3_SHARED_SECRET:-}"
+          if [[ -z "$Z3_SECRET" ]]; then
+            echo 'DSG_Z3_SHARED_SECRET is required; refusing to mint a deployment credential.' >&2
+            exit 1
+          fi
+          if [[ ${#Z3_SECRET} -lt 32 ]]; then
+            echo 'DSG_Z3_SHARED_SECRET must contain at least 32 characters.' >&2
+            exit 1
+          fi
           CINEMA_SECRET=$(openssl rand -hex 32)
           echo "::add-mask::$Z3_SECRET"
           echo "::add-mask::$CINEMA_SECRET"
