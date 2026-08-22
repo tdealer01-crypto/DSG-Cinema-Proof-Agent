@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import time
 
 import pytest
@@ -1448,6 +1449,20 @@ def test_usage_history_rejects_invalid_limits(engine):
 
 def test_usage_history_requires_a_valid_key(engine):
     assert client.get("/billing/usage/history").status_code == 401
+
+
+def test_persist_uses_flush_and_fsync_before_replace(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.json"
+    store = LedgerStore(str(path))
+    calls = []
+    original_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: calls.append(fd))
+    store.append(
+        account_id="acct", channel="api", sku="verified_execution", quantity=1,
+        unit_price_micros=0, amount_micros=0, proof_hash="a" * 64,
+        context_hash="b" * 64, idempotency_key="durability", units_before=0,
+    )
+    assert calls, "persist must fsync the temporary file before rename"
 
 
 def test_usage_history_detail_is_tenant_scoped(engine):

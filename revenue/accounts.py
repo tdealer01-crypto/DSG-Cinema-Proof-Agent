@@ -167,11 +167,20 @@ class AccountStore:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps([a.to_dict() for a in self._accounts.values()], indent=2),
-            encoding="utf-8",
-        )
+        payload = json.dumps([account.to_dict() for account in self._accounts.values()], indent=2)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, self._path)
+        try:
+            directory_fd = os.open(self._path.parent, os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except (AttributeError, OSError):
+            pass
         self._loaded_signature = self._file_signature()
 
     # ---------------------------------------------------------------- lookups
