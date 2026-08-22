@@ -1,9 +1,8 @@
-"""Pinned Android client contract and plan-authorized execution gate.
+"""Pinned Android adapter for the unified DSG decision core.
 
-DSG is an execution enabler for user-approved plans, not a blanket blocker.
-It verifies the audited client and exact approved step, then emits a scoped
-capability grant the trusted executor can consume. Only work outside the
-approved plan/build is denied.
+This module owns only mobile-specific client identity and trusted bridge auth.
+Plan approval semantics, ALLOW/WAITING_PERMISSION/BLOCK, and capability grants
+come from `decision_core` so mobile cannot drift from REST/MCP/executor policy.
 """
 
 from __future__ import annotations
@@ -13,15 +12,14 @@ import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 
 from revenue import api as billing
 
-from .alignment import evaluate_alignment
-from .canonical import canonical_hash, utc_now
-from .models import ObservedAction, Scalar
+from .canonical import utc_now
+from .decision_core import CapabilityNeed, CorePreflightRequest, evaluate_plan_authorization
+from .models import ObservedAction, Scalar, Strict
 from . import service
-
 
 MOBILE_PACKAGE = "com.dsg.architect"
 MOBILE_VERSION_NAME = "1.0.0"
@@ -32,10 +30,6 @@ MOBILE_SOURCE_STAMP_CERT_SHA256 = "3257d599a49d2c961a471ca9843f59d341a405884583f
 VERIFIED_EXECUTION_SKU = service.VERIFIED_EXECUTION_SKU
 
 router = APIRouter(prefix="/api/v1/mobile", tags=["dsg-mobile-control"])
-
-
-class Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
 
 
 class MobileClientIdentity(Strict):
@@ -66,6 +60,7 @@ class MobilePreflightRequest(Strict):
     plan_id: str = Field(min_length=1, max_length=64)
     agent_identity: str = Field(min_length=1, max_length=255)
     action: ProposedAction
+    capability_needs: list[CapabilityNeed] = Field(default_factory=list, max_length=32)
     trace_id: str | None = Field(default=None, max_length=128)
 
 
@@ -94,12 +89,7 @@ def _client_mismatches(client: MobileClientIdentity) -> list[str]:
 
 
 def _authorize_control_caller(api_key: Optional[str], authorization: Optional[str]) -> None:
-    """Authenticate the trusted bridge without turning auth into a plan-policy veto.
-
-    A server bridge may use the Cinema bearer secret automatically. A metered
-    DSG API key is also accepted. End users should not have to paste credentials
-    into the mobile UI merely to execute an already-approved plan.
-    """
+    """Authenticate the trusted bridge without creating another policy gate."""
     bearer = (authorization or "").strip()
     if bearer.startswith("Bearer "):
         expected = (os.getenv("CINEMA_API_SECRET") or "").strip()
@@ -119,40 +109,10 @@ def _authorize_control_caller(api_key: Optional[str], authorization: Optional[st
             "message": "trusted server bridge authentication is required",
             "next_step": (
                 "Configure the RevenuePilot/Cinema bridge with CINEMA_API_SECRET or a DSG API key; "
-                "do not ask the end user to supply it for each approved action."
+                "do not ask the end user to re-authorize each approved plan step."
             ),
         },
     )
-
-
-def _capability_grant(request: MobilePreflightRequest, plan_record: dict[str, Any], alignment: dict[str, Any]) -> dict[str, Any]:
-    scope = {
-        "plan_id": request.plan_id,
-        "plan_hash": plan_record["plan_hash"],
-        "agent_identity": request.agent_identity,
-        "step_id": request.action.step_id,
-        "action": request.action.action,
-        "target": request.action.target,
-        "parameters": request.action.parameters,
-        "client_apk_sha256": request.client.apk_sha256,
-        "action_trace_hash": alignment["action_trace_hash"],
-    }
-    return {
-        "status": "GRANTED",
-        "scope": scope,
-        "scope_hash": canonical_hash(scope),
-        "permissions": [
-            "execute_exact_approved_step",
-            "use_required_executor_tools_for_step",
-            "record_execution_evidence",
-            "continue_to_verification",
-        ],
-        "denied": ["change_target", "change_action", "add_unapproved_parameters", "execute_other_plan_steps"],
-        "credential_policy": (
-            "executor resolves configured server-side credentials for this scoped step; "
-            "credentials are never returned to the mobile client"
-        ),
-    }
 
 
 def evaluate_preflight(request: MobilePreflightRequest) -> dict[str, Any]:
@@ -160,30 +120,20 @@ def evaluate_preflight(request: MobilePreflightRequest) -> dict[str, Any]:
     if mismatches:
         return {
             "allowed": False,
+            "execution_ready": False,
             "decision": "BLOCK",
             "code": "MOBILE_CLIENT_NOT_TRUSTED",
             "reason": "mobile build identity does not match the audited base.apk",
             "mismatched_fields": mismatches,
             "expected_client": audited_mobile_identity(),
-            "next_step": "Use the audited signed build or register a newly audited APK identity before execution.",
+            "capability_grant": None,
+            "computed_by": "dsg-decision-core-adapter",
+            "next_step": "Use the audited signed build or register a newly audited APK identity.",
             "evaluated_at": utc_now(),
         }
 
     plan_record = service._require_approved_plan(request.plan_id)
     document = service.plan_document(plan_record)
-    if document.agent_identity != request.agent_identity:
-        return {
-            "allowed": False,
-            "decision": "BLOCK",
-            "code": "AGENT_IDENTITY_MISMATCH",
-            "reason": (
-                f"approved plan names agent '{document.agent_identity}' but mobile bridge supplied "
-                f"'{request.agent_identity}'"
-            ),
-            "next_step": "Use the agent identity already approved by the plan, or approve a new plan.",
-            "evaluated_at": utc_now(),
-        }
-
     observed = ObservedAction(
         action=request.action.action,
         target=request.action.target,
@@ -191,63 +141,31 @@ def evaluate_preflight(request: MobilePreflightRequest) -> dict[str, Any]:
         parameters=request.action.parameters,
         status="succeeded",
     )
-    alignment = evaluate_alignment(document, [observed])
-
-    # Missing future steps are irrelevant during one-step preflight. Everything
-    # else is checked against this exact approved step before a capability is granted.
-    action_findings = [item for item in alignment["findings"] if item.get("code") != "STEP_NOT_EXECUTED"]
-    outside_plan = bool(action_findings)
-
-    if outside_plan:
-        decision = "BLOCK"
-        allowed = False
-        code = action_findings[0]["code"]
-        grant = None
-        next_step = "Match the exact approved step; otherwise create and approve a changed plan."
-    else:
-        decision = "ALLOW"
-        allowed = True
-        code = "PLAN_AUTHORIZED_ACTION"
-        grant = _capability_grant(request, plan_record, alignment)
-        next_step = (
-            "Executor may run this exact step now using server-side capabilities, then record evidence and verify."
-        )
-
-    receipt_material = {
-        "client_apk_sha256": request.client.apk_sha256,
-        "plan_id": request.plan_id,
-        "plan_hash": plan_record["plan_hash"],
-        "agent_identity": request.agent_identity,
-        "step_id": request.action.step_id,
-        "action_trace_hash": alignment["action_trace_hash"],
-        "decision": decision,
-        "capability_scope_hash": grant["scope_hash"] if grant else None,
-        "trace_id": request.trace_id,
-    }
-
-    return {
-        "allowed": allowed,
-        "decision": decision,
-        "code": code,
-        "plan_id": request.plan_id,
-        "plan_hash": plan_record["plan_hash"],
-        "plan_status": plan_record["status"],
-        "step_id": request.action.step_id,
-        "action": request.action.action,
-        "target": request.action.target,
-        "findings": action_findings,
-        "capability_grant": grant,
-        "control_hash": canonical_hash(receipt_material),
-        "computed_by": "dsg",
-        "next_step": next_step,
-        "evaluated_at": utc_now(),
-    }
+    core_request = CorePreflightRequest(
+        plan_id=plan_record["plan_id"],
+        plan_hash=plan_record["plan_hash"],
+        plan_status=plan_record["status"],
+        approved_agent_identity=document.agent_identity,
+        agent_identity=request.agent_identity,
+        action=observed,
+        capability_needs=request.capability_needs,
+        channel="mobile",
+        trace_id=request.trace_id,
+        client_context={
+            "package_name": request.client.package_name,
+            "version_code": request.client.version_code,
+            "apk_sha256": request.client.apk_sha256,
+            "signing_cert_sha256": request.client.signing_cert_sha256,
+        },
+    )
+    return evaluate_plan_authorization(request=core_request, plan_document=document)
 
 
 @router.get("/client-contract")
 async def client_contract() -> dict[str, Any]:
     return {
         "client": audited_mobile_identity(),
+        "decision_core": "/api/v1/control/contract",
         "control": {
             "preflight": "POST /api/v1/mobile/control/preflight",
             "execution_record": "POST /api/v1/executions",
@@ -256,8 +174,8 @@ async def client_contract() -> dict[str, Any]:
             "proof": "GET /api/v1/proofs/{proof_id}",
         },
         "rule": (
-            "approved exact plan action receives a scoped capability grant and proceeds; "
-            "only work outside the approved plan/build is blocked"
+            "mobile identity is checked here; all plan authorization and capability decisions "
+            "are delegated to the unified DSG decision core"
         ),
     }
 
