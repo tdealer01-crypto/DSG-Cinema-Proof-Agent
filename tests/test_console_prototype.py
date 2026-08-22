@@ -39,6 +39,25 @@ def test_console_is_served_from_the_api_origin():
     assert "DSG ONE" in response.text
 
 
+def test_customer_dashboard_is_served_from_the_api_origin():
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "DSG ONE Customer" in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    script = client.get("/dashboard-assets/dashboard.js")
+    assert script.status_code == 200
+    assert script.headers["content-type"].startswith("application/javascript")
+    for endpoint in (
+        "/onboarding/status",
+        "/billing/usage",
+        "/billing/checkout/session",
+        "/billing/portal/session",
+    ):
+        assert endpoint in script.text
+
+
 def test_static_markup_shows_no_verification_state(markup: str):
     for forbidden in ("PASS", "VERIFIED", "MATCH", "COMPLETE", "SUCCESS", "HEALTHY"):
         assert forbidden not in markup, f"static markup ships a {forbidden} state"

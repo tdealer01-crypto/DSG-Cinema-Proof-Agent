@@ -303,6 +303,7 @@ def _stripe_context_hash(request: StripeVerifyRequest, risk_score: int) -> str:
 
 
 PROTOTYPE_PATH = Path(__file__).resolve().parent / "web" / "dsg-one-3d" / "index.html"
+CUSTOMER_DASHBOARD_PATH = Path(__file__).resolve().parent / "web" / "customer-dashboard" / "index.html"
 
 
 @app.get("/app", include_in_schema=False)
@@ -318,6 +319,39 @@ async def prototype_console() -> FileResponse:
         PROTOTYPE_PATH,
         media_type="text/html",
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/dashboard-assets/{asset_name}", include_in_schema=False)
+async def customer_dashboard_asset(asset_name: str) -> FileResponse:
+    allowed = {
+        "dashboard.css": "text/css",
+        "dashboard.js": "application/javascript",
+    }
+    if asset_name not in allowed:
+        raise HTTPException(status_code=404, detail="dashboard asset not found")
+    asset_path = CUSTOMER_DASHBOARD_PATH.parent / asset_name
+    return FileResponse(
+        asset_path,
+        media_type=allowed[asset_name],
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def customer_dashboard() -> FileResponse:
+    if not CUSTOMER_DASHBOARD_PATH.exists():
+        raise HTTPException(status_code=404, detail="the customer dashboard bundle is not present")
+    return FileResponse(
+        CUSTOMER_DASHBOARD_PATH,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        },
     )
 
 
