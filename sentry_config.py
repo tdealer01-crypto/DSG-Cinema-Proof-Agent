@@ -1,7 +1,6 @@
 """Enhanced Sentry configuration with performance monitoring and custom integrations."""
 
 import os
-import random
 import re
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -72,11 +71,6 @@ def filter_transactions(event, hint):
     # Skip health check transactions
     if any(skip in path for skip in ["/health", "/metrics", "/ready"]):
         return None
-
-    # Sample verbose endpoints
-    if "/verify" in path:
-        if random.random() > 0.5:  # Keep only 50% of verification transactions
-            return None
 
     return event
 

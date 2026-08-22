@@ -37,8 +37,11 @@ class AzureDeployer:
         self.subscription_id = subscription_id
         self.tenant_id = tenant_id
         self.verbose = verbose
-        self.access_token = None
-        self.bearer_token = None
+        self.access_token: str | None = None
+        self.bearer_token: str | None = None
+        self.solver_secret = os.urandom(32).hex()
+        self.registry_password = (os.getenv("AZURE_CONTAINER_REGISTRY_PASSWORD") or "").strip()
+        self.output_path = Path("/mnt/user-data/outputs/Z3_AZURE_DEPLOYMENT_OUTPUTS.txt")
         
     def log(self, msg, level="INFO"):
         """Log with timestamp"""
@@ -265,8 +268,9 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
         """Create Azure Container Instance via REST API"""
         self.log("Creating Container Instance...", "")
         
-        # Generate secrets
-        api_secret = os.urandom(32).hex()
+        if not self.registry_password:
+            raise RuntimeError("AZURE_CONTAINER_REGISTRY_PASSWORD is required")
+        api_secret = self.solver_secret
         container_name = SERVICE_NAME
         
         # REST API call to create container
@@ -305,7 +309,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
                             "environmentVariables": [
                                 {
                                     "name": "DSG_SOLVER_SHARED_SECRET",
-                                    "value": api_secret
+                                    "secureValue": api_secret
                                 },
                                 {
                                     "name": "Z3_DETERMINISTIC_SEED",
@@ -331,7 +335,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
                     {
                         "server": f"{REGISTRY_NAME}.azurecr.io",
                         "username": REGISTRY_NAME,
-                        "password": api_secret  # In production, fetch from registry
+                        "password": self.registry_password
                     }
                 ]
             }
@@ -348,11 +352,11 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
                 self.log(f"Container FQDN: {container_name}.{LOCATION}.azurecontainer.io", "DEBUG")
                 return container_url
             else:
-                self.log(f"API error {resp.status_code}: {resp.text[:200]}", "WARN")
-                return f"http://{container_name}.{LOCATION}.azurecontainer.io:8080"
-        except Exception as e:
-            self.log(f"⚠️  Container creation skipped: {e}", "WARN")
-            return f"http://{container_name}.{LOCATION}.azurecontainer.io:8080"
+                raise RuntimeError(
+                    f"Azure rejected container creation with HTTP {resp.status_code}: {resp.text[:200]}"
+                )
+        except requests.RequestException as exc:
+            raise RuntimeError("Azure container creation request failed") from exc
     
     def wait_for_container(self, container_url):
         """Wait for container to be ready"""
@@ -373,15 +377,14 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
             if resp.status_code == 200:
                 self.log(f"✅ Health check PASSED (HTTP 200)", "")
                 self.log(f"Response: {resp.text[:100]}", "DEBUG")
-            else:
-                self.log(f"⚠️  Health check HTTP {resp.status_code}", "WARN")
-        except Exception as e:
-            self.log(f"⚠️  Health check failed: {e}", "WARN")
-            self.log("(Container may still be initializing; wait 1-2 minutes and retry)", "INFO")
+                return
+            raise RuntimeError(f"health check returned HTTP {resp.status_code}")
+        except requests.RequestException as exc:
+            raise RuntimeError("container health check request failed") from exc
     
     def save_outputs(self, container_url):
         """Save deployment outputs to file"""
-        api_secret = os.urandom(32).hex()
+        api_secret = self.solver_secret
         
         output = f"""╔════════════════════════════════════════════════════════════════════════════╗
 ║ Z3 SOLVER DEPLOYMENT — AZURE CONTAINER INSTANCES                         ║
@@ -464,8 +467,10 @@ Copy these values for next steps:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
         
-        output_file = Path("/mnt/user-data/outputs/Z3_AZURE_DEPLOYMENT_OUTPUTS.txt")
-        output_file.write_text(output)
+        output_file = self.output_path
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(output, encoding="utf-8")
+        output_file.chmod(0o600)
         self.log(f"Outputs saved to {output_file}", "")
 
 if __name__ == "__main__":
