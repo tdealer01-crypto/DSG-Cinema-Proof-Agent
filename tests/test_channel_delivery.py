@@ -476,3 +476,55 @@ def test_diagnose_never_reveals_more_than_pass_or_fail_for_a_bad_key(engine, mon
     ).json()
     assert body["billing"] is None
     assert not any(check["check"] == "account_status" for check in body["checks"])
+
+
+def test_onboarding_status_requires_a_valid_key(engine, monkeypatch):
+    configure_backend(monkeypatch)
+    assert client.get("/onboarding/status").status_code == 401
+
+
+def test_onboarding_status_guides_an_activated_customer_to_first_proof(engine, monkeypatch):
+    configure_backend(monkeypatch)
+    key = activate(activation_id="onboarding-1").json()["api_key"]
+    response = client.get("/onboarding/status", headers={"X-DSG-API-Key": key})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ACTION_REQUIRED"
+    assert body["current_step"] == "RUN_FIRST_PROOF"
+    assert body["progress"] == 75
+    assert body["steps"] == {
+        "account_activated": True,
+        "api_key_authenticated": True,
+        "backend_connected": True,
+        "first_proof_completed": False,
+    }
+    assert body["next_action"]["method"] == "POST"
+    assert body["next_action"]["endpoint"] == "/verify/evaluate"
+
+
+def test_onboarding_status_completes_after_first_billable_proof(engine, monkeypatch):
+    configure_backend(monkeypatch)
+    activated = activate(activation_id="onboarding-2").json()
+    key = activated["api_key"]
+    account_id = activated["account"]["account_id"]
+    account = engine.accounts.get(account_id)
+    authorization = engine.authorize(key, "verified_execution")
+    engine.record_usage(
+        authorization,
+        sku="verified_execution",
+        receipt={
+            "verified": True,
+            "verification": "VERIFIED_GLOBAL_OPTIMUM",
+            "proof_hash": "a" * 64,
+            "context_hash": "b" * 64,
+        },
+    )
+
+    body = client.get(
+        "/onboarding/status", headers={"X-DSG-API-Key": key}
+    ).json()
+    assert body["status"] == "READY"
+    assert body["current_step"] == "COMPLETE"
+    assert body["progress"] == 100
+    assert body["steps"]["first_proof_completed"] is True
+    assert body["next_action"] is None

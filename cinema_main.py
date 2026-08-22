@@ -453,6 +453,61 @@ async def support_diagnose(
     }
 
 
+@app.get("/onboarding/status")
+async def onboarding_status(
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
+    account = billing.get_engine().accounts.authenticate((x_dsg_api_key or "").strip())
+    if account is None:
+        raise HTTPException(
+            status_code=401,
+            detail="a valid X-DSG-API-Key header is required",
+        )
+
+    try:
+        status_code, backend = await z3_request("GET", "/ready")
+        backend_connected = (
+            status_code == 200
+            and isinstance(backend, dict)
+            and backend.get("status") == "ready"
+        )
+    except HTTPException:
+        backend_connected = False
+
+    usage = billing.get_engine().usage_summary(account)
+    first_proof_completed = usage["units"] > 0
+    steps = {
+        "account_activated": account.activation_ref is not None,
+        "api_key_authenticated": True,
+        "backend_connected": backend_connected,
+        "first_proof_completed": first_proof_completed,
+    }
+    progress = round(sum(steps.values()) / len(steps) * 100)
+
+    if not backend_connected:
+        status = "SERVICE_UNAVAILABLE"
+        current_step = "CONNECT_BACKEND"
+        next_action = {"method": "GET", "endpoint": "/support/diagnose"}
+    elif not first_proof_completed:
+        status = "ACTION_REQUIRED"
+        current_step = "RUN_FIRST_PROOF"
+        next_action = {"method": "POST", "endpoint": "/verify/evaluate"}
+    else:
+        status = "READY"
+        current_step = "COMPLETE"
+        next_action = None
+
+    return {
+        "status": status,
+        "current_step": current_step,
+        "progress": progress,
+        "steps": steps,
+        "next_action": next_action,
+        "account": account.public_view(),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/verify/evaluate")
 async def verify_evaluate(
     request: VerificationRequest,
