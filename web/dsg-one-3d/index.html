@@ -396,7 +396,9 @@
         <div class="actions">
           <button class="btn primary" id="btnConnect">⇄ Connect</button>
           <button class="btn" id="btnDisconnect">✕ Disconnect</button>
+          <button class="btn" id="btnActivateFree">＋ Activate free key</button>
         </div>
+        <p class="muted" id="activationNotice" role="status" aria-live="polite" style="margin-top:12px"></p>
         <p class="muted" style="margin-top:12px">Served from the same origin as the API, the base URL can stay empty. Served from
           anywhere else, the deployment's CORS policy has to allow this origin. The key is kept in this browser only and is sent
           just to the base URL above.</p>
@@ -842,6 +844,54 @@ function disconnect(message) {
   if (message) banner(message);
 }
 
+function stableActivationId() {
+  try {
+    let id = localStorage.getItem("dsg-one-activation-id");
+    if (!id) {
+      id = `web-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+      localStorage.setItem("dsg-one-activation-id", id);
+    }
+    return id;
+  } catch (error) {
+    return `web-${Date.now()}`;
+  }
+}
+
+async function activateFreeKey() {
+  const button = el("btnActivateFree");
+  const notice = el("activationNotice");
+  const base = el("apiBase").value.trim().replace(/\/+$/, "");
+  button.disabled = true;
+  notice.textContent = "Activating a free key…";
+  try {
+    const response = await fetch(`${base}/billing/activate`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel: "api",
+        activation_id: stableActivationId(),
+        display_name: "DSG ONE browser evaluation"
+      })
+    });
+    let payload = null;
+    try { payload = await response.json(); } catch (error) {}
+    if (!response.ok) throw new ApiError(response.status, payload);
+    if (!payload || typeof payload.api_key !== "string" || payload.api_key.length < 32) {
+      throw new ApiError(502, { error: "ACTIVATION_INVALID", message: "Activation did not return a usable API key." });
+    }
+    el("apiKey").value = payload.api_key;
+    S.key = payload.api_key;
+    try { localStorage.setItem("dsg-one-key", payload.api_key); } catch (error) {}
+    notice.textContent = "Free key issued and saved in this browser. It is shown once; store it securely if needed.";
+    await connect();
+  } catch (error) {
+    const message = error instanceof ApiError ? `${error.code}: ${error.message}` : "Activation unavailable. The service could not be reached.";
+    notice.textContent = message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function connect() {
   S.base = el("apiBase").value.trim().replace(/\/+$/, "");
   S.key = el("apiKey").value.trim();
@@ -1179,6 +1229,7 @@ el("nav").addEventListener("click", event => {
 });
 
 el("btnConnect").addEventListener("click", connect);
+el("btnActivateFree").addEventListener("click", activateFreeKey);
 el("btnDisconnect").addEventListener("click", () => disconnect("Disconnected. Nothing on this page is a verification result."));
 el("btnRun").addEventListener("click", runFlow);
 el("btnReset").addEventListener("click", () => { loadSample(); banner(""); });
