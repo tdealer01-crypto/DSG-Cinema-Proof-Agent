@@ -1,4 +1,4 @@
-"""Tests for the audited Android client contract and plan-bound preflight gate."""
+"""Tests for the audited Android client contract and plan-authorized preflight gate."""
 
 from __future__ import annotations
 
@@ -105,12 +105,16 @@ def test_client_contract_exposes_exact_audited_apk_fingerprint():
     assert body["client"]["signing_cert_sha256"] == MOBILE_SIGNING_CERT_SHA256
 
 
-def test_preflight_allows_exact_action_inside_approved_plan():
+def test_preflight_allows_exact_action_and_grants_capability():
     plan = approved_plan()
     result = evaluate_preflight(request_for(plan["plan_id"]))
     assert result["allowed"] is True
     assert result["decision"] == "ALLOW"
     assert result["code"] == "PLAN_AUTHORIZED_ACTION"
+    assert result["capability_grant"]["status"] == "GRANTED"
+    assert "execute_exact_approved_step" in result["capability_grant"]["permissions"]
+    assert result["capability_grant"]["scope"]["step_id"] == "deploy"
+    assert len(result["capability_grant"]["scope_hash"]) == 64
     assert len(result["control_hash"]) == 64
 
 
@@ -122,9 +126,10 @@ def test_preflight_blocks_out_of_plan_target():
     assert result["allowed"] is False
     assert result["decision"] == "BLOCK"
     assert result["code"] == "OUT_OF_PLAN_ACTION"
+    assert result["capability_grant"] is None
 
 
-def test_preflight_does_not_allow_undeclared_parameters():
+def test_preflight_blocks_undeclared_parameters_as_outside_plan():
     plan = approved_plan()
     result = evaluate_preflight(
         request_for(
@@ -133,18 +138,16 @@ def test_preflight_does_not_allow_undeclared_parameters():
         )
     )
     assert result["allowed"] is False
-    assert result["decision"] == "REVIEW"
+    assert result["decision"] == "BLOCK"
     assert result["code"] == "UNDECLARED_PARAMETER"
+    assert result["capability_grant"] is None
 
 
 def test_preflight_blocks_a_different_apk_build():
     plan = approved_plan()
-    request = request_for(plan["plan_id"]).model_copy(
-        update={
-            "client": request_for(plan["plan_id"]).client.model_copy(
-                update={"apk_sha256": "0" * 64}
-            )
-        }
+    original = request_for(plan["plan_id"])
+    request = original.model_copy(
+        update={"client": original.client.model_copy(update={"apk_sha256": "0" * 64})}
     )
     result = evaluate_preflight(request)
     assert result["allowed"] is False
@@ -153,11 +156,11 @@ def test_preflight_blocks_a_different_apk_build():
     assert "apk_sha256" in result["mismatched_fields"]
 
 
-def test_http_preflight_requires_server_side_dsg_api_key():
+def test_http_preflight_requires_trusted_bridge_auth_not_user_reapproval():
     plan = approved_plan()
     response = client.post(
         "/api/v1/mobile/control/preflight",
         json=request_for(plan["plan_id"]).model_dump(mode="json"),
     )
     assert response.status_code == 401
-    assert response.json()["detail"]["error"] == "MOBILE_CONTROL_AUTH_REQUIRED"
+    assert response.json()["detail"]["error"] == "MOBILE_BRIDGE_AUTH_REQUIRED"
