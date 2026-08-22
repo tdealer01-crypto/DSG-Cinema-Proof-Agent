@@ -600,6 +600,40 @@ jobs:
 
           echo 'Rotation window closed; only the current credential is accepted.'
 
+      - name: Wait for Cinema app to be fully ready with enforcement configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          # After updating environment variables, wait for the app to fully restart
+          # and the enforcement gate to be properly configured.
+          for attempt in $(seq 1 72); do
+            CODE=$(curl --silent --show-error --output /tmp/cinema-health-2.json --write-out '%{http_code}' "$CINEMA_URL/health" || true)
+            if [[ "$CODE" == "200" ]]; then
+              # Check billing status to see enforcement readiness
+              STATUS=$(curl --silent --show-error --output /tmp/billing-status-check.json --write-out '%{http_code}' "$CINEMA_URL/billing/status" || true)
+              if [[ "$STATUS" == "200" ]]; then
+                ENFORCEMENT_READY=$(jq -r '.enforcement_ready // "unknown"' /tmp/billing-status-check.json 2>/dev/null || echo "error")
+                # If enforcement is requested, enforcement_ready must be true
+                if [[ "$REVENUE_ENFORCE" == "1" ]]; then
+                  if [[ "$ENFORCEMENT_READY" == "true" ]]; then
+                    echo "Cinema enforcement is ready and configured"
+                    break
+                  fi
+                else
+                  # If enforcement is not requested, we're ready
+                  echo "Cinema is ready (enforcement not requested)"
+                  break
+                fi
+              fi
+            fi
+            if [[ "$attempt" == "72" ]]; then
+              echo "Cinema app did not converge to enforcement readiness within 360 seconds" >&2
+              cat /tmp/billing-status-check.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
       - name: Verify marketplace adapters and Azure browser CORS
         shell: bash
         run: |
