@@ -10,7 +10,7 @@ import sentry_sdk
 from error_monitoring import (
     calculate_error_stats,
     get_error_log_file,
-    get_recent_errors,
+    read_recent_errors,
 )
 from sentry_config import (
     filter_errors,
@@ -203,12 +203,13 @@ class TestErrorMonitoringEndpoints:
 
     def test_get_recent_errors_respects_limit(self):
         """Test that recent errors respects the limit parameter."""
-        errors = get_recent_errors(limit=10)
+        errors = read_recent_errors(limit=10)
+        assert isinstance(errors, list)
         assert len(errors) <= 10
 
     def test_get_recent_errors_respects_time_window(self):
         """Test that recent errors respects the time window."""
-        errors = get_recent_errors(minutes=5)
+        errors = read_recent_errors(minutes=5)
         # This is a basic test that it doesn't crash
         assert isinstance(errors, list)
 
@@ -280,7 +281,6 @@ class TestSentryIntegrationEndToEnd:
     def test_transaction_filtering_preserves_important_transactions(self):
         """Test that important transactions are not filtered."""
         important_paths = [
-            "/api/verify",
             "/api/billing",
             "/api/activation",
             "/api/remediation",
@@ -290,3 +290,18 @@ class TestSentryIntegrationEndToEnd:
             event = {"request": {"url": f"http://localhost:8000{path}"}}
             result = filter_transactions(event, {})
             assert result == event, f"Path {path} should not be filtered"
+
+    def test_transaction_filtering_samples_verify_endpoints(self):
+        """Test that verify endpoints are sampled (50% kept, 50% filtered)."""
+        with patch("sentry_config.random.random") as mock_random:
+            event = {"request": {"url": "http://localhost:8000/api/verify"}}
+
+            # Test when random <= 0.5 (transaction kept, because condition is > 0.5)
+            mock_random.return_value = 0.4
+            result = filter_transactions(event, {})
+            assert result == event
+
+            # Test when random > 0.5 (transaction filtered)
+            mock_random.return_value = 0.6
+            result = filter_transactions(event, {})
+            assert result is None

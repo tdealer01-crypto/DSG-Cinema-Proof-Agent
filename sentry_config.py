@@ -1,6 +1,8 @@
 """Enhanced Sentry configuration with performance monitoring and custom integrations."""
 
 import os
+import random
+import re
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.httpx import HttpxIntegration
@@ -73,7 +75,6 @@ def filter_transactions(event, hint):
 
     # Sample verbose endpoints
     if "/verify" in path:
-        import random
         if random.random() > 0.5:  # Keep only 50% of verification transactions
             return None
 
@@ -82,7 +83,6 @@ def filter_transactions(event, hint):
 
 def sanitize_error_message(message: str) -> str:
     """Remove sensitive data from error messages."""
-    import re
     # Remove API keys
     message = re.sub(r"sk_live_\w+", "sk_live_***", message)
     message = re.sub(r"rk_live_\w+", "rk_live_***", message)
