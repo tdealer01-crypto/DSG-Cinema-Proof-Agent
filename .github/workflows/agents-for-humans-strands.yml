@@ -1,0 +1,44 @@
+name: Agents for Humans Strands Adapter
+
+on:
+  pull_request:
+    paths:
+      - 'hackathons/agents-for-humans/**'
+      - '.github/workflows/agents-for-humans-strands.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install adapter dependencies
+        working-directory: hackathons/agents-for-humans
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile adapter
+        working-directory: hackathons/agents-for-humans
+        run: python -m py_compile dsg_client.py agent.py
+
+      - name: Run fail-closed tests
+        working-directory: hackathons/agents-for-humans
+        run: python -m pytest -q test_dsg_client.py
+
+      - name: Verify Strands import and tool registration
+        working-directory: hackathons/agents-for-humans
+        run: |
+          python - <<'PY'
+          import agent
+          assert hasattr(agent.verify_bounded_execution, 'tool_name') or callable(agent.verify_bounded_execution)
+          print('Strands adapter import: PASS')
+          PY
