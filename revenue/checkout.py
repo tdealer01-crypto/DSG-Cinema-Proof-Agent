@@ -100,7 +100,7 @@ def _require_live_account(api_key: Optional[str]) -> Account:
                 "message": "paid checkout is available only to a live DSG API key",
             },
         )
-    if account.plan.startswith("github_"):
+    if account.channel == "github_marketplace":
         raise HTTPException(
             status_code=409,
             detail={
@@ -142,7 +142,7 @@ def _require_stripe_portal_account(api_key: Optional[str]) -> Account:
                 "message": "the billing portal is available only to a live DSG API key",
             },
         )
-    if account.plan.startswith("github_"):
+    if account.channel == "github_marketplace":
         raise HTTPException(
             status_code=409,
             detail={
