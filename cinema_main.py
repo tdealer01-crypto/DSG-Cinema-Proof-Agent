@@ -453,6 +453,78 @@ async def support_diagnose(
     }
 
 
+@app.get("/onboarding/status")
+async def onboarding_status(
+    x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
+    account = billing.get_engine().accounts.authenticate((x_dsg_api_key or "").strip())
+    if account is None:
+        raise HTTPException(
+            status_code=401,
+            detail="a valid X-DSG-API-Key header is required",
+        )
+
+    try:
+        status_code, backend = await z3_request("GET", "/ready")
+        backend_connected = (
+            status_code == 200
+            and isinstance(backend, dict)
+            and backend.get("status") == "ready"
+        )
+    except HTTPException:
+        backend_connected = False
+
+    try:
+        first_proof_completed = any(
+            entry.account_id == account.account_id
+            and entry.sku == VERIFIED_EXECUTION_SKU
+            for entry in billing.get_engine().ledger.entries()
+        )
+    except (OSError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail="onboarding proof history is unavailable",
+        )
+
+    durable_steps = {
+        "account_activated": account.activation_ref is not None,
+        "api_key_authenticated": True,
+        "first_proof_completed": first_proof_completed,
+    }
+    steps = {
+        **durable_steps,
+        "backend_connected": backend_connected,
+    }
+    progress = round(sum(durable_steps.values()) / len(durable_steps) * 100)
+
+    if not durable_steps["account_activated"]:
+        status = "ACTION_REQUIRED"
+        current_step = "ACTIVATE_ACCOUNT"
+        next_action = {"method": "POST", "endpoint": "/billing/activate"}
+    elif not first_proof_completed:
+        status = "ACTION_REQUIRED"
+        current_step = "RUN_FIRST_PROOF"
+        next_action = {"method": "POST", "endpoint": "/verify/evaluate"}
+    elif not backend_connected:
+        status = "SERVICE_UNAVAILABLE"
+        current_step = "COMPLETE"
+        next_action = {"method": "GET", "endpoint": "/support/diagnose"}
+    else:
+        status = "READY"
+        current_step = "COMPLETE"
+        next_action = None
+
+    return {
+        "status": status,
+        "current_step": current_step,
+        "progress": progress,
+        "steps": steps,
+        "next_action": next_action,
+        "account": account.public_view(),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/verify/evaluate")
 async def verify_evaluate(
     request: VerificationRequest,
