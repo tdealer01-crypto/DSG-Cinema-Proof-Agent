@@ -1491,8 +1491,20 @@ def test_github_billing_state_never_offers_stripe_portal(engine):
         headers={"X-DSG-API-Key": api_key},
     ).json()
     assert body["billing_channel"] == "github_marketplace"
+    assert body["subscription_active"] is True
     assert body["can_manage_in_portal"] is False
     assert body["portal_endpoint"] is None
+
+    free, free_key = engine.accounts.issue(
+        display_name="GitHub Free",
+        plan="github_free",
+        channel="github_marketplace",
+    )
+    free_body = client.get(
+        "/billing/subscription",
+        headers={"X-DSG-API-Key": free_key},
+    ).json()
+    assert free_body["subscription_active"] is False
 
 
 def test_billing_subscription_requires_a_valid_key(engine):

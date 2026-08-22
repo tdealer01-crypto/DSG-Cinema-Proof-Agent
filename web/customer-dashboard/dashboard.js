@@ -97,7 +97,7 @@ async function load() {
     $("next").textContent = onboarding.next_action
       ? `${onboarding.next_action.method} ${onboarding.next_action.endpoint}`
       : "Onboarding complete";
-    $("upgrade").disabled = !usage.upgrade?.recommended;
+    $("upgrade").disabled = subscription.billing_channel === "github_marketplace" || !usage.upgrade?.recommended;
     $("portal").disabled = !subscription.can_manage_in_portal;
     $("message").textContent = usage.upgrade?.recommended
       ? `Upgrade recommended: ${usage.upgrade.reason}`

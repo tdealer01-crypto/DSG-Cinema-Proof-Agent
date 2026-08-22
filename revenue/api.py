@@ -434,7 +434,7 @@ def billing_subscription(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ) -> dict:
     account = _require_account(x_dsg_api_key)
-    github_billed = account.plan.startswith("github_")
+    github_billed = account.channel == "github_marketplace"
     billing_channel = "github_marketplace" if github_billed else "stripe"
     can_manage = (
         not github_billed
@@ -446,9 +446,14 @@ def billing_subscription(
         "plan": account.plan,
         "billing_channel": billing_channel,
         "payment_linked": account.payment_linked,
-        "subscription_active": account.stripe_subscription_id is not None
-        if not github_billed
-        else account.status == "active",
+        "subscription_active": (
+            account.plan not in {"github_free"}
+            and account.status == "active"
+            if github_billed
+            else account.status == "active"
+            and account.payment_linked
+            and account.stripe_subscription_id is not None
+        ),
         "can_manage_in_portal": can_manage,
         "portal_endpoint": "/billing/portal/session" if can_manage else None,
     }
