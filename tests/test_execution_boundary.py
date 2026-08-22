@@ -1,4 +1,4 @@
-"""Execution persistence must obey the same DSG decision core as preflight."""
+"""Preflight authorizes execution; recording preserves observed reality for audit."""
 
 from __future__ import annotations
 
@@ -68,32 +68,34 @@ def execution_count() -> int:
     return int(service.store_summary()["records"].get("executions", 0))
 
 
-def test_rest_persists_exact_approved_trace_with_core_receipt():
+def test_rest_records_exact_approved_trace_as_aligned_audit_evidence():
     plan = approved_plan()
     response = client.post("/api/v1/executions", json=execution_payload(plan["plan_id"]))
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["authorization_control"]["decision"] == "ALLOW"
-    assert body["authorization_control"]["computed_by"] == "dsg-decision-core"
+    assert body["alignment_preview"]["plan_aligned"] is True
     stored = service.read_execution(body["execution_id"])
     assert stored["plan_id"] == plan["plan_id"]
     assert execution_count() == 1
 
 
-def test_rest_blocks_out_of_plan_trace_before_persistence():
+def test_rest_preserves_out_of_plan_trace_for_audit_without_calling_it_aligned():
     plan = approved_plan()
     response = client.post(
         "/api/v1/executions",
         json=execution_payload(plan["plan_id"], target="unapproved/app"),
     )
-    assert response.status_code == 409, response.text
+    assert response.status_code == 201, response.text
     body = response.json()
-    assert body["error"] == "OUT_OF_PLAN_ACTION"
-    assert body["details"]["decision"] == "BLOCK"
-    assert execution_count() == 0
+    assert body["alignment_preview"]["plan_aligned"] is False
+    assert any(
+        item["code"] == "OUT_OF_PLAN_ACTION"
+        for item in body["alignment_preview"]["findings"]
+    )
+    assert execution_count() == 1
 
 
-def test_mcp_record_execution_cannot_bypass_same_boundary():
+def test_mcp_preserves_same_violation_trace_for_audit():
     plan = approved_plan()
     message = {
         "jsonrpc": "2.0",
@@ -107,11 +109,10 @@ def test_mcp_record_execution_cannot_bypass_same_boundary():
     response = client.post("/api/v1/mcp", json=message)
     assert response.status_code == 200
     tool = response.json()["result"]
-    assert tool["isError"] is True
+    assert tool["isError"] is False
     body = tool["structuredContent"]
-    assert body["error"] == "OUT_OF_PLAN_ACTION"
-    assert body["details"]["decision"] == "BLOCK"
-    assert execution_count() == 0
+    assert body["alignment_preview"]["plan_aligned"] is False
+    assert execution_count() == 1
 
 
 def test_draft_plan_preflight_returns_canonical_block_not_transport_409():
