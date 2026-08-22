@@ -605,30 +605,34 @@ jobs:
         run: |
           set -euo pipefail
           # After updating environment variables, wait for the app to fully restart
-          # and the enforcement gate to be properly configured.
+          # and the enforcement gate to be properly configured. Test the actual
+          # enforcement gate behavior, not just the status endpoint.
           for attempt in $(seq 1 72); do
             CODE=$(curl --silent --show-error --output /tmp/cinema-health-2.json --write-out '%{http_code}' "$CINEMA_URL/health" || true)
             if [[ "$CODE" == "200" ]]; then
-              # Check billing status to see enforcement readiness
-              STATUS=$(curl --silent --show-error --output /tmp/billing-status-check.json --write-out '%{http_code}' "$CINEMA_URL/billing/status" || true)
-              if [[ "$STATUS" == "200" ]]; then
-                ENFORCEMENT_READY=$(jq -r '.enforcement_ready // "unknown"' /tmp/billing-status-check.json 2>/dev/null || echo "error")
-                # If enforcement is requested, enforcement_ready must be true
-                if [[ "$REVENUE_ENFORCE" == "1" ]]; then
-                  if [[ "$ENFORCEMENT_READY" == "true" ]]; then
-                    echo "Cinema enforcement is ready and configured"
-                    break
-                  fi
-                else
-                  # If enforcement is not requested, we're ready
-                  echo "Cinema is ready (enforcement not requested)"
+              # Test the actual enforcement gate behavior with an unauthenticated request
+              GATE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+                --request POST "$CINEMA_URL/verify/evaluate" \
+                --header 'Content-Type: application/json' \
+                --data @/tmp/marketplace-request.json || true)
+
+              if [[ "$REVENUE_ENFORCE" == "1" ]]; then
+                # When enforcement is on, unauthenticated requests must return 401
+                if [[ "$GATE_CODE" == "401" ]]; then
+                  echo "Cinema enforcement gate is active and working (returns 401 for unauthenticated requests)"
+                  break
+                fi
+              else
+                # When enforcement is off, unauthenticated requests should return 200
+                if [[ "$GATE_CODE" == "200" ]]; then
+                  echo "Cinema enforcement is off and gate allows unauthenticated access (returns 200)"
                   break
                 fi
               fi
             fi
             if [[ "$attempt" == "72" ]]; then
-              echo "Cinema app did not converge to enforcement readiness within 360 seconds" >&2
-              cat /tmp/billing-status-check.json 2>/dev/null || true
+              echo "Cinema app enforcement gate did not become responsive within 360 seconds" >&2
+              echo "Last gate response code: $GATE_CODE" >&2
               exit 1
             fi
             sleep 5
