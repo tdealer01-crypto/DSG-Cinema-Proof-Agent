@@ -32,7 +32,9 @@ class UnifiedPreflightRequest(Strict):
 
 
 def evaluate_unified_preflight(request: UnifiedPreflightRequest) -> dict:
-    plan_record = service._require_approved_plan(request.plan_id)
+    # Read the stored plan without pre-emptively denying draft state. The shared
+    # decision core owns the canonical PLAN_NOT_APPROVED -> BLOCK decision.
+    plan_record = service.get_plan_record(request.plan_id)
     document = service.plan_document(plan_record)
     resolved = resolve_capabilities(request.required_capabilities)
     core_request = CorePreflightRequest(
