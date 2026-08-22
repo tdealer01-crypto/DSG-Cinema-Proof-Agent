@@ -28,6 +28,9 @@ from pydantic import BaseModel, Field
 
 import api_v1
 from api_v1.verifier import decision_qubo
+from logging_config import get_logger, initialize_sentry, logger
+from middleware import ErrorHandlingMiddleware, RequestTrackingMiddleware
+from metrics import router as metrics_router
 from marketplace_verification import (
     POLICY_VERSION,
     RECEIPT_VERSION,
@@ -37,8 +40,15 @@ from marketplace_verification import (
 )
 from revenue import api as billing
 
+# Initialize logging and Sentry
+initialize_sentry()
+logger.info("Cinema API starting", extra={"extra_data": {"version": "1.3.0"}})
+
 app = FastAPI(title="DSG Cinema Proof Agent", version="1.3.0")
 
+# Add middleware (order matters - error handling outermost)
+app.add_middleware(ErrorHandlingMiddleware)
+app.add_middleware(RequestTrackingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -53,7 +63,9 @@ app.add_middleware(
     allow_headers=["Content-Type", "Accept", "X-DSG-API-Key", "Authorization"],
 )
 
+# Include routers
 app.include_router(billing.router)
+app.include_router(metrics_router)
 
 # The v1 verification flow (plans, alignment, constraints, executions, evidence,
 # proofs, MCP). It shares this adapter's Z3 transport and billing gate, and it
@@ -316,16 +328,25 @@ async def health() -> JSONResponse:
         status_code, body = await z3_request("GET", "/ready")
     except (ConfigurationError, HTTPException) as exc:
         detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        logger.warning(
+            "Health check failed",
+            extra={"extra_data": {"error": detail}},
+        )
         return JSONResponse(
             status_code=503,
             content={"status": "blocked", "backend": "unavailable", "detail": detail},
         )
 
     if status_code != 200 or not isinstance(body, dict) or body.get("status") != "ready":
+        logger.warning(
+            "Backend not ready",
+            extra={"extra_data": {"status_code": status_code}},
+        )
         return JSONResponse(
             status_code=503,
             content={"status": "blocked", "backend": "not_ready"},
         )
+    logger.info("Health check passed")
     return JSONResponse(
         status_code=200,
         content={"status": "ready", "backend": "ready"},
@@ -444,6 +465,16 @@ async def verify_evaluate(
     Entitlement is checked before any solver work, and the receipt is metered
     only after Z3 has proved the global optimum.
     """
+    logger.info(
+        "Verification request received",
+        extra={
+            "extra_data": {
+                "channel": request.channel,
+                "execution_id": request.execution_id,
+            }
+        },
+    )
+
     authorization = billing.authorize_request(x_dsg_api_key, VERIFIED_EXECUTION_SKU)
     target, factors = verification_target_decision(request)
     linear, quadratic = _decision_qubo(target)
@@ -461,6 +492,15 @@ async def verify_evaluate(
 
     status_code, proof = await z3_request("POST", "/solve", solver_payload)
     if status_code != 200:
+        logger.error(
+            "Z3 solve failed",
+            extra={
+                "extra_data": {
+                    "status_code": status_code,
+                    "channel": request.channel,
+                }
+            },
+        )
         raise _proof_failure(
             f"Z3 solve failed with HTTP {status_code}",
             billing.BACKEND_UNAVAILABLE,
@@ -469,7 +509,28 @@ async def verify_evaluate(
     verified_proof = _validate_exact_proof(proof)
     decision = _decision_from_witness(verified_proof.get("witness"))
     if decision != target:
+        logger.error(
+            "Z3 decision mismatch",
+            extra={
+                "extra_data": {
+                    "target": target,
+                    "decision": decision,
+                    "channel": request.channel,
+                }
+            },
+        )
         raise HTTPException(status_code=502, detail="Z3 decision does not match deterministic policy target")
+
+    logger.info(
+        "Verification successful",
+        extra={
+            "extra_data": {
+                "channel": request.channel,
+                "decision": decision,
+                "proof_hash": verified_proof["proof_hash"][:16],
+            }
+        },
+    )
 
     receipt = {
         "receipt_version": RECEIPT_VERSION,
@@ -522,10 +583,28 @@ async def stripe_evaluate(
     backend derives a fixed-size decision QUBO itself, keeping public compute
     bounded and the Z3 credential server-side.
     """
+    logger.info(
+        "Stripe verification request received",
+        extra={
+            "extra_data": {
+                "stripe_account_id": request.stripe_account_id[:10],  # Partial for security
+                "object_type": request.object_type,
+            }
+        },
+    )
+
     authorization = billing.authorize_request(x_dsg_api_key, STRIPE_DECISION_SKU)
     if not request.stripe_account_id.startswith("acct_"):
+        logger.warning(
+            "Invalid Stripe account ID",
+            extra={"extra_data": {"error": "invalid_account_id"}},
+        )
         raise HTTPException(status_code=400, detail="invalid stripe_account_id")
     if not request.object_id.startswith(_stripe_prefix(request.object_type)):
+        logger.warning(
+            "Object ID mismatch",
+            extra={"extra_data": {"error": "object_type_mismatch"}},
+        )
         raise HTTPException(status_code=400, detail="object_id does not match object_type")
 
     score, factors = _stripe_risk_score(request)
@@ -545,6 +624,15 @@ async def stripe_evaluate(
 
     status_code, proof = await z3_request("POST", "/solve", solver_payload)
     if status_code != 200:
+        logger.error(
+            "Stripe Z3 solve failed",
+            extra={
+                "extra_data": {
+                    "status_code": status_code,
+                    "risk_score": score,
+                }
+            },
+        )
         raise _proof_failure(
             f"Z3 solve failed with HTTP {status_code}",
             billing.BACKEND_UNAVAILABLE,
@@ -553,7 +641,28 @@ async def stripe_evaluate(
     verified_proof = _validate_exact_proof(proof)
     decision = _decision_from_witness(verified_proof.get("witness"))
     if decision != target:
+        logger.error(
+            "Stripe Z3 decision mismatch",
+            extra={
+                "extra_data": {
+                    "target": target,
+                    "decision": decision,
+                    "risk_score": score,
+                }
+            },
+        )
         raise HTTPException(status_code=502, detail="Z3 decision does not match deterministic policy target")
+
+    logger.info(
+        "Stripe verification successful",
+        extra={
+            "extra_data": {
+                "decision": decision,
+                "risk_score": score,
+                "risk_level": _risk_label(score),
+            }
+        },
+    )
 
     if factors:
         reason = "; ".join(factors)
