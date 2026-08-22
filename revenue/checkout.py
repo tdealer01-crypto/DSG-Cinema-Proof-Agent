@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -103,6 +104,32 @@ def _require_live_account(api_key: Optional[str]) -> Account:
     return account
 
 
+def _require_stripe_portal_account(api_key: Optional[str]) -> Account:
+    account = billing.get_engine().accounts.authenticate((api_key or "").strip())
+    if account is None:
+        raise HTTPException(
+            status_code=401,
+            detail="a valid X-DSG-API-Key header is required",
+        )
+    if account.mode != "live":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "PORTAL_LIVE_KEY_REQUIRED",
+                "message": "the billing portal is available only to a live DSG API key",
+            },
+        )
+    if account.plan.startswith("github_"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "EXTERNAL_BILLING_CHANNEL",
+                "message": "this account is billed by GitHub Marketplace and has no Stripe portal",
+            },
+        )
+    return account
+
+
 def _return_url(outcome: str, *, include_session_id: bool) -> str:
     """Build a trusted return URL; callers cannot supply an arbitrary redirect."""
     base = (os.getenv("DSG_CHECKOUT_RETURN_URL") or DEFAULT_CHECKOUT_RETURN_URL).strip()
@@ -120,6 +147,23 @@ def _return_url(outcome: str, *, include_session_id: bool) -> str:
     if include_session_id:
         # Stripe replaces this literal placeholder after Checkout completes.
         query.append(("session_id", "{CHECKOUT_SESSION_ID}"))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
+def _portal_return_url() -> str:
+    base = (os.getenv("DSG_CHECKOUT_RETURN_URL") or DEFAULT_CHECKOUT_RETURN_URL).strip()
+    parts = urlsplit(base)
+    if (
+        parts.scheme != "https"
+        or not parts.netloc
+        or parts.username is not None
+        or parts.password is not None
+    ):
+        raise _configuration_error("DSG_CHECKOUT_RETURN_URL must be an absolute HTTPS URL")
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query.append(("portal", "return"))
     return urlunsplit(
         (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
     )
@@ -313,6 +357,58 @@ async def create_checkout_session(
             "Complete Stripe Checkout. DSG keeps the current entitlement until "
             "a valid signed Stripe webhook confirms the scoped subscription."
         ),
+    }
+
+
+@router.post("/portal/session", status_code=201)
+async def create_billing_portal_session(
+    x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict[str, Any]:
+    account = _require_stripe_portal_account(x_dsg_api_key)
+    if not account.stripe_customer_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "STRIPE_CUSTOMER_REQUIRED",
+                "message": "complete Stripe checkout before opening the billing portal",
+            },
+        )
+
+    config = config_from_env()
+    session = await _stripe_post(
+        config,
+        "/v1/billing_portal/sessions",
+        data={
+            "customer": account.stripe_customer_id,
+            "return_url": _portal_return_url(),
+        },
+        idempotency_key=_idempotency_key(
+            "portal", account.account_id, secrets.token_hex(16)
+        ),
+    )
+    session_id = session.get("id")
+    portal_url = session.get("url")
+    parsed_portal_url = urlsplit(portal_url) if isinstance(portal_url, str) else None
+    if (
+        not isinstance(session_id, str)
+        or not session_id.startswith("bps_")
+        or parsed_portal_url is None
+        or parsed_portal_url.scheme != "https"
+        or parsed_portal_url.hostname != "billing.stripe.com"
+        or parsed_portal_url.username is not None
+        or parsed_portal_url.password is not None
+    ):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "STRIPE_PORTAL_INVALID_RESPONSE",
+                "message": "Stripe did not return a trusted billing portal URL",
+            },
+        )
+    return {
+        "state": "BILLING_PORTAL_CREATED",
+        "portal_url": portal_url,
+        "account": account.public_view(),
     }
 
 
