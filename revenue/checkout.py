@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -42,7 +42,7 @@ DEFAULT_CHECKOUT_RETURN_URL = "https://dsgoneverifiedweb.z1.web.core.windows.net
 class CheckoutSessionRequest(BaseModel):
     """A stable caller id makes retries idempotent without trusting a redirect."""
 
-    plan: Literal["metered"] = "metered"
+    plan: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     checkout_id: str = Field(
         min_length=8,
         max_length=128,
@@ -51,7 +51,16 @@ class CheckoutSessionRequest(BaseModel):
 
 
 def _checkout_plan(plan_id: str):
-    plan = get_plan(plan_id)
+    try:
+        plan = get_plan(plan_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "UNKNOWN_PLAN",
+                "message": "the requested checkout plan is not available",
+            },
+        ) from exc
     if not plan.self_serve_checkout:
         raise HTTPException(
             status_code=422,
@@ -302,8 +311,8 @@ async def create_checkout_session(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ) -> dict[str, Any]:
     """Create Stripe-hosted metered checkout without granting entitlement."""
-    plan = _checkout_plan(request.plan)
     account = _require_live_account(x_dsg_api_key)
+    plan = _checkout_plan(request.plan)
     config = config_from_env()
     await _require_verified_live_catalog(config)
     account = await _ensure_stripe_customer(account, config)
