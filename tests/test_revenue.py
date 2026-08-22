@@ -357,7 +357,13 @@ def test_free_plan_quota_is_fail_closed_at_the_cap(engine):
     exhausted = engine.authorize(api_key, "verified_execution")
     assert exhausted.decision == QUOTA_EXCEEDED
     assert exhausted.http_status == 402
-    assert engine.usage_summary(account)["total_amount_micros"] == 0
+    summary = engine.usage_summary(account)
+    assert summary["total_amount_micros"] == 0
+    assert summary["usage_percent"] == 100.0
+    assert summary["upgrade"]["recommended"] is True
+    assert summary["upgrade"]["reason"] == "QUOTA_EXHAUSTED"
+    assert summary["upgrade"]["target_plan"] == "metered"
+    assert summary["upgrade"]["checkout_endpoint"] == "/billing/checkout/session"
 
 
 def test_atomic_append_prevents_two_pre_authorized_requests_crossing_a_cap(engine):
