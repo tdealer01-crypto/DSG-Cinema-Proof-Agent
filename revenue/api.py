@@ -16,7 +16,7 @@ import json
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from .accounts import Account
@@ -426,6 +426,43 @@ async def billing_status() -> dict:
                 "independent financial audit of recognized revenue",
             ],
         },
+    }
+
+
+@router.get("/usage/history")
+def billing_usage_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    before_sequence: Optional[int] = Query(default=None, ge=1),
+    x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
+) -> dict:
+    account = _require_account(x_dsg_api_key)
+    entries = get_engine().ledger.account_entries_before(
+        account.account_id,
+        before_sequence=before_sequence,
+        limit=limit + 1,
+    )
+    has_more = len(entries) > limit
+    selected = entries[:limit]
+    return {
+        "account_id": account.account_id,
+        "count": len(selected),
+        "has_more": has_more,
+        "next_before_sequence": selected[-1].sequence if has_more and selected else None,
+        "items": [
+            {
+                "sequence": entry.sequence,
+                "period": entry.period,
+                "channel": entry.channel,
+                "sku": entry.sku,
+                "quantity": entry.quantity,
+                "amount_micros": entry.amount_micros,
+                "proof_hash": entry.proof_hash,
+                "context_hash": entry.context_hash,
+                "recorded_at": entry.recorded_at,
+                "entry_hash": entry.entry_hash,
+            }
+            for entry in selected
+        ],
     }
 
 
