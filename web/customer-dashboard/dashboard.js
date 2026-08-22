@@ -109,6 +109,41 @@ async function load() {
 }
 
 $("connect").onclick = load;
+$("activate").onclick = async () => {
+  if (busy) return;
+  const displayName = $("displayName").value.trim();
+  if (!displayName) return showError(new Error("Organization name required"));
+  busy = true;
+  $("activate").disabled = true;
+  try {
+    const activationId = crypto.randomUUID();
+    const response = await fetch("/billing/activate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: "dashboard", activation_id: activationId, display_name: displayName })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail?.message || body.remediation?.next_step || `HTTP ${response.status}`);
+    if (typeof body.api_key !== "string" || !body.api_key.startsWith("dsg_live_")) throw new Error("Activation did not return a valid one-time key");
+    $("issuedKey").textContent = body.api_key;
+    $("newKey").hidden = false;
+    $("displayName").value = "";
+    $("message").textContent = "Account activated. Copy the key before continuing.";
+  } catch (error) {
+    showError(error);
+  } finally {
+    busy = false;
+    $("activate").disabled = false;
+  }
+};
+$("useIssuedKey").onclick = () => {
+  const issued = $("issuedKey").textContent;
+  if (!issued) return;
+  $("apiKey").value = issued;
+  $("issuedKey").textContent = "";
+  $("newKey").hidden = true;
+  load();
+};
 $("upgrade").onclick = async () => {
   if (busy) return;
   busy = true;
