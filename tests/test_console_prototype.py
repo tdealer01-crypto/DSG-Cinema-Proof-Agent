@@ -45,6 +45,7 @@ def test_customer_dashboard_is_served_from_the_api_origin():
     assert response.headers["content-type"].startswith("text/html")
     assert "DSG ONE Customer" in response.text
     assert "Activate free account" in response.text
+    assert 'id="disconnect"' in response.text
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     script = client.get("/dashboard-assets/dashboard.js")
