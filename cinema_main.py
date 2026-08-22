@@ -322,6 +322,22 @@ async def prototype_console() -> FileResponse:
     )
 
 
+@app.get("/dashboard-assets/{asset_name}", include_in_schema=False)
+async def customer_dashboard_asset(asset_name: str) -> FileResponse:
+    allowed = {
+        "dashboard.css": "text/css",
+        "dashboard.js": "application/javascript",
+    }
+    if asset_name not in allowed:
+        raise HTTPException(status_code=404, detail="dashboard asset not found")
+    asset_path = CUSTOMER_DASHBOARD_PATH.parent / asset_name
+    return FileResponse(
+        asset_path,
+        media_type=allowed[asset_name],
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @app.get("/dashboard", include_in_schema=False)
 async def customer_dashboard() -> FileResponse:
     if not CUSTOMER_DASHBOARD_PATH.exists():
@@ -331,8 +347,10 @@ async def customer_dashboard() -> FileResponse:
         media_type="text/html",
         headers={
             "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
         },
     )
 

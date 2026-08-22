@@ -352,11 +352,15 @@ async def create_checkout_session(
 
     session_id = session.get("id")
     checkout_url = session.get("url")
+    parsed_checkout_url = urlsplit(checkout_url) if isinstance(checkout_url, str) else None
     if (
         not isinstance(session_id, str)
         or not session_id.startswith("cs_")
-        or not isinstance(checkout_url, str)
-        or not checkout_url.startswith("https://")
+        or parsed_checkout_url is None
+        or parsed_checkout_url.scheme != "https"
+        or parsed_checkout_url.hostname != "checkout.stripe.com"
+        or parsed_checkout_url.username is not None
+        or parsed_checkout_url.password is not None
     ):
         raise HTTPException(
             status_code=502,
