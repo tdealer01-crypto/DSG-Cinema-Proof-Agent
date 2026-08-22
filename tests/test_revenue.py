@@ -1424,6 +1424,26 @@ def test_usage_history_returns_only_the_callers_recent_proofs(engine):
         f"{2:064x}",
     ]
     assert all("idempotency_key" not in item for item in body["items"])
+    assert body["has_more"] is True
+    assert body["next_before_sequence"] == body["items"][-1]["sequence"]
+
+    next_page = client.get(
+        f"/billing/usage/history?limit=2&before_sequence={body['next_before_sequence']}",
+        headers={"X-DSG-API-Key": api_key},
+    ).json()
+    assert next_page["count"] == 1
+    assert next_page["has_more"] is False
+    assert next_page["items"][0]["proof_hash"] == f"{1:064x}"
+
+
+def test_usage_history_rejects_invalid_limits(engine):
+    _account, api_key = engine.accounts.issue(display_name="Limits", plan="free")
+    for limit in (0, -1, 101, "bad"):
+        response = client.get(
+            f"/billing/usage/history?limit={limit}",
+            headers={"X-DSG-API-Key": api_key},
+        )
+        assert response.status_code == 422
 
 
 def test_usage_history_requires_a_valid_key(engine):

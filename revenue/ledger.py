@@ -188,6 +188,28 @@ class LedgerStore:
                 if entry.account_id == account_id and entry.period == period
             )
 
+    def account_entries_before(
+        self,
+        account_id: str,
+        *,
+        before_sequence: Optional[int] = None,
+        limit: int = 20,
+    ) -> list[LedgerEntry]:
+        """Return newest account entries without sorting/copying the global ledger."""
+        if limit < 1:
+            return []
+        with self._critical_section():
+            result: list[LedgerEntry] = []
+            for entry in reversed(self._entries):
+                if entry.account_id != account_id:
+                    continue
+                if before_sequence is not None and entry.sequence >= before_sequence:
+                    continue
+                result.append(entry)
+                if len(result) >= limit:
+                    break
+            return result
+
     def period_entries(self, account_id: str, period: str) -> list[LedgerEntry]:
         with self._critical_section():
             return [
