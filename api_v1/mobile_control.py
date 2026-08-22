@@ -2,7 +2,9 @@
 
 This module owns only mobile-specific client identity and trusted bridge auth.
 Plan approval semantics, ALLOW/WAITING_PERMISSION/BLOCK, and capability grants
-come from `decision_core` so mobile cannot drift from REST/MCP/executor policy.
+come from `decision_core`. Capability availability is resolved by the trusted
+server-side broker; the mobile client cannot self-assert that a credential or
+tool is available.
 """
 
 from __future__ import annotations
@@ -16,8 +18,9 @@ from pydantic import Field, field_validator
 
 from revenue import api as billing
 
+from .capability_broker import CapabilityRequirement, resolve_capabilities
 from .canonical import utc_now
-from .decision_core import CapabilityNeed, CorePreflightRequest, evaluate_plan_authorization
+from .decision_core import CorePreflightRequest, evaluate_plan_authorization
 from .models import ObservedAction, Scalar, Strict
 from . import service
 
@@ -60,7 +63,7 @@ class MobilePreflightRequest(Strict):
     plan_id: str = Field(min_length=1, max_length=64)
     agent_identity: str = Field(min_length=1, max_length=255)
     action: ProposedAction
-    capability_needs: list[CapabilityNeed] = Field(default_factory=list, max_length=32)
+    required_capabilities: list[CapabilityRequirement] = Field(default_factory=list, max_length=32)
     trace_id: str | None = Field(default=None, max_length=128)
 
 
@@ -141,6 +144,7 @@ def evaluate_preflight(request: MobilePreflightRequest) -> dict[str, Any]:
         parameters=request.action.parameters,
         status="succeeded",
     )
+    resolved = resolve_capabilities(request.required_capabilities)
     core_request = CorePreflightRequest(
         plan_id=plan_record["plan_id"],
         plan_hash=plan_record["plan_hash"],
@@ -148,7 +152,7 @@ def evaluate_preflight(request: MobilePreflightRequest) -> dict[str, Any]:
         approved_agent_identity=document.agent_identity,
         agent_identity=request.agent_identity,
         action=observed,
-        capability_needs=request.capability_needs,
+        capability_needs=resolved,
         channel="mobile",
         trace_id=request.trace_id,
         client_context={
@@ -158,7 +162,14 @@ def evaluate_preflight(request: MobilePreflightRequest) -> dict[str, Any]:
             "signing_cert_sha256": request.client.signing_cert_sha256,
         },
     )
-    return evaluate_plan_authorization(request=core_request, plan_document=document)
+    result = evaluate_plan_authorization(request=core_request, plan_document=document)
+    result["capability_resolution"] = {
+        "source": "server-side-dsg-capability-broker",
+        "requested": [item.capability for item in request.required_capabilities],
+        "caller_can_assert_availability": False,
+        "secrets_exposed": False,
+    }
+    return result
 
 
 @router.get("/client-contract")
@@ -174,8 +185,8 @@ async def client_contract() -> dict[str, Any]:
             "proof": "GET /api/v1/proofs/{proof_id}",
         },
         "rule": (
-            "mobile identity is checked here; all plan authorization and capability decisions "
-            "are delegated to the unified DSG decision core"
+            "mobile identity is checked here; all plan authorization and server-side capability "
+            "decisions are delegated to the unified DSG core"
         ),
     }
 
