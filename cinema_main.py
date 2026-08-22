@@ -474,24 +474,41 @@ async def onboarding_status(
     except HTTPException:
         backend_connected = False
 
-    usage = billing.get_engine().usage_summary(account)
-    first_proof_completed = usage["units"] > 0
-    steps = {
+    try:
+        first_proof_completed = any(
+            entry.account_id == account.account_id
+            and entry.sku == VERIFIED_EXECUTION_SKU
+            for entry in billing.get_engine().ledger.entries()
+        )
+    except (OSError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail="onboarding proof history is unavailable",
+        )
+
+    durable_steps = {
         "account_activated": account.activation_ref is not None,
         "api_key_authenticated": True,
-        "backend_connected": backend_connected,
         "first_proof_completed": first_proof_completed,
     }
-    progress = round(sum(steps.values()) / len(steps) * 100)
+    steps = {
+        **durable_steps,
+        "backend_connected": backend_connected,
+    }
+    progress = round(sum(durable_steps.values()) / len(durable_steps) * 100)
 
-    if not backend_connected:
-        status = "SERVICE_UNAVAILABLE"
-        current_step = "CONNECT_BACKEND"
-        next_action = {"method": "GET", "endpoint": "/support/diagnose"}
+    if not durable_steps["account_activated"]:
+        status = "ACTION_REQUIRED"
+        current_step = "ACTIVATE_ACCOUNT"
+        next_action = {"method": "POST", "endpoint": "/billing/activate"}
     elif not first_proof_completed:
         status = "ACTION_REQUIRED"
         current_step = "RUN_FIRST_PROOF"
         next_action = {"method": "POST", "endpoint": "/verify/evaluate"}
+    elif not backend_connected:
+        status = "SERVICE_UNAVAILABLE"
+        current_step = "COMPLETE"
+        next_action = {"method": "GET", "endpoint": "/support/diagnose"}
     else:
         status = "READY"
         current_step = "COMPLETE"

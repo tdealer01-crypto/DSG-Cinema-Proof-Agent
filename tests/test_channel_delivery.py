@@ -491,7 +491,7 @@ def test_onboarding_status_guides_an_activated_customer_to_first_proof(engine, m
     body = response.json()
     assert body["status"] == "ACTION_REQUIRED"
     assert body["current_step"] == "RUN_FIRST_PROOF"
-    assert body["progress"] == 75
+    assert body["progress"] == 67
     assert body["steps"] == {
         "account_activated": True,
         "api_key_authenticated": True,
