@@ -31,6 +31,7 @@ from api_v1.verifier import decision_qubo
 from logging_config import get_logger, initialize_sentry, logger
 from middleware import ErrorHandlingMiddleware, RequestTrackingMiddleware
 from metrics import router as metrics_router
+from error_monitoring import router as error_monitoring_router
 from marketplace_verification import (
     POLICY_VERSION,
     RECEIPT_VERSION,
@@ -66,6 +67,7 @@ app.add_middleware(
 # Include routers
 app.include_router(billing.router)
 app.include_router(metrics_router)
+app.include_router(error_monitoring_router)
 
 # The v1 verification flow (plans, alignment, constraints, executions, evidence,
 # proofs, MCP). It shares this adapter's Z3 transport and billing gate, and it
