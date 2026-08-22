@@ -17,11 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import API_VERSION
 from .canonical import canonical_json
-from .control import (
-    UnifiedPreflightRequest,
-    evaluate_unified_preflight,
-    record_execution_if_authorized,
-)
+from .control import UnifiedPreflightRequest, evaluate_unified_preflight
 from .errors import ApiError
 from .models import (
     ApprovePlanRequest,
@@ -120,7 +116,10 @@ async def _constraints(args: ConstraintsRequest) -> dict[str, Any]:
 
 
 async def _record_execution(args: ExecutionCreate) -> dict[str, Any]:
-    return record_execution_if_authorized(args)
+    # This is an audit/evidence operation, not a permission grant. If an executor
+    # violated preflight, preserve that raw trace so final verification can prove
+    # the violation instead of deleting the evidence.
+    return service.record_execution(args)
 
 
 async def _submit_evidence(args: SubmitEvidenceArgs) -> dict[str, Any]:
@@ -225,9 +224,9 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "dsg_record_execution",
-        "Record what the agent actually did against an approved plan. The unified decision "
-        "core revalidates the complete trace before persistence, so preflight cannot be bypassed."
-        + _NO_VERDICTS,
+        "Record the raw observed execution for audit, including violations. Authorization "
+        "belongs to dsg_preflight_action before execution; keeping an out-of-plan trace is "
+        "required evidence, not permission to perform it." + _NO_VERDICTS,
         ExecutionCreate,
         _record_execution,
     ),
@@ -255,8 +254,6 @@ TOOLS: tuple[_Tool, ...] = (
 
 _BY_NAME = {tool.name: tool for tool in TOOLS}
 
-#: Per-request, not per-process: two MCP calls in flight must not see each
-#: other's credential.
 _api_key_var: ContextVar[Optional[str]] = ContextVar("dsg_mcp_api_key", default=None)
 
 
@@ -340,9 +337,10 @@ async def handle_message(message: dict[str, Any], api_key: Optional[str] = None)
                     "instructions": (
                         "Submit raw plans, actions and evidence. Use dsg_preflight_action before "
                         "execution: approved plan work is enabled, missing capability is a provisioning "
-                        "state, and only out-of-plan work is blocked. DSG revalidates the observed trace "
-                        "again before recording it, computes verification results, and issues a receipt "
-                        "only behind an exact Z3 global-optimum proof."
+                        "state, and only out-of-plan work is blocked. dsg_record_execution preserves "
+                        "observed reality for audit even when an executor violated that decision. DSG "
+                        "computes verification results and issues a receipt only behind an exact Z3 "
+                        "global-optimum proof."
                     ),
                 },
             )
