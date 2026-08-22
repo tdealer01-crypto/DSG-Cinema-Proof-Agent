@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import API_VERSION
 from .canonical import canonical_json
+from .control import UnifiedPreflightRequest, evaluate_unified_preflight
 from .errors import ApiError
 from .models import (
     ApprovePlanRequest,
@@ -99,6 +100,11 @@ async def _approve_plan(args: ApprovePlanArgs) -> dict[str, Any]:
             approval_note=args.approval_note,
         ),
     )
+
+
+async def _preflight_action(args: UnifiedPreflightRequest) -> dict[str, Any]:
+    """Use the same decision core as REST/mobile before an MCP executor acts."""
+    return evaluate_unified_preflight(args)
 
 
 async def _plan_alignment(args: PlanAlignmentRequest) -> dict[str, Any]:
@@ -190,6 +196,14 @@ TOOLS: tuple[_Tool, ...] = (
         "an approval always names exactly the text that was reviewed.",
         ApprovePlanArgs,
         _approve_plan,
+    ),
+    _Tool(
+        "dsg_preflight_action",
+        "Authorize one exact step through the unified DSG decision core. An approved exact "
+        "action is ALLOW; missing server capability is WAITING_PERMISSION without revoking "
+        "plan authorization; only work outside the approved plan is BLOCK.",
+        UnifiedPreflightRequest,
+        _preflight_action,
     ),
     _Tool(
         "dsg_verify_plan_alignment",
@@ -307,7 +321,6 @@ async def handle_message(message: dict[str, Any], api_key: Optional[str] = None)
         )
 
     if message_id is None:
-        # A notification. Acknowledged, never answered.
         return JSONResponse(status_code=202, content=None)
 
     if method == "initialize":
@@ -319,9 +332,10 @@ async def handle_message(message: dict[str, Any], api_key: Optional[str] = None)
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": SERVER_NAME, "version": API_VERSION},
                     "instructions": (
-                        "Submit raw plans, actions and evidence. DSG computes plan alignment, "
-                        "constraint satisfaction, evidence completeness and replay match, and "
-                        "issues a receipt only behind an exact Z3 global-optimum proof."
+                        "Submit raw plans, actions and evidence. Use dsg_preflight_action before "
+                        "execution: approved plan work is enabled, missing capability is a provisioning "
+                        "state, and only out-of-plan work is blocked. DSG computes verification results "
+                        "and issues a receipt only behind an exact Z3 global-optimum proof."
                     ),
                 },
             )
