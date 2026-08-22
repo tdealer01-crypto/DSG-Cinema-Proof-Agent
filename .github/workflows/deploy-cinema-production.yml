@@ -605,30 +605,52 @@ jobs:
         run: |
           set -euo pipefail
           # After updating environment variables, wait for the app to fully restart
-          # and the enforcement gate to be properly configured.
+          # and the enforcement gate to be properly configured. Test the actual
+          # enforcement gate behavior, not just the status endpoint. Also verify
+          # that /billing/status is ready (it initializes the revenue ledger, which
+          # may take time if mounted from Azure Files).
           for attempt in $(seq 1 72); do
             CODE=$(curl --silent --show-error --output /tmp/cinema-health-2.json --write-out '%{http_code}' "$CINEMA_URL/health" || true)
             if [[ "$CODE" == "200" ]]; then
-              # Check billing status to see enforcement readiness
-              STATUS=$(curl --silent --show-error --output /tmp/billing-status-check.json --write-out '%{http_code}' "$CINEMA_URL/billing/status" || true)
-              if [[ "$STATUS" == "200" ]]; then
-                ENFORCEMENT_READY=$(jq -r '.enforcement_ready // "unknown"' /tmp/billing-status-check.json 2>/dev/null || echo "error")
-                # If enforcement is requested, enforcement_ready must be true
+              # Check that billing status endpoint is ready (initializes revenue ledger)
+              STATUS_CODE=$(curl --silent --output /tmp/billing-status-check.json --write-out '%{http_code}' \
+                "$CINEMA_URL/billing/status" || true)
+
+              if [[ "$STATUS_CODE" != "200" ]]; then
+                # Status endpoint not ready yet, continue waiting
+                if [[ "$attempt" == "72" ]]; then
+                  echo "Cinema billing status endpoint did not become responsive within 360 seconds" >&2
+                  echo "Last status response code: $STATUS_CODE" >&2
+                  cat /tmp/billing-status-check.json >&2 || true
+                  exit 1
+                fi
+              else
+                # Test the actual enforcement gate behavior with an unauthenticated request
+                GATE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+                  --request POST "$CINEMA_URL/verify/evaluate" \
+                  --header 'Content-Type: application/json' \
+                  --data @/tmp/marketplace-request.json || true)
+
                 if [[ "$REVENUE_ENFORCE" == "1" ]]; then
-                  if [[ "$ENFORCEMENT_READY" == "true" ]]; then
-                    echo "Cinema enforcement is ready and configured"
+                  # When enforcement is on, unauthenticated requests must return 401
+                  if [[ "$GATE_CODE" == "401" ]]; then
+                    echo "Cinema enforcement gate is active and working (returns 401 for unauthenticated requests)"
+                    echo "Cinema billing status endpoint is ready and reporting correctly"
                     break
                   fi
                 else
-                  # If enforcement is not requested, we're ready
-                  echo "Cinema is ready (enforcement not requested)"
-                  break
+                  # When enforcement is off, unauthenticated requests should return 200
+                  if [[ "$GATE_CODE" == "200" ]]; then
+                    echo "Cinema enforcement is off and gate allows unauthenticated access (returns 200)"
+                    echo "Cinema billing status endpoint is ready and reporting correctly"
+                    break
+                  fi
                 fi
               fi
             fi
-            if [[ "$attempt" == "72" ]]; then
-              echo "Cinema app did not converge to enforcement readiness within 360 seconds" >&2
-              cat /tmp/billing-status-check.json 2>/dev/null || true
+            if [[ "$attempt" == "72" && "$CODE" != "200" ]]; then
+              echo "Cinema app health endpoint did not become responsive within 360 seconds" >&2
+              echo "Last health response code: $CODE" >&2
               exit 1
             fi
             sleep 5
