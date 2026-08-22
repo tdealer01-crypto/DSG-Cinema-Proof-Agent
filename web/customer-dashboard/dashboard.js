@@ -1,11 +1,13 @@
 const $ = id => document.getElementById(id);
 let key = "";
 let busy = false;
+let generation = 0;
+let controller = new AbortController();
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}), "X-DSG-API-Key": key };
   if (options.body) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, { ...options, headers, signal: controller.signal });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.detail?.message || body.detail || `HTTP ${response.status}`);
   return body;
@@ -53,11 +55,20 @@ function reset() {
   $("subscriptionState").textContent = "○ subscription";
   for (const id of ["billingChannel", "paymentState", "subscriptionState"]) $(id).className = "step";
   renderHistory([]);
+  $("next").textContent = "Connect your account to continue.";
+  $("message").textContent = "";
+  $("message").className = "status";
+  $("connect").disabled = false;
+  $("activate").disabled = false;
   $("upgrade").disabled = $("portal").disabled = $("firstProof").disabled = true;
 }
 
 function clearCredentials() {
+  generation += 1;
+  controller.abort();
+  controller = new AbortController();
   key = "";
+  busy = false;
   reset();
 }
 
@@ -67,7 +78,7 @@ function showError(error) {
   $("message").className = "status error";
 }
 
-async function loadWithCurrentKey() {
+async function loadWithCurrentKey(expectedGeneration = generation) {
   if (!key) throw new Error("API key required");
   $("message").textContent = "Loading…";
   const [onboarding, usage, history, subscription] = await Promise.all([
@@ -76,6 +87,7 @@ async function loadWithCurrentKey() {
       api("/billing/usage/history?limit=10"),
       api("/billing/subscription")
     ]);
+    if (expectedGeneration !== generation || !key) return;
     $("apiKey").value = "";
     $("connection").textContent = "CONNECTED";
     $("disconnect").disabled = false;
@@ -112,14 +124,23 @@ async function loadWithCurrentKey() {
 }
 
 async function load() {
+  if (busy) return;
   const supplied = $("apiKey").value.trim();
   if (!supplied) return showError(new Error("API key required"));
-  reset();
+  clearCredentials();
+  const expectedGeneration = generation;
   key = supplied;
+  busy = true;
+  $("connect").disabled = true;
   try {
-    await loadWithCurrentKey();
+    await loadWithCurrentKey(expectedGeneration);
   } catch (error) {
-    showError(error);
+    if (expectedGeneration === generation && error.name !== "AbortError") showError(error);
+  } finally {
+    if (expectedGeneration === generation) {
+      busy = false;
+      $("connect").disabled = false;
+    }
   }
 }
 
