@@ -237,12 +237,19 @@ jobs:
               --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
               --secret-name solver-secret --query value --output tsv 2>/dev/null || true)
 
+            # Cinema may still be serving the previous credential until its new
+            # revision is healthy. Keep exactly one previous Z3 secret as a bounded
+            # fallback, then revoke it only after Cinema E2E verification passes.
             Z3_SECRET_ARGS=("solver-secret=$Z3_SECRET")
-            # The shared credential is stable and supplied by the production
-            # environment. Do not retain a previous per-deployment value: accepting
-            # it can leave old revisions healthy and serving traffic indefinitely.
             Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET="
-            echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
+            if [[ -n "$PREVIOUS_Z3_SECRET" && "$PREVIOUS_Z3_SECRET" != "$Z3_SECRET" ]]; then
+              echo "::add-mask::$PREVIOUS_Z3_SECRET"
+              Z3_SECRET_ARGS+=("solver-previous-secret=$PREVIOUS_Z3_SECRET")
+              Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET=secretref:solver-previous-secret"
+              echo 'ROTATION_WINDOW_OPEN=1' >> "$GITHUB_ENV"
+            else
+              echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
+            fi
 
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
@@ -788,18 +795,23 @@ jobs:
             test "$WEBHOOK_CODE" = '503'
           fi
 
-          # The runtime is the source of truth for Stripe catalog and webhook
-          # readiness. GitHub variables are deployment inputs and can be stale
-          # after an out-of-band Stripe configuration change.
+          # A linked Stripe integration must demonstrate a complete operational
+          # catalog. An intentionally unlinked deployment remains supported and
+          # reports NOT_VERIFIED_NOT_LINKED without blocking Z3/Cinema rollout.
           jq -e '
-            (.stripe.configured == true) and
-            (.stripe.catalog_scope_configured == true) and
-            (.stripe.webhooks_configured == true) and
-            (.stripe.charges_enabled == true) and
-            (.stripe.operational_checks.product == "PASS") and
-            (.stripe.operational_checks.price == "PASS") and
-            (.stripe.operational_checks.meter == "PASS") and
-            (.stripe.operational_checks.webhook == "PASS")
+            if .stripe.configured then
+              (.stripe.catalog_scope_configured == true) and
+              (.stripe.webhooks_configured == true) and
+              (.stripe.charges_enabled == true) and
+              (.stripe.operational_checks.product == "PASS") and
+              (.stripe.operational_checks.price == "PASS") and
+              (.stripe.operational_checks.meter == "PASS") and
+              (.stripe.operational_checks.webhook == "PASS")
+            else
+              (.checkout_status == "NOT_VERIFIED_NOT_LINKED") and
+              (.stripe.charges_enabled == false) and
+              (.stripe.webhooks_configured == false)
+            end
           ' /tmp/billing-status.json >/dev/null
           echo "Stripe runtime readiness verified (deployment input source: $STRIPE_SOURCE)."
 
