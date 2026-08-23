@@ -415,6 +415,68 @@ def test_uncapped_plan_has_no_quota_upgrade_signal(engine):
     assert summary["upgrade"]["recommended"] is False
 
 
+def test_supabase_database_url_requires_server_credentials():
+    from revenue.postgres import validate_database_url
+
+    assert validate_database_url(
+        "postgresql://postgres.project:secret@aws-0.us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+    ).startswith("postgresql://")
+    with pytest.raises(ValueError, match="server-side credentials"):
+        validate_database_url("postgresql://db.example/dsg")
+
+
+def test_supabase_connect_does_not_log_database_url(monkeypatch):
+    from revenue import postgres
+
+    captured = {}
+
+    class FakePsycopg:
+        @staticmethod
+        def connect(url, autocommit):
+            captured.update(url=url, autocommit=autocommit)
+            return "connection"
+
+    monkeypatch.setitem(__import__("sys").modules, "psycopg", FakePsycopg)
+    assert postgres.connect("postgresql://user:secret@db.example/dsg?sslmode=require") == "connection"
+    assert captured["autocommit"] is False
+
+
+def test_postgres_account_store_uses_parameterized_tenant_queries(monkeypatch):
+    from revenue.accounts import Account, hash_secret
+    from revenue.postgres import PostgresAccountStore
+
+    statements = []
+
+    class Cursor:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def execute(self, statement, params=()): statements.append((statement, params))
+        def fetchone(self): return None
+
+    class Connection:
+        def cursor(self): return Cursor()
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+
+    monkeypatch.setattr("revenue.postgres.connect", lambda _: Connection())
+    monkeypatch.setattr("revenue.postgres.initialize_schema", lambda _: None)
+    store = PostgresAccountStore("postgresql://user:secret@db.example/dsg")
+    account = Account(account_id="tenant-a", display_name="Tenant A", key_id="key-a", secret_hash=hash_secret("dsg_key-a_secret"))
+    store.import_account(account)
+    assert any("VALUES (%s" in statement and params[0] == "tenant-a" for statement, params in statements)
+
+
+def test_postgres_database_url_activates_store_contract(monkeypatch):
+    from revenue.engine import RevenueEngine
+    monkeypatch.setattr("revenue.engine.PostgresAccountStore", lambda url: ("accounts", url))
+    monkeypatch.setattr("revenue.engine.PostgresLedgerStore", lambda url: ("ledger", url))
+    engine = RevenueEngine.from_env({"DSG_REVENUE_DATABASE_URL": "postgresql://u:p@db/dsg", "DSG_REVENUE_ENFORCE": "1"})
+    assert getattr(engine, "accounts")[0] == "accounts"
+    assert getattr(engine, "ledger")[0] == "ledger"
+    assert engine.enforce is True
+
+
 def test_atomic_append_prevents_two_pre_authorized_requests_crossing_a_cap(engine):
     account, api_key = engine.accounts.issue(
         display_name="Acme",
