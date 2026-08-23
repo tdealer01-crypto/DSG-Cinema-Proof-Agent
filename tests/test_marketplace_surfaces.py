@@ -105,7 +105,10 @@ def test_launch_manifest_matches_repository_artifacts():
         "OpenAI Skills": "READY_FOR_EXTERNAL_SUBMIT",
         "Direct API": "LIVE",
     }
-    assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
+    # Raised from NOT_VERIFIED_NOT_LINKED once production /billing/status
+    # reported Stripe link_state LINKED_VERIFIED with charges_enabled and all
+    # four operational checks PASS. Lower it again if that stops holding.
+    assert manifest["product"]["checkout_status"] == "LINKED_VERIFIED"
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
 

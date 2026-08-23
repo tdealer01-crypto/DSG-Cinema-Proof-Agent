@@ -68,56 +68,67 @@ deterministic constraints with exact Z3 proof receipts.
 
 ## 2 — Stripe Apps Marketplace
 
-**Status:** four of five blockers fixed. **One blocker is still open and will
-cause a second rejection if submitted as-is** — see below.
+**Status:** all five blockers fixed. One deployment step remains before upload.
 
 | Blocker | Fix |
 |---|---|
 | Technical description | Rewritten for customers |
 | `payment.detail` view | Removed; `views` is now empty |
-| Missing marketing images | Three 1600×900 PNGs, now on a reachable host |
+| Missing marketing images | Three 1600×900 PNGs, repointed to a reachable host |
 | Manifest validity | `stripe-app.template.json` parses clean |
-| Missing OAuth | ⚠️ **STILL BROKEN** — redirect URL points nowhere |
+| Missing OAuth | Callback built and served by Cinema |
 
-### ⚠️ Open blocker — OAuth redirect URL
+### OAuth redirect — built
 
-The manifest declares:
+The redirect URL used to be `https://dsg.pics/auth/stripe/callback`, which was
+broken two independent ways: `dsg.pics` resolves but serves no HTTPS (every
+request returned `HTTP 000` while the Azure landing returned `200` from the
+same network), and no Stripe callback existed among the 51 routes in production
+`/openapi.json`.
 
-```json
-"oauth": { "redirect_urls": ["https://dsg.pics/auth/stripe/callback"] }
-```
+`revenue/stripe_marketplace.py` now serves the flow, mirroring the GitHub
+Marketplace bridge:
 
-Two independent problems, both verified on 2026-08-23:
+| Route | Purpose |
+|---|---|
+| `GET /marketplace/stripe/status` | Config readiness, same shape as the GitHub one |
+| `GET /marketplace/stripe/setup` | Starts the install, redirects to Stripe with signed state |
+| `GET /marketplace/stripe/callback` | The redirect URL Stripe tests |
 
-1. **`dsg.pics` does not serve HTTPS.** It resolves to Google Cloud addresses
-   but every request returns connection failure (`HTTP 000`). The Azure landing
-   page returns `200` from the same network, so this is the host, not the
-   probe.
-2. **No such route exists anywhere.** Production `/openapi.json` lists 51
-   routes. There is no `/auth/stripe/callback` and no Stripe OAuth callback
-   under any prefix — only `/stripe/evaluate`, `/billing/webhook/stripe`, and
-   `/marketplace/github/callback` (GitHub only).
+The callback exchanges the code at `POST /v1/oauth/token`, then reads the
+account back through `GET /v1/account` with the issued token before linking —
+the `stripe_user_id` returned beside the token is never trusted on its own. A
+denied install renders a plain page rather than erroring. Installing grants the
+free plan (25 proofs); paid plans still go through the existing checkout, so an
+install can never grant paid units on its own.
 
-Stripe tests the redirect URL during review. Resolve one of these before
-submitting:
+The manifest now uses the `__CINEMA_API_BASE__` placeholder, so the URL is
+substituted at build time and cannot drift from the deployed backend.
+`generate-manifest.mjs` fails the build if any redirect URL points outside the
+backend — the exact bug that would have caused a second rejection.
 
-- **Build the endpoint.** Add a Stripe OAuth callback to Cinema (mirroring
-  `/marketplace/github/callback`) and point `redirect_urls` at
-  `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/marketplace/stripe/callback`.
-  This is the durable fix.
-- **Stand up `dsg.pics`.** Serve HTTPS on the domain and implement the callback
-  there, keeping the URL as written.
-- **Drop the `oauth` block.** Only if the app genuinely does not need OAuth —
-  it now declares no UI views, so confirm against Stripe's rejection notice
-  whether OAuth was actually required or was inferred.
+Covered by 10 tests in `tests/test_stripe_marketplace.py`; the full suite is
+355 passing.
 
-I could not pick for you: the first two need infrastructure only you can
-deploy, and the third needs the original rejection text.
+### ⚠️ Deployment step before upload
+
+The endpoint needs the app's OAuth client ID, which Stripe issues when the app
+is registered. Until it is set, `/marketplace/stripe/status` reports
+`ACTION_REQUIRED`.
+
+1. In the Stripe Dashboard, open the app's OAuth settings and copy the **client
+   ID** (`ca_...`).
+2. Add it as repository variable `DSG_STRIPE_APP_OAUTH_CLIENT_ID`.
+   (`DSG_STRIPE_APP_ID` defaults to `pics.dsg.governance`; set it only if the
+   app id differs.)
+3. Re-run the Cinema production deploy so the Container App picks both up.
+4. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
+   all four checks `PASS`.
 
 ### Marketing images — fixed
 
 They previously pointed at `https://dsg.pics/images/stripe-marketplace/*.png`,
-which fails for the same reason as above. Now repointed to
+which failed for the same reason as the callback. Now repointed to
 `raw.githubusercontent.com`, verified `HTTP 200` with `content-type: image/png`
 and correct byte counts on all three. The files are valid 1600×900 8-bit RGB
 PNGs in `public/stripe-marketplace/`.
@@ -125,7 +136,7 @@ PNGs in `public/stripe-marketplace/`.
 > These URLs only resolve once this branch is merged to `main`. Merge before
 > uploading to Stripe.
 
-### Submit (after the OAuth blocker is closed)
+### Submit
 
 ```bash
 cd stripe-app
@@ -219,18 +230,16 @@ work before any submission step applies. See `marketplace/jetbrains/offer.md`.
 
 ## Recommended order
 
-Stripe still first — it is the only channel where approval directly unlocks
-revenue that is already wired end to end — but close the OAuth redirect blocker
-before uploading. Submitting tomorrow without it spends another review cycle to
-be told the same thing.
+Stripe first — it is the only channel where approval directly unlocks revenue
+that is already wired end to end. Set the OAuth client ID, redeploy, confirm
+`/marketplace/stripe/status` reads `READY`, then upload.
 
 GitHub v2 second: the patch is written and only needs the app install. OpenAI
 third — it is genuinely ready. Microsoft's enrollment can run in the background
 alongside all of them. AWS and JetBrains are later quarters.
 
-Fastest path to revenue if the OAuth endpoint takes time: OpenAI Skills and
-GitHub v2 both ship without it, and the Direct API is already live and billing
-today.
+The Direct API is already live and billing today, so none of these is a
+prerequisite for revenue — they are each an additional channel into it.
 
 ## Truth boundary
 

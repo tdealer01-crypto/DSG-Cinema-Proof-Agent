@@ -65,6 +65,11 @@ jobs:
       CONFIGURED_STRIPE_METER_EVENT_NAME: ${{ vars.DSG_STRIPE_METER_EVENT_NAME || 'dsg_verified_execution' }}
       CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_ID }}
       CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_URL }}
+      # Stripe App identity for the Marketplace OAuth install flow. Both are
+      # public identifiers issued when the app is registered, not credentials;
+      # the exchange itself authenticates with STRIPE_SECRET_KEY above.
+      CONFIGURED_STRIPE_APP_ID: ${{ vars.DSG_STRIPE_APP_ID || 'pics.dsg.governance' }}
+      CONFIGURED_STRIPE_APP_OAUTH_CLIENT_ID: ${{ vars.DSG_STRIPE_APP_OAUTH_CLIENT_ID }}
       # GitHub App integration for marketplace listing and API access.
       CONFIGURED_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DSG_GITHUB_APP_PRIVATE_KEY }}
       # Durable revenue storage. Enforcement stays refused until the ledger and
@@ -385,7 +390,9 @@ jobs:
             "STRIPE_METER_ID=$CONFIGURED_STRIPE_METER_ID" \
             "STRIPE_METER_EVENT_NAME=$CONFIGURED_STRIPE_METER_EVENT_NAME" \
             "STRIPE_WEBHOOK_ENDPOINT_ID=$CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID" \
-            "STRIPE_WEBHOOK_ENDPOINT_URL=$CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL"; do
+            "STRIPE_WEBHOOK_ENDPOINT_URL=$CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL" \
+            "STRIPE_APP_ID=$CONFIGURED_STRIPE_APP_ID" \
+            "STRIPE_APP_OAUTH_CLIENT_ID=$CONFIGURED_STRIPE_APP_OAUTH_CLIENT_ID"; do
             if [[ -n "${catalog_pair#*=}" ]]; then
               CINEMA_ENV_ARGS+=("$catalog_pair")
             fi

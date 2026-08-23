@@ -54,7 +54,7 @@
     }
   ],
   "oauth": {
-    "redirect_urls": ["https://dsg.pics/auth/stripe/callback"]
+    "redirect_urls": ["__CINEMA_API_BASE__/marketplace/stripe/callback"]
   },
   "marketing": {
     "feature_images": [
