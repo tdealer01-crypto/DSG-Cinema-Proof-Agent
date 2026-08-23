@@ -13,7 +13,7 @@ channel are in [`SUBMIT_RUNBOOK.md`](SUBMIT_RUNBOOK.md).
 | Priority | Channel | Status | Evidence / package | External action that cannot be performed by the current chat connector |
 |---:|---|---|---|---|
 | 1 | Stripe Apps Marketplace | READY_FOR_EXTERNAL_SUBMIT | `stripe-app/` v2.7.0; all 5 blockers fixed; OAuth callback served by `revenue/stripe_marketplace.py`; images on a reachable host | Copy the app's OAuth client ID into `DSG_STRIPE_APP_OAUTH_CLIENT_ID` and redeploy, then Stripe CLI upload, External Test, Submit for review |
-| 2 | GitHub Marketplace Action | LIVE_V1, V2_BLOCKED_APP_INSTALL | v1.1.0 listing live; v2 commit prepared as `marketplace/github-action-v2/dist/0001-verified-execution-gate-v2.patch` | Install the Claude GitHub App on `dsg-secure-deploy-gate-action` (push and REST both 403 today), apply the patch, release `v2.0.0`, tick Publish to Marketplace |
+| 2 | GitHub Marketplace Action | LIVE_V1, V2_IN_REVIEW | v1.1.0 listing live; v2 open as `dsg-secure-deploy-gate-action#10` (Bats green) | Merge PR #10, release `v2.0.0`, tick Publish this Action to GitHub Marketplace |
 | 3 | OpenAI Skills | READY_FOR_EXTERNAL_SUBMIT | `marketplace/openai-plugin/`; `scripts/validate.sh` passes | Publisher verification and external submission |
 | 4 | Microsoft Marketplace | READY_FOR_EXTERNAL_SUBMIT | `marketplace/azure/offer.md` | Partner Center Marketplace enrollment and SaaS Contact-me offer submission |
 | 5 | AWS Marketplace | BLOCKED_EXTERNAL | `marketplace/aws/offer.md` | Seller onboarding plus AWS Marketplace SaaS billing/entitlement integration |

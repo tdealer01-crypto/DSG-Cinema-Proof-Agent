@@ -22,39 +22,28 @@ $0.10/proof. Plans: free (25 proofs), metered, team ($490/mo + 5,000 included
 
 ## 1 — GitHub Marketplace Action v2
 
-**Status:** package complete and committed; blocked on GitHub App installation.
+**Status:** pushed and open for review as
+[dsg-secure-deploy-gate-action#10](https://github.com/tdealer01-crypto/dsg-secure-deploy-gate-action/pull/10).
 
-The v2 upgrade is built and validated. It could not be pushed to
-`tdealer01-crypto/dsg-secure-deploy-gate-action` because the Claude GitHub App
-is not installed on that repository — both `git push` and the REST API returned
-403 `Resource not accessible by integration`.
-
-### Unblock, then apply
-
-1. Install the app on the Action repo:
-   https://github.com/apps/claude/installations/select_target
-2. Apply the prepared commit:
-
-```bash
-git clone https://github.com/tdealer01-crypto/dsg-secure-deploy-gate-action
-cd dsg-secure-deploy-gate-action
-git checkout -b verified-execution-gate-v2
-git am < /path/to/marketplace/github-action-v2/dist/0001-verified-execution-gate-v2.patch
-git push -u origin verified-execution-gate-v2
-```
-
-The patch touches four files: `action.yml` (v2 contract),
+The branch carries four files: `action.yml` (v2 contract),
 `scripts/verified-execution.sh` (new), `MIGRATION.md` (new), `README.md`
-(v2-first, retires the dead Vercel URL).
+(v2-first, retiring the dead Vercel URL). The v1 scripts stay in place, and the
+repo's Bats suite passes against them unchanged.
 
-### Then publish
+### To publish
 
-3. Merge to `main`.
-4. Draft a release tagged `v2.0.0`, titled
+1. Merge PR #10 to `main`.
+2. Draft a release tagged `v2.0.0`, titled
    **v2.0.0 — Verified Execution Gate**.
-5. Tick **Publish this Action to GitHub Marketplace**. Categories:
+3. Tick **Publish this Action to GitHub Marketplace**. Categories:
    `Deployment`, `Security`.
-6. Publish.
+4. Publish.
+
+> The repo's second CI job, `Python – verify-proof.py unit tests`, fails with
+> `No module named pytest`. That is red on `main` at the base commit too — the
+> workflow never installs pytest — so it is not PR #10's failure. A two-line
+> fix (`python3 -m pip install --quiet pytest` before the test step) closes it,
+> as a separate change.
 
 **Listing name:** DSG Verified Execution Gate
 **Description:** Verify authorized execution, replay, evidence, and
