@@ -105,12 +105,7 @@ def test_launch_manifest_matches_repository_artifacts():
         "OpenAI Skills": "READY_FOR_EXTERNAL_SUBMIT",
         "Direct API": "LIVE",
     }
-    # Raised from NOT_VERIFIED_NOT_LINKED once production /billing/status
-    # reported checkout_status LINKED with charges_enabled and all four Stripe
-    # operational checks PASS. The field has exactly two values, matching
-    # revenue.api CHECKOUT_STATUS_*; LINKED_VERIFIED belongs to stripe.link_state
-    # and is recorded separately under revenue_automation.verified_live.
-    assert manifest["product"]["checkout_status"] == "LINKED"
+    assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
 

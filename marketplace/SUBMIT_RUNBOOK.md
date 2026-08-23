@@ -11,7 +11,7 @@ Verified against production on 2026-08-23:
 |---|---|
 | `GET /health` | `200` — `{"status":"ready","backend":"ready"}` |
 | `GET /marketplace/github/status` | `200` — `READY`; durable_store, webhook_secret, oauth_client_id, oauth_client_secret all `PASS` |
-| `GET /billing/status` | `200` — Stripe `LINKED_VERIFIED`, `charges_enabled: true`, metering enforced, 0 blockers |
+| `GET /billing/status` | `200` — `stripe.link_state: LINKED_VERIFIED`, `charges_enabled: true`, metering enforced, 0 blockers |
 | Ledger | 335 entries, hash-chained |
 
 Live catalog: `verified_execution` $0.05/proof, `stripe_policy_decision`
@@ -148,8 +148,8 @@ Then at https://dashboard.stripe.com/apps: open **DSG Governance Gate**, run an
 **External Test** install, and **Submit for review**.
 
 **Revenue on approval:** team plan $490/mo, metered $0.05/proof. Stripe billing
-is already `LINKED_VERIFIED` with charges enabled, so approval is the only gate
-left.
+already reports `stripe.link_state: LINKED_VERIFIED` with charges enabled, so
+Stripe's approval is the only gate left.
 
 ---
 
