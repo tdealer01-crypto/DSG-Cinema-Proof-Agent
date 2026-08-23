@@ -8,7 +8,8 @@
     "public_landing": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
     "receipt_version": "dsg-proof-receipt-1.0.0",
     "policy_version": "dsg-verified-execution-1.0.0",
-    "checkout_status": "NOT_VERIFIED_NOT_LINKED",
+    "checkout_status": "LINKED_VERIFIED",
+    "production_verified_at": "2026-08-23",
     "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
     "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
     "support_contact": "t.dealer01@dsg.pics",
@@ -102,7 +103,7 @@
   ],
   "revenue_automation": {
     "system": "dsg-revenue-1.1.0",
-    "status": "IMPLEMENTED_SAFE_RECORD_ONLY_CHARGES_NOT_VERIFIED",
+    "status": "LIVE_ENFORCED_STRIPE_LINKED_VERIFIED",
     "billable_unit": "one Z3 VERIFIED_GLOBAL_OPTIMUM proof receipt",
     "status_endpoint": "/billing/status",
     "usage_endpoint": "/billing/usage",
@@ -118,16 +119,26 @@
       "signature-verified Stripe webhooks scoped to the exact product, price, and subscription",
       "scheduled reconciliation that fails when required evidence is UNAVAILABLE"
     ],
+    "verified_live": {
+      "verified_at": "2026-08-23",
+      "stripe_link_state": "LINKED_VERIFIED",
+      "charges_enabled": true,
+      "metering_enforced": true,
+      "enforcement_blockers": [],
+      "operational_checks": {
+        "product": "PASS",
+        "price": "PASS",
+        "meter": "PASS",
+        "webhook": "PASS"
+      },
+      "ledger_entries": 335
+    },
     "not_claimed": [
-      "an active Stripe checkout link",
-      "durable multi-replica billing storage",
       "independently audited or settlement-reconciled revenue",
       "independent financial audit"
     ],
     "external_action_required": [
-      "configure and verify the Stripe product, price, Payment Link, meter, webhook endpoint, API key, and webhook secret",
-      "attach durable stores and run one writer before enabling DSG_REVENUE_ENFORCE",
-      "set a stable DSG_REVENUE_ADMIN_SECRET for scheduled reconciliation"
+      "approval of the Stripe Apps Marketplace listing before the app is publicly installable"
     ]
   },
   "channel_delivery": {

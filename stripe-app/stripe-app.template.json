@@ -59,15 +59,15 @@
   "marketing": {
     "feature_images": [
       {
-        "url": "https://dsg.pics/images/stripe-marketplace/proof-verification-1600x900.png",
+        "url": "https://raw.githubusercontent.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/main/public/stripe-marketplace/proof-verification-1600x900.png",
         "alt_text": "Deterministic proof verification in payment flow"
       },
       {
-        "url": "https://dsg.pics/images/stripe-marketplace/team-billing-1600x900.png",
+        "url": "https://raw.githubusercontent.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/main/public/stripe-marketplace/team-billing-1600x900.png",
         "alt_text": "Team subscriptions with proof-based metering"
       },
       {
-        "url": "https://dsg.pics/images/stripe-marketplace/governance-dashboard-1600x900.png",
+        "url": "https://raw.githubusercontent.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/main/public/stripe-marketplace/governance-dashboard-1600x900.png",
         "alt_text": "Governance dashboard for proof auditing"
       }
     ]

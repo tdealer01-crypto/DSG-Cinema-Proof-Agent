@@ -7,15 +7,18 @@ Status meanings:
 - `BLOCKED_EXTERNAL` — marketplace-specific seller/publisher onboarding or billing integration is still required.
 - `SPEC_ONLY` — product/plugin artifact is not built yet.
 
+Step-by-step submission instructions with pre-filled listing copy for every
+channel are in [`SUBMIT_RUNBOOK.md`](SUBMIT_RUNBOOK.md).
+
 | Priority | Channel | Status | Evidence / package | External action that cannot be performed by the current chat connector |
 |---:|---|---|---|---|
-| 1 | GitHub Marketplace Action | LIVE | Existing `DSG Secure Deploy Gate` v1.1.0 listing; v2 package under `marketplace/github-action-v2/` | Copy v2 to the dedicated Action repo, create a release, select Publish this Action to GitHub Marketplace |
-| 2 | Stripe Apps Marketplace | READY_FOR_EXTERNAL_SUBMIT | `stripe-app/` v2.7.0 + production packaging workflow | Stripe CLI upload, External Test, Submit for review in Stripe Dashboard |
-| 3 | OpenAI Skills | READY_FOR_EXTERNAL_SUBMIT | `marketplace/openai-plugin/` | Publisher verification and external submission |
+| 1 | Stripe Apps Marketplace | BLOCKED_OAUTH_REDIRECT | `stripe-app/` v2.7.0; 4 of 5 blockers fixed; marketing images repointed to a reachable host | Deploy a Stripe OAuth callback (none exists in the 51 production routes; `dsg.pics` serves no HTTPS), then Stripe CLI upload, External Test, Submit for review |
+| 2 | GitHub Marketplace Action | LIVE_V1, V2_BLOCKED_APP_INSTALL | v1.1.0 listing live; v2 commit prepared as `marketplace/github-action-v2/dist/0001-verified-execution-gate-v2.patch` | Install the Claude GitHub App on `dsg-secure-deploy-gate-action` (push and REST both 403 today), apply the patch, release `v2.0.0`, tick Publish to Marketplace |
+| 3 | OpenAI Skills | READY_FOR_EXTERNAL_SUBMIT | `marketplace/openai-plugin/`; `scripts/validate.sh` passes | Publisher verification and external submission |
 | 4 | Microsoft Marketplace | READY_FOR_EXTERNAL_SUBMIT | `marketplace/azure/offer.md` | Partner Center Marketplace enrollment and SaaS Contact-me offer submission |
 | 5 | AWS Marketplace | BLOCKED_EXTERNAL | `marketplace/aws/offer.md` | Seller onboarding plus AWS Marketplace SaaS billing/entitlement integration |
 | 6 | JetBrains Marketplace | SPEC_ONLY | `marketplace/jetbrains/offer.md` | Build/sign plugin ZIP, account/trader declaration, upload for manual review |
-| 7 | Direct API | LIVE | Production `/health`, `/verify/evaluate`, and `/docs` | Add customer auth/metering before paid self-service |
+| 7 | Direct API | LIVE | Production `/health`, `/verify/evaluate`, `/docs`; Stripe `LINKED_VERIFIED` with metering enforced | None — paid self-service is live |
 
 ## Do not mark a channel LIVE until
 

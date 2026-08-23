@@ -1,0 +1,578 @@
+From c5648a14aed4722c89dd51a197bc0214c956fda6 Mon Sep 17 00:00:00 2001
+From: Thanawat Suparongsuwan <t.dealer01@dsg.pics>
+Date: Sun, 23 Aug 2026 17:30:42 +0000
+Subject: [PATCH] feat: DSG Verified Execution Gate v2
+
+Replace the readiness-probe contract with a proof-receipt contract backed by
+Cinema /verify/evaluate and exact Z3 verification.
+
+- action.yml: ALLOW/REVIEW/BLOCK decision, no permissive defaults on any of the
+  six execution assertions, optional api_key for metered attribution
+- scripts/verified-execution.sh: writes dsg-proof-receipt.json, surfaces
+  decision/proof_hash/context_hash/remediation
+- MIGRATION.md: v1 to v2 mapping; v1 tags stay immutable and unaffected
+- README: lead with v2, retain v1 reference, drop the retired Vercel URL
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0187zB6qMpNw3XXNRg1gLfi5
+---
+ MIGRATION.md                  |  81 +++++++++++++++
+ README.md                     |  55 ++++++++--
+ action.yml                    | 182 +++++++++++++++-------------------
+ scripts/verified-execution.sh | 171 ++++++++++++++++++++++++++++++++
+ 4 files changed, 381 insertions(+), 108 deletions(-)
+ create mode 100644 MIGRATION.md
+ create mode 100755 scripts/verified-execution.sh
+
+diff --git a/MIGRATION.md b/MIGRATION.md
+new file mode 100644
+index 0000000..a08de77
+--- /dev/null
++++ b/MIGRATION.md
+@@ -0,0 +1,81 @@
++# Migrating from v1 to v2
++
++v2 renames the Action to **DSG Verified Execution Gate** and replaces the
++readiness-probe contract with a proof-receipt contract backed by Cinema
++`/verify/evaluate` and exact Z3 verification.
++
++## v1 keeps working
++
++v1 is published under immutable tags. Nothing in this release changes them:
++
++- `v1.1.0`, `v1.0.2`, `v1.0.1`, `v1.0.0`
++
++Pin to `@v1.1.0` (or `@v1`) to stay on the readiness-gate behaviour. Only
++workflows that reference `@main` pick up v2 automatically.
++
++## What changed
++
++| | v1 — Secure Deploy Gate | v2 — Verified Execution Gate |
++|---|---|---|
++| Decision | `GO` / `NO-GO` | `ALLOW` / `REVIEW` / `BLOCK` |
++| Source of truth | HTTP readiness probe run in the runner | Cinema `/verify/evaluate` with exact Z3 proof |
++| Evidence file | `dsg-evidence.json` | `dsg-proof-receipt.json` |
++| Failure mode | fails on `NO-GO` | fails on `BLOCK`, and on `REVIEW` when `fail_on_review: true` |
++| Metering | none | optional `api_key` attributes proofs to your DSG account |
++
++v1 decided the verdict inside the runner. v2 sends a bounded set of hashes and
++booleans to Cinema, which returns a decision only when Z3 proves
++`VERIFIED_GLOBAL_OPTIMUM`. An unverified proof is reported as `REVIEW`, never
++as approval.
++
++## Input mapping
++
++There is no mechanical rewrite from v1 inputs to v2 inputs — the two Actions
++answer different questions. v1 asked "is the deployed endpoint healthy". v2
++asks "was this execution authorized, plan-aligned, constraint-satisfying,
++replayable, and evidenced".
++
++v2 requires the caller to state each result explicitly. There is no permissive
++default for `authorized`, `plan_aligned`, `constraints_pass`,
++`execution_succeeded`, `replay_match`, or `evidence_complete`.
++
++```yaml
++- uses: tdealer01-crypto/dsg-secure-deploy-gate-action@v2.0.0
++  with:
++    endpoint: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate
++    approved_plan_hash: ${{ steps.plan.outputs.sha256 }}
++    proposed_action_hash: ${{ steps.action.outputs.sha256 }}
++    authorized: 'true'
++    plan_aligned: 'true'
++    constraints_pass: ${{ steps.checks.outputs.passed }}
++    execution_succeeded: ${{ steps.deploy.outcome == 'success' }}
++    replay_match: 'true'
++    evidence_complete: 'true'
++```
++
++## Running both
++
++To keep the v1 readiness probe alongside v2, pin the v1 tag in a separate step:
++
++```yaml
++- uses: tdealer01-crypto/dsg-secure-deploy-gate-action@v1.1.0
++  with:
++    readiness_url: https://example.com/api/readiness
++- uses: tdealer01-crypto/dsg-secure-deploy-gate-action@v2.0.0
++  with:
++    endpoint: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate
++    # ...
++```
++
++## Getting an API key
++
++`api_key` is optional. Without it the Action still verifies, on the free
++evaluation plan (25 proofs). To meter and attribute proofs to your account:
++
++```bash
++curl -X POST https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/activate \
++  -H 'Content-Type: application/json' \
++  -d '{"channel":"github_action","activation_id":"<your-org>"}'
++```
++
++Store the returned key as a repository secret and pass it as `api_key`.
+diff --git a/README.md b/README.md
+index 34c1c6e..6a1a27f 100644
+--- a/README.md
++++ b/README.md
+@@ -1,19 +1,62 @@
+-# DSG Secure Deploy Gate
++# DSG Verified Execution Gate
+ 
+-**Block unsafe production deploys before they ship. Create deterministic proof for every release.**
++**Prove an automated action was authorized before you let it stand. Get a signed proof receipt for every run.**
+ 
+-DSG Secure Deploy Gate is an open-source GitHub Action for production readiness checks, protected-route checks, and deterministic GO / NO-GO evidence.
++v2 sends a bounded set of hashes and booleans to the Cinema `/verify/evaluate`
++endpoint, which returns `ALLOW`, `REVIEW`, or `BLOCK` only when exact Z3
++proves `VERIFIED_GLOBAL_OPTIMUM`. Anything less is reported as `REVIEW` — the
++Action never converts an unverified proof into an approval.
+ 
+-It is designed for teams that need deploy evidence, CI/CD governance, and a clean upgrade path to an audit dashboard.
++Built for teams running AI agents or automated deploys that need to answer
++"who authorized this, and can you prove it" after the fact.
+ 
+-> **Truth boundary:** this Action helps generate repeatable deployment evidence. It is not, by itself, a PDPA, ISO 27001, SOC 2, WORM, or third-party compliance certification.
++> **Truth boundary:** this Action generates reproducible execution evidence. It
++> is not, by itself, a PDPA, ISO 27001, SOC 2, WORM, or third-party compliance
++> certification.
+ 
+ ## Links
+ 
+-- Landing page: https://tdealer01-crypto-dsg-control-plane.vercel.app/proofgate-github-action
++- Landing page: https://dsgoneverifiedweb.z1.web.core.windows.net/
++- API docs: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs
+ - Demo repo: https://github.com/tdealer01-crypto/dsg-gate-demo-nextjs
+ - Marketplace: https://github.com/marketplace/actions/dsg-secure-deploy-gate
+ 
++## Upgrading from v1
++
++v1 (`DSG Secure Deploy Gate`, readiness-probe contract) stays available under
++its immutable tags — `@v1.1.0` and earlier are unaffected by this release. See
++[MIGRATION.md](MIGRATION.md) for the v1 → v2 mapping.
++
++## v2 quick start
++
++```yaml
++- uses: tdealer01-crypto/dsg-secure-deploy-gate-action@v2.0.0
++  id: gate
++  with:
++    endpoint: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate
++    api_key: ${{ secrets.DSG_API_KEY }}   # optional; free plan allows 25 proofs
++    approved_plan_hash: ${{ steps.plan.outputs.sha256 }}
++    proposed_action_hash: ${{ steps.action.outputs.sha256 }}
++    authorized: 'true'
++    plan_aligned: 'true'
++    constraints_pass: 'true'
++    execution_succeeded: 'true'
++    replay_match: 'true'
++    evidence_complete: 'true'
++    fail_on_review: 'true'
++
++- run: echo "${{ steps.gate.outputs.decision }} ${{ steps.gate.outputs.proof_hash }}"
++```
++
++Outputs: `decision`, `proof_hash`, `context_hash`, `receipt_file`,
++`remediation`. The receipt is written to `dsg-proof-receipt.json`.
++
++---
++
++## v1 reference (readiness gate)
++
++Everything below documents the v1 contract, still served by `@v1.1.0`.
++
+ ---
+ 
+ ## Evidence screenshots
+diff --git a/action.yml b/action.yml
+index 9af301b..a4cc150 100644
+--- a/action.yml
++++ b/action.yml
+@@ -1,5 +1,5 @@
+-name: "DSG Secure Deploy Gate"
+-description: "Deterministic production readiness, security, and governance gate for CI/CD."
++name: "DSG Verified Execution Gate"
++description: "Verify authorized execution, replay, evidence, and deterministic constraints with Cinema + exact Z3 proof receipts."
+ author: "tdealer01-crypto"
+ 
+ branding:
+@@ -7,121 +7,99 @@ branding:
+   color: "blue"
+ 
+ inputs:
+-  readiness_url:
+-    description: "Readiness endpoint URL."
++  endpoint:
++    description: "Cinema /verify/evaluate endpoint URL."
+     required: true
+-  expected_status:
+-    description: "Expected readiness HTTP status code."
+-    required: false
+-    default: "200"
+-  require_json_ok:
+-    description: "Require response JSON to contain ok=true."
+-    required: false
+-    default: "true"
+-  protected_url:
+-    description: "Optional protected route URL expected to deny unauthenticated access."
++  api_key:
++    description: >-
++      Optional DSG API key. Supply it to meter and attribute this workflow's
++      proofs to your account. Obtain one with POST /billing/activate.
+     required: false
+     default: ""
+-  protected_expected:
+-    description: "Comma-separated expected unauthenticated status codes for protected route."
+-    required: false
+-    default: "401,403"
+-  preset:
+-    description: "Gate preset: basic, standard, strict, or audit-only."
+-    required: false
+-    default: "strict"
+-  comment_on_pr:
+-    description: "Post or update a DSG result comment on pull requests."
+-    required: false
+-    default: "false"
+-  evidence_file:
+-    description: "Path to write deterministic evidence JSON."
++  approved_plan_hash:
++    description: "SHA-256 of the approved plan."
++    required: true
++  proposed_action_hash:
++    description: "SHA-256 of the proposed/executed action."
++    required: true
++  execution_id:
++    description: "Stable execution identifier. Defaults to the GitHub run identity."
+     required: false
+-    default: "dsg-evidence.json"
+-  policy_name:
+-    description: "Policy name recorded in evidence."
++    default: ""
++  trace_id:
++    description: "Optional cross-system trace identifier."
+     required: false
+-    default: "production-readiness"
+-  policy_version:
+-    description: "Policy version recorded in evidence."
++    default: ""
++  agent_identity:
++    description: "Agent/runtime identity recorded in the receipt."
+     required: false
+-    default: "v1"
+-  previous_proof_hash:
+-    description: "Optional previous proof hash for chain linking."
++    default: "github-actions"
++  authorized:
++    description: "Explicit authorization result. Required; no permissive default."
++    required: true
++  plan_aligned:
++    description: "Explicit approved-plan alignment result. Required; no permissive default."
++    required: true
++  constraints_pass:
++    description: "Explicit deterministic constraint result. Required; no permissive default."
++    required: true
++  execution_succeeded:
++    description: "Explicit observed execution result. Required; no permissive default."
++    required: true
++  replay_match:
++    description: "Explicit replay comparison result. Required; no permissive default."
++    required: true
++  evidence_complete:
++    description: "Explicit evidence completeness result. Required; no permissive default."
++    required: true
++  cost_microunits:
++    description: "Optional execution cost in application-defined microunits."
+     required: false
+-    default: ""
+-  proof_timestamp:
+-    description: "Optional fixed proof timestamp for reproducible fixtures. Defaults to current UTC time."
++    default: "0"
++  receipt_file:
+     required: false
+-    default: ""
+-  fail_on_no_go:
+-    description: "Fail the job when verdict is NO-GO. Ignored for audit-only preset."
++    default: "dsg-proof-receipt.json"
++  fail_on_review:
++    description: "Fail the job on REVIEW as well as BLOCK."
+     required: false
+-    default: "true"
++    default: "false"
+ 
+ outputs:
+-  verdict:
+-    description: "GO or NO-GO result."
+-    value: ${{ steps.dsg_gate.outputs.verdict }}
+-  readiness_status:
+-    description: "Readiness HTTP status."
+-    value: ${{ steps.dsg_gate.outputs.readiness_status }}
+-  protected_status:
+-    description: "Protected route HTTP status, when checked."
+-    value: ${{ steps.dsg_gate.outputs.protected_status }}
+-  failure_reason:
+-    description: "Machine-readable NO-GO reason."
+-    value: ${{ steps.dsg_gate.outputs.failure_reason }}
+-  evidence_hash:
+-    description: "SHA256 hash of canonical evidence."
+-    value: ${{ steps.dsg_gate.outputs.evidence_hash }}
+-  policy_hash:
+-    description: "SHA256 hash of canonical policy."
+-    value: ${{ steps.dsg_gate.outputs.policy_hash }}
++  decision:
++    description: "ALLOW, REVIEW, or BLOCK."
++    value: ${{ steps.verify.outputs.decision }}
+   proof_hash:
+-    description: "SHA256 hash of canonical proof."
+-    value: ${{ steps.dsg_gate.outputs.proof_hash }}
+-  chain_hash:
+-    description: "SHA256 proof chain hash."
+-    value: ${{ steps.dsg_gate.outputs.chain_hash }}
+-  evidence_file:
+-    description: "Path to the evidence JSON file."
+-    value: ${{ steps.dsg_gate.outputs.evidence_file }}
++    description: "Exact Z3 proof hash."
++    value: ${{ steps.verify.outputs.proof_hash }}
++  context_hash:
++    description: "Deterministic verification context hash."
++    value: ${{ steps.verify.outputs.context_hash }}
++  receipt_file:
++    value: ${{ steps.verify.outputs.receipt_file }}
++  remediation:
++    description: "When the call is refused, the single next action that resolves it."
++    value: ${{ steps.verify.outputs.remediation }}
+ 
+ runs:
+   using: "composite"
+   steps:
+-    - name: Run DSG Secure Deploy Gate
+-      id: dsg_gate
++    - id: verify
+       shell: bash
+-      run: |
+-        bash "$GITHUB_ACTION_PATH/scripts/dsg-gate.sh"
++      run: bash "$GITHUB_ACTION_PATH/scripts/verified-execution.sh"
+       env:
+-        DSG_READINESS_URL: ${{ inputs.readiness_url }}
+-        DSG_EXPECTED_STATUS: ${{ inputs.expected_status }}
+-        DSG_REQUIRE_JSON_OK: ${{ inputs.require_json_ok }}
+-        DSG_PROTECTED_URL: ${{ inputs.protected_url }}
+-        DSG_PROTECTED_EXPECTED: ${{ inputs.protected_expected }}
+-        DSG_PRESET: ${{ inputs.preset }}
+-        DSG_EVIDENCE_FILE: ${{ inputs.evidence_file }}
+-        DSG_POLICY_NAME: ${{ inputs.policy_name }}
+-        DSG_POLICY_VERSION: ${{ inputs.policy_version }}
+-        DSG_PREVIOUS_PROOF_HASH: ${{ inputs.previous_proof_hash }}
+-        DSG_PROOF_TIMESTAMP: ${{ inputs.proof_timestamp }}
+-    - name: Post DSG PR comment
+-      if: ${{ always() && inputs.comment_on_pr == 'true' && github.event_name == 'pull_request' }}
+-      shell: bash
+-      run: |
+-        bash "$GITHUB_ACTION_PATH/scripts/dsg-pr-comment.sh"
+-      env:
+-        DSG_EVIDENCE_FILE: ${{ inputs.evidence_file }}
+-        GITHUB_TOKEN: ${{ github.token }}
+-        GITHUB_REPOSITORY: ${{ github.repository }}
+-        PR_NUMBER: ${{ github.event.pull_request.number }}
+-        GITHUB_API_URL: ${{ github.api_url }}
+-    - name: Enforce DSG verdict
+-      if: ${{ always() && inputs.fail_on_no_go == 'true' && inputs.preset != 'audit-only' && steps.dsg_gate.outputs.verdict != 'GO' }}
+-      shell: bash
+-      run: |
+-        echo "DSG gate failed: ${{ steps.dsg_gate.outputs.failure_reason }}"
+-        exit 1
++        DSG_ENDPOINT: ${{ inputs.endpoint }}
++        DSG_API_KEY: ${{ inputs.api_key }}
++        DSG_APPROVED_PLAN_HASH: ${{ inputs.approved_plan_hash }}
++        DSG_PROPOSED_ACTION_HASH: ${{ inputs.proposed_action_hash }}
++        DSG_EXECUTION_ID: ${{ inputs.execution_id }}
++        DSG_TRACE_ID: ${{ inputs.trace_id }}
++        DSG_AGENT_IDENTITY: ${{ inputs.agent_identity }}
++        DSG_AUTHORIZED: ${{ inputs.authorized }}
++        DSG_PLAN_ALIGNED: ${{ inputs.plan_aligned }}
++        DSG_CONSTRAINTS_PASS: ${{ inputs.constraints_pass }}
++        DSG_EXECUTION_SUCCEEDED: ${{ inputs.execution_succeeded }}
++        DSG_REPLAY_MATCH: ${{ inputs.replay_match }}
++        DSG_EVIDENCE_COMPLETE: ${{ inputs.evidence_complete }}
++        DSG_COST_MICROUNITS: ${{ inputs.cost_microunits }}
++        DSG_RECEIPT_FILE: ${{ inputs.receipt_file }}
++        DSG_FAIL_ON_REVIEW: ${{ inputs.fail_on_review }}
+diff --git a/scripts/verified-execution.sh b/scripts/verified-execution.sh
+new file mode 100755
+index 0000000..662142d
+--- /dev/null
++++ b/scripts/verified-execution.sh
+@@ -0,0 +1,171 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++require_bool() {
++  case "$2" in
++    true|false) ;;
++    *) echo "$1 must be true or false" >&2; exit 2 ;;
++  esac
++}
++
++for name in DSG_AUTHORIZED DSG_PLAN_ALIGNED DSG_CONSTRAINTS_PASS DSG_EXECUTION_SUCCEEDED DSG_REPLAY_MATCH DSG_EVIDENCE_COMPLETE DSG_FAIL_ON_REVIEW; do
++  require_bool "$name" "${!name}"
++done
++
++if [[ ! "$DSG_ENDPOINT" =~ ^https:// ]]; then
++  echo "endpoint must use HTTPS" >&2
++  exit 2
++fi
++if [[ ! "$DSG_APPROVED_PLAN_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
++  echo "approved_plan_hash must be a SHA-256 hex value" >&2
++  exit 2
++fi
++if [[ ! "$DSG_PROPOSED_ACTION_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
++  echo "proposed_action_hash must be a SHA-256 hex value" >&2
++  exit 2
++fi
++if [[ ! "$DSG_COST_MICROUNITS" =~ ^[0-9]+$ ]]; then
++  echo "cost_microunits must be a non-negative integer" >&2
++  exit 2
++fi
++
++EXECUTION_ID="$DSG_EXECUTION_ID"
++if [[ -z "$EXECUTION_ID" ]]; then
++  EXECUTION_ID="gh-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
++fi
++
++TRACE_JSON=null
++if [[ -n "$DSG_TRACE_ID" ]]; then
++  TRACE_JSON=$(jq -Rn --arg value "$DSG_TRACE_ID" '$value')
++fi
++
++jq -n \
++  --arg execution_id "$EXECUTION_ID" \
++  --argjson trace_id "$TRACE_JSON" \
++  --arg agent_identity "$DSG_AGENT_IDENTITY" \
++  --arg approved_plan_hash "${DSG_APPROVED_PLAN_HASH,,}" \
++  --arg proposed_action_hash "${DSG_PROPOSED_ACTION_HASH,,}" \
++  --argjson authorized "$DSG_AUTHORIZED" \
++  --argjson plan_aligned "$DSG_PLAN_ALIGNED" \
++  --argjson constraints_pass "$DSG_CONSTRAINTS_PASS" \
++  --argjson execution_succeeded "$DSG_EXECUTION_SUCCEEDED" \
++  --argjson replay_match "$DSG_REPLAY_MATCH" \
++  --argjson evidence_complete "$DSG_EVIDENCE_COMPLETE" \
++  --argjson cost_microunits "$DSG_COST_MICROUNITS" \
++  '{
++    execution_id: $execution_id,
++    trace_id: $trace_id,
++    channel: "github",
++    agent_identity: $agent_identity,
++    approved_plan_hash: $approved_plan_hash,
++    proposed_action_hash: $proposed_action_hash,
++    authorized: $authorized,
++    plan_aligned: $plan_aligned,
++    constraints_pass: $constraints_pass,
++    execution_succeeded: $execution_succeeded,
++    replay_match: $replay_match,
++    evidence_complete: $evidence_complete,
++    cost_microunits: $cost_microunits
++  }' > /tmp/dsg-verify-request.json
++
++CURL_ARGS=(
++  --silent --show-error
++  --output "$DSG_RECEIPT_FILE"
++  --write-out '%{http_code}'
++  --request POST "$DSG_ENDPOINT"
++  --header 'Content-Type: application/json'
++  --data @/tmp/dsg-verify-request.json
++)
++if [[ -n "${DSG_API_KEY:-}" ]]; then
++  CURL_ARGS+=(--header "X-DSG-API-Key: ${DSG_API_KEY}")
++fi
++
++HTTP_CODE=$(curl "${CURL_ARGS[@]}" || true)
++
++# A refusal should tell the maintainer how to fix it, in the run summary where
++# they are already looking, rather than leaving them an HTTP status to decode.
++report_remediation() {
++  local file="$1"
++  local next_step problem code
++
++  code=$(jq -r '.detail.error // .error // empty' "$file" 2>/dev/null || true)
++  problem=$(jq -r '.detail.remediation.problem // .remediation.problem // empty' "$file" 2>/dev/null || true)
++  next_step=$(jq -r '.detail.remediation.next_step // .remediation.next_step // empty' "$file" 2>/dev/null || true)
++
++  if [[ -z "$next_step" ]]; then
++    return 1
++  fi
++
++  # The endpoint is configurable by the workflow author. Keep response text to
++  # one line before writing the GitHub output protocol so a hostile or broken
++  # endpoint cannot inject additional output keys.
++  code="${code//$'\r'/ }"
++  code="${code//$'\n'/ }"
++  problem="${problem//$'\r'/ }"
++  problem="${problem//$'\n'/ }"
++  next_step="${next_step//$'\r'/ }"
++  next_step="${next_step//$'\n'/ }"
++
++  printf 'remediation=%s\n' "$next_step" >> "$GITHUB_OUTPUT"
++  {
++    echo "### DSG Verified Execution — action required"
++    echo
++    echo "- **Problem:** ${problem:-The verification request was refused.}"
++    [[ -n "$code" ]] && echo "- **Code:** \`$code\`"
++    echo "- **Next step:** $next_step"
++  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
++
++  echo "DSG verification refused: ${problem:-HTTP $HTTP_CODE}" >&2
++  echo "Next step: $next_step" >&2
++  return 0
++}
++
++if [[ "$HTTP_CODE" != "200" ]]; then
++  if ! report_remediation "$DSG_RECEIPT_FILE"; then
++    echo "DSG verification endpoint returned HTTP $HTTP_CODE" >&2
++    cat "$DSG_RECEIPT_FILE" 2>/dev/null || true
++  fi
++  exit 1
++fi
++
++jq -e '
++  .verified == true and
++  .verification == "VERIFIED_GLOBAL_OPTIMUM" and
++  (.decision == "ALLOW" or .decision == "REVIEW" or .decision == "BLOCK") and
++  (.proof_hash | type == "string" and length == 64) and
++  (.context_hash | type == "string" and length == 64) and
++  .receipt_version == "dsg-proof-receipt-1.0.0"
++' "$DSG_RECEIPT_FILE" >/dev/null
++
++DECISION=$(jq -r '.decision' "$DSG_RECEIPT_FILE")
++PROOF_HASH=$(jq -r '.proof_hash' "$DSG_RECEIPT_FILE")
++CONTEXT_HASH=$(jq -r '.context_hash' "$DSG_RECEIPT_FILE")
++
++echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
++echo "proof_hash=$PROOF_HASH" >> "$GITHUB_OUTPUT"
++echo "context_hash=$CONTEXT_HASH" >> "$GITHUB_OUTPUT"
++echo "receipt_file=$DSG_RECEIPT_FILE" >> "$GITHUB_OUTPUT"
++
++echo "DSG Verified Execution: $DECISION"
++echo "proof_hash=$PROOF_HASH"
++
++BILLED_UNITS=$(jq -r '.billing.quantity // empty' "$DSG_RECEIPT_FILE")
++{
++  echo "### DSG Verified Execution — $DECISION"
++  echo
++  echo "- **Proof hash:** \`$PROOF_HASH\`"
++  echo "- **Context hash:** \`$CONTEXT_HASH\`"
++  if [[ -n "$BILLED_UNITS" ]]; then
++    ACCOUNT=$(jq -r '.billing.account_id // "unknown"' "$DSG_RECEIPT_FILE")
++    echo "- **Metered:** $BILLED_UNITS unit(s) to \`$ACCOUNT\`"
++  else
++    echo "- **Metered:** no (unattributed public evaluation)"
++  fi
++} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
++
++if [[ "$DECISION" == "BLOCK" ]]; then
++  exit 1
++fi
++if [[ "$DECISION" == "REVIEW" && "$DSG_FAIL_ON_REVIEW" == "true" ]]; then
++  exit 1
++fi
+-- 
+2.43.0
+
