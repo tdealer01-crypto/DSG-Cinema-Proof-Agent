@@ -2,7 +2,7 @@
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import sentry_sdk
@@ -56,7 +56,7 @@ def read_recent_errors(limit: int = 50, minutes: int = 60) -> list:
         return []
 
     errors = []
-    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
+    cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
     try:
         with open(error_log, "r", encoding="utf-8") as f:
@@ -67,6 +67,10 @@ def read_recent_errors(limit: int = 50, minutes: int = 60) -> list:
                         timestamp_str = entry.get("timestamp", "")
                         try:
                             timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                            if timestamp.tzinfo is None:
+                                # A log line without an offset is read as UTC rather
+                                # than crashing the comparison against an aware cutoff.
+                                timestamp = timestamp.replace(tzinfo=timezone.utc)
                             if timestamp >= cutoff_time:
                                 errors.append(entry)
                         except (ValueError, AttributeError):

@@ -48,3 +48,6 @@ Thumbs.db
 # Temporary
 *.tmp
 temp/
+
+# Runtime log output
+logs/
