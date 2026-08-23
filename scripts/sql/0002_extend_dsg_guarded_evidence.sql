@@ -50,6 +50,13 @@ BEGIN
     END IF;
 END $$;
 
+-- A converted column keeps its old '{}'::jsonb default expression. Harmless, since
+-- both columns are always written explicitly, but a migrated database and a fresh
+-- one should not differ.
+ALTER TABLE dsg_guarded_evidence
+    ALTER COLUMN parameters SET DEFAULT '{}',
+    ALTER COLUMN outputs SET DEFAULT '{}';
+
 -- recorded_at is the timestamp the evidence hash covers, so it is stored as the
 -- exact ISO-8601 string rather than as a TIMESTAMPTZ that would render back
 -- differently. Pre-migration rows take theirs from created_at.

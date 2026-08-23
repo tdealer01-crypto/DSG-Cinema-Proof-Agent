@@ -75,15 +75,44 @@ _ACCOUNT_COLUMNS = (
 )
 
 
+#: TLS modes that actually verify the connection is encrypted. `prefer` and
+#: `allow` fall back to plaintext without saying so, and `disable` never tries.
+TLS_MODES = frozenset({"require", "verify-ca", "verify-full"})
+
+DEFAULT_TLS_MODE = "require"
+
+
+def _query_of(url: str) -> dict[str, str]:
+    parsed = urlparse(url)
+    return dict(item.split("=", 1) for item in parsed.query.split("&") if "=" in item)
+
+
+def tls_mode_for(url: str) -> str | None:
+    """The sslmode `connect` must supply, or None when the URI already sets one.
+
+    A URI that names no sslmode is not refused: libpq would default to `prefer`,
+    which silently accepts plaintext, so the connection is opened with `require`
+    instead. What is refused is a URI that explicitly asks for something weaker —
+    that is a stated intention to downgrade, not an omission to fill in.
+    """
+    stated = _query_of(url).get("sslmode")
+    if stated is None:
+        return DEFAULT_TLS_MODE
+    if stated not in TLS_MODES:
+        raise ValueError(
+            f"DSG_REVENUE_DATABASE_URL asks for sslmode={stated}; TLS is required "
+            f"(use one of {', '.join(sorted(TLS_MODES))})"
+        )
+    return None
+
+
 def validate_database_url(value: str) -> str:
     """Validate a server-side Supabase/PostgreSQL URI without exposing it."""
     url = (value or "").strip()
     parsed = urlparse(url)
     if parsed.scheme not in {"postgres", "postgresql"}:
         raise ValueError("DSG_REVENUE_DATABASE_URL must be a PostgreSQL URI")
-    query = dict(item.split("=", 1) for item in parsed.query.split("&") if "=" in item)
-    if query.get("sslmode") not in {"require", "verify-ca", "verify-full"}:
-        raise ValueError("DSG_REVENUE_DATABASE_URL must enforce TLS with sslmode=require")
+    tls_mode_for(url)
     if not parsed.hostname or not parsed.path or parsed.path == "/":
         raise ValueError("DSG_REVENUE_DATABASE_URL must include host and database")
     if not parsed.username or parsed.password is None:
@@ -92,13 +121,31 @@ def validate_database_url(value: str) -> str:
 
 
 def connect(database_url: str):
-    """Open a TLS-required PostgreSQL/Supabase connection without logging its URI."""
+    """Open a TLS-required PostgreSQL/Supabase connection without logging its URI.
+
+    TLS is enforced by this function rather than by demanding the caller spell it
+    into the URI, so a connection string that omits `sslmode` still cannot fall
+    back to plaintext.
+
+    Prepared statements are disabled. psycopg promotes a repeated query to a
+    server-side prepared statement after a few executions, and Supabase's shared
+    pooler in transaction mode (port 6543) hands the next transaction a different
+    backend, which then fails on a statement it has never seen. Every write here is
+    a short transaction, so the saved parse time is worth less than working against
+    a pooled connection.
+    """
     validated = validate_database_url(database_url)
     try:
         import psycopg
     except ImportError as error:  # pragma: no cover - dependency installation contract
         raise RuntimeError("psycopg is required for PostgreSQL revenue storage") from error
-    return psycopg.connect(validated, autocommit=False)
+    options: dict[str, object] = {"autocommit": False, "prepare_threshold": None}
+    mode = tls_mode_for(validated)
+    if mode is not None:
+        # Only when the URI states nothing: a keyword here overrides the URI, and
+        # overriding an explicit verify-full with require would be a downgrade.
+        options["sslmode"] = mode
+    return psycopg.connect(validated, **options)
 
 
 def initialize_schema(connection) -> None:

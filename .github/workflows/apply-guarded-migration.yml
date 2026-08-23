@@ -1,0 +1,56 @@
+name: apply-guarded-migration
+
+# Brings a live database to the guarded evidence schema this runtime writes, then
+# proves the constraints against it. The connection URI exists only as a repository
+# secret: no job step prints it, and the migration runner validates it without
+# echoing it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_live_test:
+        description: >-
+          Also run the live guarded mutation test. It creates two throwaway
+          tenants and their evidence rows and deletes them again, so it writes to
+          the real revenue tables. Off by default.
+        type: boolean
+        default: false
+
+concurrency:
+  group: guarded-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    # The database URI is an environment secret, so the job has to name the
+    # environment to reach it — the same one the other revenue workflows use.
+    environment: production
+    env:
+      DSG_REVENUE_DATABASE_URL: ${{ secrets.DSG_REVENUE_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Refuse to run without a database URI
+        run: |
+          if [ -z "${DSG_REVENUE_DATABASE_URL}" ]; then
+            echo "::error::secrets.DSG_REVENUE_DATABASE_URL is not set on this repository."
+            echo "Add it under Settings -> Secrets and variables -> Actions, then re-run."
+            exit 1
+          fi
+          echo "database URI is configured (value not printed)"
+
+      - name: Install dependencies
+        run: pip install --quiet -r requirements.txt
+
+      - name: Bootstrap schema and apply migration
+        run: python scripts/apply_guarded_migration.py
+
+      - name: Live guarded mutation test
+        # Opt-in only: this one writes throwaway rows to the real revenue tables.
+        if: inputs.run_live_test
+        run: python scripts/live_supabase_mutation_test.py

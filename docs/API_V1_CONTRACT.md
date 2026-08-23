@@ -238,7 +238,10 @@ The signed APK itself remains a release/workflow artifact rather than source cod
 - The Android bridge can use the trusted server-side Cinema bearer credential or a
   DSG API key; credentials remain server-side and are never returned to the APK.
 - `DSG_REVENUE_DATABASE_URL` selects PostgreSQL/Supabase for the revenue stores and
-  for guarded mutation evidence (`dsg_guarded_evidence`). Existing databases that
+  for guarded mutation evidence (`dsg_guarded_evidence`). TLS is enforced by the
+  connection rather than by the written URI: a connection string that omits
+  `sslmode` is opened with `require`, and one that explicitly asks for `disable`,
+  `allow` or `prefer` is refused. Existing databases that
   already carry the earlier evidence skeleton run
   `scripts/sql/0002_extend_dsg_guarded_evidence.sql` once; a fresh database is
   created in the final shape by the application's own bootstrap.
