@@ -788,23 +788,20 @@ jobs:
             test "$WEBHOOK_CODE" = '503'
           fi
 
-          # Readiness is the stricter claim. A signing secret without a catalog
-          # to apply the event against is not a working webhook, and the app
-          # says so; assert against that rather than against the secret.
-          jq -e --arg ready "$STRIPE_WEBHOOK_CONFIGURED" \
-            '.stripe.webhooks_configured == ($ready == "true")' \
-            /tmp/billing-status.json >/dev/null
-          jq -e --arg source "$STRIPE_SOURCE" '.stripe.configured == ($source != "none")' \
-            /tmp/billing-status.json >/dev/null
-
-          # Holding a key is not the same as having something to charge for.
-          # The catalog scope the app reports must match the ids this
-          # deployment passed, or checkout readiness is being claimed on
-          # credentials alone.
-          jq -e --arg scoped "$STRIPE_CATALOG_SCOPED" \
-            '.stripe.catalog_scope_configured == ($scoped == "true")' \
-            /tmp/billing-status.json >/dev/null
-          echo "Stripe credential source verified as: $STRIPE_SOURCE (catalog scoped: $STRIPE_CATALOG_SCOPED)"
+          # The runtime is the source of truth for Stripe catalog and webhook
+          # readiness. GitHub variables are deployment inputs and can be stale
+          # after an out-of-band Stripe configuration change.
+          jq -e '
+            (.stripe.configured == true) and
+            (.stripe.catalog_scope_configured == true) and
+            (.stripe.webhooks_configured == true) and
+            (.stripe.charges_enabled == true) and
+            (.stripe.operational_checks.product == "PASS") and
+            (.stripe.operational_checks.price == "PASS") and
+            (.stripe.operational_checks.meter == "PASS") and
+            (.stripe.operational_checks.webhook == "PASS")
+          ' /tmp/billing-status.json >/dev/null
+          echo "Stripe runtime readiness verified (deployment input source: $STRIPE_SOURCE)."
 
           # Enforcement readiness must reflect the storage this deployment
           # actually arranged, not an attestation someone set by hand.
