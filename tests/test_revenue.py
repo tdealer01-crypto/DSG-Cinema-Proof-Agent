@@ -425,6 +425,50 @@ def test_supabase_database_url_requires_server_credentials():
         validate_database_url("postgresql://db.example/dsg?sslmode=require")
 
 
+def test_tls_is_enforced_by_the_connection_not_by_the_written_uri():
+    """A URI that omits sslmode is opened with require, not refused."""
+    from revenue.postgres import tls_mode_for, validate_database_url
+
+    plain = "postgresql://postgres.project:secret@aws-1.pooler.supabase.com:6543/postgres"
+    assert validate_database_url(plain) == plain
+    assert tls_mode_for(plain) == "require"
+
+    # A URI that already states a strong mode is left alone, so verify-full is
+    # never quietly downgraded to require.
+    assert tls_mode_for(plain + "?sslmode=verify-full") is None
+    assert tls_mode_for(plain + "?sslmode=require") is None
+
+
+@pytest.mark.parametrize("mode", ["disable", "allow", "prefer"])
+def test_an_explicit_plaintext_fallback_is_refused(mode):
+    from revenue.postgres import validate_database_url
+
+    with pytest.raises(ValueError, match=f"sslmode={mode}"):
+        validate_database_url(
+            f"postgresql://user:secret@db.example/dsg?sslmode={mode}"
+        )
+
+
+def test_connect_supplies_the_tls_mode_a_uri_left_out(monkeypatch):
+    from revenue import postgres
+
+    captured = {}
+
+    class FakePsycopg:
+        @staticmethod
+        def connect(url, **options):
+            captured.update(url=url, **options)
+            return "connection"
+
+    monkeypatch.setitem(__import__("sys").modules, "psycopg", FakePsycopg)
+    postgres.connect("postgresql://user:secret@db.example:6543/dsg")
+    assert captured["sslmode"] == "require"
+
+    captured.clear()
+    postgres.connect("postgresql://user:secret@db.example:6543/dsg?sslmode=verify-full")
+    assert "sslmode" not in captured, "an explicit strong mode must not be overridden"
+
+
 def test_supabase_connect_does_not_log_database_url(monkeypatch):
     from revenue import postgres
 
@@ -432,8 +476,8 @@ def test_supabase_connect_does_not_log_database_url(monkeypatch):
 
     class FakePsycopg:
         @staticmethod
-        def connect(url, autocommit, prepare_threshold):
-            captured.update(url=url, autocommit=autocommit, prepare_threshold=prepare_threshold)
+        def connect(url, **options):
+            captured.update(url=url, **options)
             return "connection"
 
     monkeypatch.setitem(__import__("sys").modules, "psycopg", FakePsycopg)
