@@ -32,6 +32,7 @@ from .models import (
 from . import mcp as mcp_surface
 from . import service
 from .canonical import utc_now
+from .guarded_store import get_guarded_store
 
 VERIFIED_EXECUTION_SKU = service.VERIFIED_EXECUTION_SKU
 
@@ -101,6 +102,7 @@ async def status() -> dict[str, Any]:
         "engine_version": ENGINE_VERSION,
         "verification_backend": backend,
         "storage": storage,
+        "guarded_mutation_storage": get_guarded_store().summary(),
         "independent_verification": service.INDEPENDENT_VERIFICATION,
         "flow": service.flow_definition(),
         "mcp": {

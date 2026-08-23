@@ -8,6 +8,7 @@ Functions remain separate application boundaries.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from revenue.accounts import Account
@@ -117,6 +118,19 @@ def initialize_schema(connection) -> None:
     connection.commit()
 
 
+def _iso(value: object) -> object:
+    """Render a TIMESTAMPTZ read-back as the ISO-8601 string that was written.
+
+    PostgreSQL hands back a `datetime`, but every hash this system publishes is
+    computed over canonical JSON of the stored record. A `datetime` in that record
+    is not merely a different type — it cannot be encoded at all, so a chain read
+    back from the database could not be re-verified against its own entry hashes.
+    """
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value
+
+
 def _json(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
@@ -160,11 +174,29 @@ def _account_from_row(row: tuple) -> Account:
     data["stripe_paid_amounts_micros"] = {
         str(key): int(value) for key, value in data["stripe_paid_amounts_micros"].items()
     }
+    for name in ("created_at", "updated_at"):
+        data[name] = _iso(data[name])
     return Account(**data)
 
 
 class PostgresLedgerStore:
     """Proof-bound ledger with PostgreSQL row locks and idempotency uniqueness."""
+
+    #: Read order for a ledger row. `_entry` depends on it, so both live together.
+    _LEDGER_COLUMNS = (
+        "sequence, period, account_id, channel, sku, quantity, units_before, "
+        "unit_price_micros, amount_micros, proof_hash, context_hash, idempotency_key, "
+        "recorded_at, previous_hash, entry_hash"
+    )
+
+    @staticmethod
+    def _entry(row: tuple):
+        """Build a LedgerEntry whose fields match what was hashed on write."""
+        from revenue.ledger import LedgerEntry
+
+        values = list(row)
+        values[12] = _iso(values[12])  # recorded_at
+        return LedgerEntry(*values)
 
     def __init__(self, database_url: str) -> None:
         self._database_url = validate_database_url(database_url)
@@ -175,16 +207,11 @@ class PostgresLedgerStore:
         return connection
 
     def _rows(self, where: str = "", params: tuple = (), order: str = "ORDER BY sequence"):
-        from revenue.ledger import LedgerEntry
-        columns = (
-            "sequence, period, account_id, channel, sku, quantity, units_before, "
-            "unit_price_micros, amount_micros, proof_hash, context_hash, idempotency_key, "
-            "recorded_at, previous_hash, entry_hash"
-        )
+        columns = self._LEDGER_COLUMNS
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(f"SELECT {columns} FROM dsg_revenue_ledger_entries {where} {order}", params)
             rows = cursor.fetchall()
-        return [LedgerEntry(*row) for row in rows]
+        return [self._entry(row) for row in rows]
 
     def entries(self): return self._rows()
     def size(self) -> int: return len(self._rows())
@@ -242,16 +269,14 @@ class PostgresLedgerStore:
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(%s)", (0x445347,))
             cursor.execute(
-                "SELECT sequence, period, account_id, channel, sku, quantity, units_before, "
-                "unit_price_micros, amount_micros, proof_hash, context_hash, idempotency_key, "
-                "recorded_at, previous_hash, entry_hash FROM dsg_revenue_ledger_entries "
+                f"SELECT {self._LEDGER_COLUMNS} FROM dsg_revenue_ledger_entries "
                 "WHERE idempotency_key = %s",
                 (idempotency_key,),
             )
             duplicate = cursor.fetchone()
             if duplicate:
                 connection.rollback()
-                return LedgerEntry(*duplicate), False
+                return self._entry(duplicate), False
 
             cursor.execute(
                 "SELECT account_id FROM dsg_revenue_accounts WHERE account_id = %s FOR UPDATE",
