@@ -422,7 +422,7 @@ def test_supabase_database_url_requires_server_credentials():
         "postgresql://postgres.project:secret@aws-0.us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
     ).startswith("postgresql://")
     with pytest.raises(ValueError, match="server-side credentials"):
-        validate_database_url("postgresql://db.example/dsg")
+        validate_database_url("postgresql://db.example/dsg?sslmode=require")
 
 
 def test_supabase_connect_does_not_log_database_url(monkeypatch):
@@ -461,7 +461,7 @@ def test_postgres_account_store_uses_parameterized_tenant_queries(monkeypatch):
 
     monkeypatch.setattr("revenue.postgres.connect", lambda _: Connection())
     monkeypatch.setattr("revenue.postgres.initialize_schema", lambda _: None)
-    store = PostgresAccountStore("postgresql://user:secret@db.example/dsg")
+    store = PostgresAccountStore("postgresql://user:secret@db.example/dsg?sslmode=require")
     account = Account(account_id="tenant-a", display_name="Tenant A", key_id="key-a", secret_hash=hash_secret("dsg_key-a_secret"))
     store.import_account(account)
     assert any("VALUES (%s" in statement and params[0] == "tenant-a" for statement, params in statements)

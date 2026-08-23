@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS dsg_revenue_accounts (
 );
 
 CREATE TABLE IF NOT EXISTS dsg_revenue_ledger_entries (
-    sequence BIGSERIAL PRIMARY KEY,
+    sequence BIGINT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES dsg_revenue_accounts(account_id),
     channel TEXT NOT NULL,
     sku TEXT NOT NULL,
@@ -80,6 +80,9 @@ def validate_database_url(value: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"postgres", "postgresql"}:
         raise ValueError("DSG_REVENUE_DATABASE_URL must be a PostgreSQL URI")
+    query = dict(item.split("=", 1) for item in parsed.query.split("&") if "=" in item)
+    if query.get("sslmode") not in {"require", "verify-ca", "verify-full"}:
+        raise ValueError("DSG_REVENUE_DATABASE_URL must enforce TLS with sslmode=require")
     if not parsed.hostname or not parsed.path or parsed.path == "/":
         raise ValueError("DSG_REVENUE_DATABASE_URL must include host and database")
     if not parsed.username or parsed.password is None:
@@ -232,6 +235,7 @@ class PostgresLedgerStore:
             raise ValueError("quantity must be at least 1")
         recorded = recorded_at or utc_now()
         with self._connection() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (0x445347,))
             cursor.execute(
                 "SELECT sequence, period, account_id, channel, sku, quantity, units_before, "
                 "unit_price_micros, amount_micros, proof_hash, context_hash, idempotency_key, "
@@ -286,12 +290,12 @@ class PostgresLedgerStore:
             entry = LedgerEntry(**body, entry_hash=compute_entry_hash(body))
             cursor.execute(
                 "INSERT INTO dsg_revenue_ledger_entries "
-                "(account_id, channel, sku, period, quantity, units_before, unit_price_micros, "
+                "(sequence, account_id, channel, sku, period, quantity, units_before, unit_price_micros, "
                 "amount_micros, context_hash, proof_hash, idempotency_key, previous_hash, "
                 "entry_hash, recorded_at) VALUES "
-                "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
-                    account_id, channel, sku, period, quantity, units_before,
+                    sequence, account_id, channel, sku, period, quantity, units_before,
                     unit_price_micros, amount_micros, context_hash, proof_hash,
                     idempotency_key, previous_hash, entry.entry_hash, recorded,
                 ),
@@ -335,6 +339,17 @@ class PostgresAccountStore:
             row = cursor.fetchone()
         return _account_from_row(row) if row else None
 
+    def issue(self, *, display_name: str, plan: str = "free", channel: str = "api", mode: str = "live", stripe_customer_id=None, unit_price_micros=None, hard_cap_units=None, activation_ref=None):
+        import secrets
+        from revenue.accounts import Account, hash_secret
+        from revenue.pricing import get_plan
+        get_plan(plan)
+        if mode not in {"live", "test"}: raise ValueError("mode must be live or test")
+        key_id, secret = secrets.token_hex(8), secrets.token_hex(24)
+        account = Account(account_id=f"acct_dsg_{secrets.token_hex(8)}", display_name=display_name, plan=plan, channel=channel, key_id=key_id, secret_hash=hash_secret(secret), mode=mode, stripe_customer_id=stripe_customer_id, unit_price_micros=unit_price_micros, hard_cap_units=hard_cap_units, activation_ref=activation_ref)
+        self.import_account(account)
+        return account, f"dsg_{mode}_{key_id}_{secret}"
+
     def all(self) -> list[Account]:
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(f"SELECT {_ACCOUNT_COLUMNS} FROM dsg_revenue_accounts ORDER BY account_id")
@@ -371,16 +386,20 @@ class PostgresAccountStore:
         return updated
 
     def authenticate(self, api_key: str) -> Account | None:
-        if not api_key.startswith("dsg_") or "_" not in api_key[4:]:
-            return None
-        key_id = api_key.split("_", 2)[1]
-        from revenue.accounts import hash_secret
+        from revenue.accounts import KEY_PATTERN, hash_secret
+        import hmac
 
+        match = KEY_PATTERN.match((api_key or "").strip())
+        if not match:
+            return None
+        mode, key_id, secret = match.groups()
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(
-                f"SELECT {_ACCOUNT_COLUMNS} FROM dsg_revenue_accounts "
-                "WHERE key_id = %s AND secret_hash = %s",
-                (key_id, hash_secret(api_key)),
+                f"SELECT {_ACCOUNT_COLUMNS} FROM dsg_revenue_accounts WHERE key_id = %s",
+                (key_id,),
             )
             row = cursor.fetchone()
-        return _account_from_row(row) if row else None
+        account = _account_from_row(row) if row else None
+        if account is None or account.mode != mode:
+            return None
+        return account if hmac.compare_digest(account.secret_hash, hash_secret(secret)) else None
