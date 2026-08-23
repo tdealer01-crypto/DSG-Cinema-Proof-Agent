@@ -60,6 +60,43 @@ version silently dropped:
 | `evidence_hash` recomputed from that read-back matches | PASS — `f46784c2…0ba3e9d` |
 | `output_sha256`, `started_at`, `finished_at` are stored | PASS |
 
+## Third run — the migration applied by the deployment path
+
+The first two runs drove SQL through the Supabase API from a container that had
+no PostgreSQL URI. `.github/workflows/apply-guarded-migration.yml` closes that
+gap: the URI is a `production` environment secret, so only a workflow run can
+reach it, and `scripts/apply_guarded_migration.py` bootstraps the schema, applies
+0002, and then reports what the database actually holds.
+
+Four attempts were needed, and each stopped before touching the database:
+
+| Attempt | Stopped at | Fix |
+|---|---|---|
+| 1 | the secret read back empty | the job has to name `environment: production` |
+| 2 | `sslmode` was not written into the URI | enforce TLS on the connection instead of validating the string |
+| 3 | prepared statements against the pooler on port 6543 | disable them; a pooled transaction lands on another backend |
+| 4 | — | applied |
+
+The fourth run reported the live schema and its own verdict:
+
+```
+OK: schema matches what this runtime writes
+```
+
+22 columns, and the four constraints this feature depends on, read back from the
+database rather than asserted:
+
+```
+PRIMARY KEY (evidence_id)
+FOREIGN KEY (tenant_id) REFERENCES dsg_revenue_accounts(account_id)
+UNIQUE (tenant_id, idempotency_key)
+CHECK (char_length(label) >= 1 AND char_length(label) <= 200)
+```
+
+`parameters` and `outputs` came back as `text`. The script fails the run if they
+are `jsonb`, because a payload that reads back normalised cannot reproduce its own
+`evidence_hash`.
+
 ## Cleanup
 
 Both runs' test tenants (`acct_dsg_live_…`, `acct_dsg_other_…`) and every guarded

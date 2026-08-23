@@ -15,9 +15,6 @@ on:
           the real revenue tables. Off by default.
         type: boolean
         default: false
-  push:
-    branches:
-      - claude/mutation-execution-impl-ys9vux
 
 concurrency:
   group: guarded-migration
@@ -55,5 +52,5 @@ jobs:
 
       - name: Live guarded mutation test
         # Opt-in only: this one writes throwaway rows to the real revenue tables.
-        if: github.event_name == 'workflow_dispatch' && inputs.run_live_test
+        if: inputs.run_live_test
         run: python scripts/live_supabase_mutation_test.py
