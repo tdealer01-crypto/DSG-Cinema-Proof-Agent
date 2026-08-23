@@ -477,6 +477,68 @@ def test_postgres_database_url_activates_store_contract(monkeypatch):
     assert engine.enforce is True
 
 
+def test_postgres_ledger_read_back_keeps_the_hashed_timestamp_format():
+    """A TIMESTAMPTZ read-back must reproduce the string the entry hash covers."""
+    from datetime import datetime, timezone
+
+    from revenue.ledger import compute_entry_hash
+    from revenue.postgres import PostgresLedgerStore
+
+    body = {
+        "sequence": 0,
+        "period": "2026-08",
+        "account_id": "tenant-a",
+        "channel": "api",
+        "sku": "verified_execution",
+        "quantity": 1,
+        "units_before": 0,
+        "unit_price_micros": 1000,
+        "amount_micros": 1000,
+        "proof_hash": "p" * 64,
+        "context_hash": "c" * 64,
+        "idempotency_key": "key-1",
+        "recorded_at": "2026-08-23T11:22:33.123456Z",
+        "prev_hash": "0" * 64,
+    }
+    entry_hash = compute_entry_hash(body)
+    row = (
+        body["sequence"], body["period"], body["account_id"], body["channel"], body["sku"],
+        body["quantity"], body["units_before"], body["unit_price_micros"], body["amount_micros"],
+        body["proof_hash"], body["context_hash"], body["idempotency_key"],
+        datetime(2026, 8, 23, 11, 22, 33, 123456, tzinfo=timezone.utc),
+        body["prev_hash"], entry_hash,
+    )
+
+    entry = PostgresLedgerStore._entry(row)
+
+    assert entry.recorded_at == "2026-08-23T11:22:33.123456Z"
+    assert compute_entry_hash(entry.commitment()) == entry.entry_hash
+
+
+def test_postgres_account_read_back_keeps_timestamps_as_strings():
+    from datetime import datetime, timezone
+
+    from revenue.accounts import hash_secret
+    from revenue.postgres import _account_from_row
+
+    values = {
+        "account_id": "tenant-a", "display_name": "Tenant A", "plan": "free",
+        "status": "active", "channel": "api", "key_id": "key-a",
+        "secret_hash": hash_secret("dsg_key-a_secret"), "mode": "live",
+        "stripe_customer_id": None, "stripe_subscription_id": None, "payment_linked": False,
+        "stripe_paid_amounts_micros": {}, "stripe_paid_invoice_ids": [],
+        "stripe_processed_event_ids": [], "stripe_field_event_created": {},
+        "activation_ref": None, "unit_price_micros": None, "hard_cap_units": None,
+        "created_at": datetime(2026, 8, 23, 11, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2026, 8, 23, 11, 30, 0, 500000, tzinfo=timezone.utc),
+    }
+    account = _account_from_row(tuple(values.values()))
+
+    assert account.created_at == "2026-08-23T11:00:00Z"
+    assert account.updated_at == "2026-08-23T11:30:00.500000Z"
+    json.dumps(account.to_dict())  # the account must stay JSON-serialisable
+
+
 def test_atomic_append_prevents_two_pre_authorized_requests_crossing_a_cap(engine):
     account, api_key = engine.accounts.issue(
         display_name="Acme",
