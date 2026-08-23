@@ -66,7 +66,7 @@ jobs:
       CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_ID }}
       CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_URL }}
       # GitHub App integration for marketplace listing and API access.
-      CONFIGURED_GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+      CONFIGURED_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DSG_GITHUB_APP_PRIVATE_KEY }}
       # Durable revenue storage. Enforcement stays refused until the ledger and
       # account registry survive a restart and have a single writer.
       REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
