@@ -432,13 +432,16 @@ def test_supabase_connect_does_not_log_database_url(monkeypatch):
 
     class FakePsycopg:
         @staticmethod
-        def connect(url, autocommit):
-            captured.update(url=url, autocommit=autocommit)
+        def connect(url, autocommit, prepare_threshold):
+            captured.update(url=url, autocommit=autocommit, prepare_threshold=prepare_threshold)
             return "connection"
 
     monkeypatch.setitem(__import__("sys").modules, "psycopg", FakePsycopg)
     assert postgres.connect("postgresql://user:secret@db.example/dsg?sslmode=require") == "connection"
     assert captured["autocommit"] is False
+    # Supabase's transaction-mode pooler gives the next transaction another backend,
+    # which would not know a statement this connection had prepared.
+    assert captured["prepare_threshold"] is None
 
 
 def test_postgres_account_store_uses_parameterized_tenant_queries(monkeypatch):

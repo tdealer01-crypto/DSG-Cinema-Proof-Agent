@@ -92,13 +92,21 @@ def validate_database_url(value: str) -> str:
 
 
 def connect(database_url: str):
-    """Open a TLS-required PostgreSQL/Supabase connection without logging its URI."""
+    """Open a TLS-required PostgreSQL/Supabase connection without logging its URI.
+
+    Prepared statements are disabled. psycopg promotes a repeated query to a
+    server-side prepared statement after a few executions, and Supabase's shared
+    pooler in transaction mode (port 6543) hands the next transaction a different
+    backend, which then fails on a statement it has never seen. Every write here is
+    a short transaction, so the saved parse time is worth less than working against
+    a pooled connection.
+    """
     validated = validate_database_url(database_url)
     try:
         import psycopg
     except ImportError as error:  # pragma: no cover - dependency installation contract
         raise RuntimeError("psycopg is required for PostgreSQL revenue storage") from error
-    return psycopg.connect(validated, autocommit=False)
+    return psycopg.connect(validated, autocommit=False, prepare_threshold=None)
 
 
 def initialize_schema(connection) -> None:
