@@ -9,9 +9,12 @@ on:
   workflow_dispatch:
     inputs:
       run_live_test:
-        description: Run the live guarded mutation test after migrating
+        description: >-
+          Also run the live guarded mutation test. It creates two throwaway
+          tenants and their evidence rows and deletes them again, so it writes to
+          the real revenue tables. Off by default.
         type: boolean
-        default: true
+        default: false
   push:
     branches:
       - claude/mutation-execution-impl-ys9vux
@@ -23,6 +26,9 @@ concurrency:
 jobs:
   migrate:
     runs-on: ubuntu-latest
+    # The database URI is an environment secret, so the job has to name the
+    # environment to reach it — the same one the other revenue workflows use.
+    environment: production
     env:
       DSG_REVENUE_DATABASE_URL: ${{ secrets.DSG_REVENUE_DATABASE_URL }}
     steps:
@@ -48,5 +54,6 @@ jobs:
         run: python scripts/apply_guarded_migration.py
 
       - name: Live guarded mutation test
-        if: github.event_name == 'push' || inputs.run_live_test
+        # Opt-in only: this one writes throwaway rows to the real revenue tables.
+        if: github.event_name == 'workflow_dispatch' && inputs.run_live_test
         run: python scripts/live_supabase_mutation_test.py
