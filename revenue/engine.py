@@ -27,6 +27,7 @@ from .ledger import (
     billing_period,
     verify_chain,
 )
+from .postgres import PostgresAccountStore, PostgresLedgerStore
 from .pricing import (
     Plan,
     get_plan,
@@ -138,8 +139,13 @@ class RevenueEngine:
     @classmethod
     def from_env(cls, env: Optional[dict] = None) -> "RevenueEngine":
         source = env if env is not None else os.environ
-        accounts = AccountStore(source.get("DSG_REVENUE_ACCOUNT_STORE") or None)
-        ledger = LedgerStore(source.get("DSG_REVENUE_LEDGER_STORE") or None)
+        database_url = (source.get("DSG_REVENUE_DATABASE_URL") or "").strip()
+        if database_url:
+            accounts = PostgresAccountStore(database_url)
+            ledger = PostgresLedgerStore(database_url)
+        else:
+            accounts = AccountStore(source.get("DSG_REVENUE_ACCOUNT_STORE") or None)
+            ledger = LedgerStore(source.get("DSG_REVENUE_LEDGER_STORE") or None)
 
         bootstrap = (source.get("DSG_REVENUE_ACCOUNTS") or "").strip()
         if bootstrap:
@@ -158,15 +164,18 @@ class RevenueEngine:
         single_writer = (
             source.get("DSG_REVENUE_SINGLE_WRITER") or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
-        blockers: list[str] = []
-        if not source.get("DSG_REVENUE_ACCOUNT_STORE"):
-            blockers.append("DSG_REVENUE_ACCOUNT_STORE is not configured")
-        if not source.get("DSG_REVENUE_LEDGER_STORE"):
-            blockers.append("DSG_REVENUE_LEDGER_STORE is not configured")
-        if not durable_attested:
-            blockers.append("durable revenue storage is not attested")
-        if not single_writer:
-            blockers.append("single-writer revenue execution is not attested")
+        if database_url:
+            blockers: list[str] = []
+        else:
+            blockers = []
+            if not source.get("DSG_REVENUE_ACCOUNT_STORE"):
+                blockers.append("DSG_REVENUE_ACCOUNT_STORE is not configured")
+            if not source.get("DSG_REVENUE_LEDGER_STORE"):
+                blockers.append("DSG_REVENUE_LEDGER_STORE is not configured")
+            if not durable_attested:
+                blockers.append("durable revenue storage is not attested")
+            if not single_writer:
+                blockers.append("single-writer revenue execution is not attested")
 
         return cls(
             accounts=accounts,
