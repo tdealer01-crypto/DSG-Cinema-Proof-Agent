@@ -64,7 +64,7 @@ jobs:
         run: |
           jq -e '.product.receipt_version == "dsg-proof-receipt-1.0.0"' marketplace/launch-manifest.json >/dev/null
           jq -e '.product.policy_version == "dsg-verified-execution-1.0.0"' marketplace/launch-manifest.json >/dev/null
-          jq -e '.product.checkout_status == "NOT_VERIFIED_NOT_LINKED"' marketplace/launch-manifest.json >/dev/null
+          jq -e '.product.checkout_status == "LINKED"' marketplace/launch-manifest.json >/dev/null
           jq -e '[.channels[].channel] | length == 7' marketplace/launch-manifest.json >/dev/null
 
       - name: Validate the revenue automation claims

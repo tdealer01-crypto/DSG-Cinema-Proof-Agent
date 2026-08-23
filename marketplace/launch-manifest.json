@@ -8,7 +8,7 @@
     "public_landing": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
     "receipt_version": "dsg-proof-receipt-1.0.0",
     "policy_version": "dsg-verified-execution-1.0.0",
-    "checkout_status": "LINKED_VERIFIED",
+    "checkout_status": "LINKED",
     "production_verified_at": "2026-08-23",
     "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
     "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
