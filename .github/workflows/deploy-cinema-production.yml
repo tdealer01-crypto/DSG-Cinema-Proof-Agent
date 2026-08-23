@@ -238,15 +238,11 @@ jobs:
               --secret-name solver-secret --query value --output tsv 2>/dev/null || true)
 
             Z3_SECRET_ARGS=("solver-secret=$Z3_SECRET")
+            # The shared credential is stable and supplied by the production
+            # environment. Do not retain a previous per-deployment value: accepting
+            # it can leave old revisions healthy and serving traffic indefinitely.
             Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET="
-            if [[ -n "$PREVIOUS_Z3_SECRET" && "$PREVIOUS_Z3_SECRET" != "$Z3_SECRET" ]]; then
-              echo "::add-mask::$PREVIOUS_Z3_SECRET"
-              Z3_SECRET_ARGS+=("solver-previous-secret=$PREVIOUS_Z3_SECRET")
-              Z3_ROTATION_ENV="DSG_SOLVER_PREVIOUS_SECRET=secretref:solver-previous-secret"
-              echo 'ROTATION_WINDOW_OPEN=1' >> "$GITHUB_ENV"
-            else
-              echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
-            fi
+            echo 'ROTATION_WINDOW_OPEN=0' >> "$GITHUB_ENV"
 
             retry az containerapp identity assign --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
             retry az containerapp registry set --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
@@ -254,6 +250,7 @@ jobs:
             retry az containerapp update \
               --resource-group "$RESOURCE_GROUP" --name "$Z3_APP" \
               --image "$Z3_IMAGE_REF" \
+              --revision-suffix "z3-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}" \
               --set-env-vars DSG_SOLVER_SHARED_SECRET=secretref:solver-secret "$Z3_ROTATION_ENV" Z3_DETERMINISTIC_SEED=42 Z3_TIMEOUT_MS=30000 PORT=8080 \
               --output none
           else
@@ -432,6 +429,7 @@ jobs:
             retry az containerapp update \
               --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
               --image "$CINEMA_IMAGE_REF" \
+              --revision-suffix "cinema-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}" \
               --set-env-vars "${CINEMA_ENV_ARGS[@]}" \
               --min-replicas 1 --max-replicas "$CINEMA_MAX_REPLICAS" \
               --output none
