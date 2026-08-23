@@ -194,7 +194,9 @@ def test_production_deployments_have_one_coordinated_owner():
     assert "DSG_SOLVER_SHARED_SECRET is required" in cinema
     assert "--revision-suffix \"z3-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}\"" in cinema
     assert "--revision-suffix \"cinema-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}\"" in cinema
-    assert 'Z3_SECRET_ARGS+=("solver-previous-secret=' not in cinema
+    assert 'Z3_SECRET_ARGS+=("solver-previous-secret=' in cinema
+    assert "NOT_VERIFIED_NOT_LINKED" in cinema
+    assert ".stripe.operational_checks.webhook == \"PASS\"" in cinema
     assert "Z3_SECRET=$(openssl rand -hex 32)" not in cinema
     assert "  push:\n    branches: [main]" not in z3
     assert "deploy-cinema-production.yml" in z3
