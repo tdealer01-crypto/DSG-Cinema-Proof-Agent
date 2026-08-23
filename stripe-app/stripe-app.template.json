@@ -4,19 +4,13 @@
   "name": "DSG Governance Gate",
   "version": "2.7.0",
   "icon": "./icon.png",
-  "description": "DSG Governance Gate shows ALLOW, REVIEW, or BLOCK decisions directly in Stripe payment detail views. The current transaction context is sent to the Cinema backend, which maps it to a bounded policy-decision QUBO and uses the server-side Z3 verifier to prove the global optimum. If the context or proof cannot be verified, the app falls back to REVIEW.",
+  "description": "Real-time proof verification for Stripe transactions. Verify payment constraints with deterministic formal proofs before charges complete. Supports MCP agent routing and team subscriptions.",
   "shortDescription": "Exact Z3-verified policy decisions inside Stripe payment views",
   "documentationUrl": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/stripe-app/README.md",
   "websiteUrl": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
   "supportEmail": "support@dsg.pics",
   "ui_extension": {
-    "views": [
-      {
-        "name": "payment.detail",
-        "title": "DSG Governance Gate",
-        "description": "A familiar Stripe-native decision summary with exact Z3 proof status"
-      }
-    ],
+    "views": [],
     "content_security_policy": {
       "connect-src": [
         "__CINEMA_API_BASE__/"
@@ -59,6 +53,25 @@
       "description": "Send only the transaction fields required for deterministic policy verification to the Cinema backend."
     }
   ],
+  "oauth": {
+    "redirect_urls": ["https://dsg.pics/auth/stripe/callback"]
+  },
+  "marketing": {
+    "feature_images": [
+      {
+        "url": "https://dsg.pics/images/stripe-marketplace/proof-verification-1600x900.png",
+        "alt_text": "Deterministic proof verification in payment flow"
+      },
+      {
+        "url": "https://dsg.pics/images/stripe-marketplace/team-billing-1600x900.png",
+        "alt_text": "Team subscriptions with proof-based metering"
+      },
+      {
+        "url": "https://dsg.pics/images/stripe-marketplace/governance-dashboard-1600x900.png",
+        "alt_text": "Governance dashboard for proof auditing"
+      }
+    ]
+  },
   "distribution_type": "public",
   "sandbox_install_compatible": true
 }
