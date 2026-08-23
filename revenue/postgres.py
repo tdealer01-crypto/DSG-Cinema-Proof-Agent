@@ -101,9 +101,14 @@ def connect(database_url: str):
 
 
 def initialize_schema(connection) -> None:
-    """Apply the initial idempotent schema inside one database transaction."""
+    """Apply the initial idempotent schema under a transaction advisory lock."""
     with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", (0x4453474D,))
         cursor.execute(SCHEMA_SQL)
+        cursor.execute("SELECT COALESCE(MAX(version), 0) FROM dsg_revenue_schema_migrations")
+        current = int(cursor.fetchone()[0])
+        if current > SCHEMA_VERSION:
+            raise RuntimeError("database schema is newer than this DSG runtime")
         cursor.execute(
             "INSERT INTO dsg_revenue_schema_migrations (version) VALUES (%s) "
             "ON CONFLICT (version) DO NOTHING",
@@ -384,6 +389,50 @@ class PostgresAccountStore:
         updated = Account(**data)
         self.import_account(updated)
         return updated
+
+    def apply_stripe_event(self, **kwargs):
+        """Apply webhook idempotency/order changes while locking the account row."""
+        customer_id = kwargs["customer_id"]
+        with self._connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT {_ACCOUNT_COLUMNS} FROM dsg_revenue_accounts "
+                "WHERE stripe_customer_id = %s FOR UPDATE",
+                (customer_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                connection.rollback(); return None, "unknown_customer"
+            account = _account_from_row(row)
+            event_id = kwargs["event_id"]
+            if event_id in account.stripe_processed_event_ids:
+                connection.rollback(); return account, "duplicate"
+            invoice = kwargs.get("paid_invoice_id")
+            if invoice and invoice in account.stripe_paid_invoice_ids:
+                connection.rollback(); return account, "duplicate_invoice"
+            subscription_id = kwargs["subscription_id"]
+            if account.stripe_subscription_id and account.stripe_subscription_id != subscription_id:
+                connection.rollback(); return account, "subscription_mismatch"
+            if not account.stripe_subscription_id and not kwargs["allow_subscription_binding"]:
+                connection.rollback(); return account, "subscription_not_bound"
+            changes = dict(kwargs["changes"])
+            if not account.stripe_subscription_id:
+                changes.setdefault("stripe_subscription_id", subscription_id)
+            paid = dict(account.stripe_paid_amounts_micros)
+            period, amount = kwargs.get("paid_period"), kwargs.get("paid_amount_micros")
+            if period and amount is not None:
+                if amount < 0: raise ValueError("paid Stripe amount must not be negative")
+                paid[period] = paid.get(period, 0) + amount
+            changes.update(
+                stripe_processed_event_ids=[*account.stripe_processed_event_ids, event_id],
+                stripe_paid_invoice_ids=[*account.stripe_paid_invoice_ids, *([invoice] if invoice else [])],
+                stripe_paid_amounts_micros=paid,
+            )
+            data = account.to_dict(); data.update(changes)
+            updated = Account(**data)
+            placeholders = ", ".join(["%s"] * 20)
+            updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in _ACCOUNT_COLUMNS.split(", ") if c not in {"account_id", "created_at"})
+            cursor.execute(f"INSERT INTO dsg_revenue_accounts ({_ACCOUNT_COLUMNS}) VALUES ({placeholders}) ON CONFLICT (account_id) DO UPDATE SET {updates}", _account_values(updated))
+            connection.commit(); return updated, "applied"
 
     def authenticate(self, api_key: str) -> Account | None:
         from revenue.accounts import KEY_PATTERN, hash_secret
