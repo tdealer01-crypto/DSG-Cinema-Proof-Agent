@@ -88,6 +88,9 @@ POST /api/v1/control/preflight              ALLOW / WAITING_PERMISSION / BLOCK
                                             ↓
                                   provision if needed, then execute exact granted step
                                             ↓
+POST /api/v1/control/mutations              guarded mutation: ALLOW writes one
+                                            tenant-bound evidence row and answers
+                                            with the row read back from the database
 POST /api/v1/executions                     record observed reality for audit
 POST /api/v1/executions/{id}/evidence       submit artifacts; DSG hashes content itself
 POST /api/v1/executions/{id}/verify         recompute everything + exact Z3 proof
@@ -107,6 +110,34 @@ perform a proposed action.
 happened. If an executor ever violates a prior `BLOCK`, the raw trace is preserved
 so the audit trail can prove the violation. Discarding that record would destroy
 evidence; storing it does **not** retroactively authorize the action.
+
+### Guarded mutation execution
+
+`POST /api/v1/control/mutations` is the state-changing counterpart to preflight. It
+re-runs the same Decision Core check and, only on `ALLOW`, writes one row of
+`dsg_guarded_evidence` and reads it back **inside the same transaction**. The
+response body is that read-back, plus the `evidence_hash` recomputed from it — not
+an echo of the request and not a value the process kept in memory.
+
+- Every row carries `tenant_id`, the authenticated revenue account. There is no
+  anonymous path: a request without a usable `X-DSG-API-Key` is `401 UNKNOWN_KEY`.
+- `(tenant_id, idempotency_key)` is unique **in the database**. A retry of the same
+  action returns the stored row with `created: false` (HTTP 200); a first write is
+  HTTP 201.
+- The same key presented for a *different* action is `409 IDEMPOTENCY_KEY_CONFLICT`.
+  Serving the stored row there would answer a retry that is not a retry.
+- `WAITING_PERMISSION` and `BLOCK` write nothing and return HTTP 200 with
+  `executed: false`, so an unauthorized mutation never leaves a record that looks
+  like an authorized one.
+- `GET /api/v1/control/mutations/{evidence_id}` reads a row back. A row belonging to
+  another tenant is indistinguishable from a row that does not exist.
+
+Storage is PostgreSQL/Supabase when `DSG_REVENUE_DATABASE_URL` is set — the same
+variable that selects the PostgreSQL revenue stores, so `tenant_id` carries a real
+foreign key to `dsg_revenue_accounts`. Without it the store is process memory, which
+forgets idempotency across a restart; `GET /api/v1/status` reports which is live
+under `guarded_mutation_storage`, and a deployment that requests paid enforcement on
+a memory-backed store is refused with `503 GUARDED_STORAGE_NOT_READY`.
 
 ### Approval names exactly what was read
 
@@ -203,6 +234,11 @@ The signed APK itself remains a release/workflow artifact rather than source cod
   enabled. Transport/account authentication is separate from plan authorization.
 - The Android bridge can use the trusted server-side Cinema bearer credential or a
   DSG API key; credentials remain server-side and are never returned to the APK.
+- `DSG_REVENUE_DATABASE_URL` selects PostgreSQL/Supabase for the revenue stores and
+  for guarded mutation evidence (`dsg_guarded_evidence`). Existing databases that
+  already carry the earlier evidence skeleton run
+  `scripts/sql/0002_extend_dsg_guarded_evidence.sql` once; a fresh database is
+  created in the final shape by the application's own bootstrap.
 - `DSG_V1_STORE_PATH` selects the v1 record store. Without durable multi-replica
   storage, `GET /api/v1/status` exposes the storage mode so callers do not have to
   guess durability.
@@ -227,6 +263,9 @@ enforces that behavior.
 | `OUT_OF_PLAN_ACTION` | action or target differs from approved scope |
 | `PARAMETER_MISMATCH` / `UNDECLARED_PARAMETER` | proposed parameters differ from approved scope |
 | `EVIDENCE_HASH_MISMATCH` / `EVIDENCE_DECODE_FAILED` | evidence misdescribes its bytes |
+| `IDEMPOTENCY_KEY_CONFLICT` | the key is already bound to a different action_hash |
+| `MUTATION_NOT_FOUND` | no guarded evidence row with that id for this tenant |
+| `GUARDED_STORAGE_NOT_READY` | paid enforcement requested while guarded evidence has no durable store |
 | `BACKEND_UNAVAILABLE` / `VERIFICATION_NOT_PROVED` | fail-closed proof path; no verified receipt |
 
 The essential invariant is simple: **DSG opens the path for work already approved,

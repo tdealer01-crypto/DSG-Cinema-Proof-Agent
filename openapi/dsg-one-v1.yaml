@@ -173,6 +173,86 @@ paths:
         '422':
           $ref: '#/components/responses/AssertedVerdict'
 
+  /api/v1/control/mutations:
+    post:
+      tags: [control]
+      operationId: executeGuardedMutation
+      summary: Execute one plan-authorized mutation and record its guarded evidence
+      description: |
+        The state-changing counterpart to `preflight`. DSG re-runs the same Decision
+        Core check and, only on `ALLOW`, performs the mutation: one guarded evidence
+        row bound to the authenticated tenant, written and read back inside a single
+        transaction. The response carries that read-back — the row storage returned,
+        not an echo of the request — together with the `evidence_hash` recomputed
+        from it.
+
+        `WAITING_PERMISSION` and `BLOCK` write nothing and answer 200 with
+        `executed: false`, so an unauthorized mutation never leaves a record that
+        looks like an authorized one.
+
+        Idempotency is enforced by the database: `(tenant_id, idempotency_key)` is
+        unique. A repeated request for the same action returns the stored row with
+        `created: false` (200); the same key presented for a different action is
+        refused with `IDEMPOTENCY_KEY_CONFLICT` (409) rather than answered with a
+        receipt for work the caller did not do.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuardedMutationRequest'
+      responses:
+        '200':
+          description: |
+            Either a replay of the stored row, or a decision short of ALLOW that
+            executed nothing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardedMutationResult'
+        '201':
+          description: The mutation was executed and a new guarded evidence row exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardedMutationResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/AssertedVerdict'
+        '503':
+          $ref: '#/components/responses/StorageNotReady'
+
+  /api/v1/control/mutations/{evidence_id}:
+    get:
+      tags: [control]
+      operationId: readGuardedMutation
+      summary: Read one guarded evidence row back from storage
+      description: |
+        Returns the stored row for this tenant only. A row belonging to another
+        tenant is indistinguishable from a row that does not exist.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: '#/components/parameters/EvidenceId'
+      responses:
+        '200':
+          description: The guarded evidence row, with its digest recomputed on read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardedMutationReadBack'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/mobile/client-contract:
     get:
       tags: [mobile]
@@ -573,6 +653,14 @@ components:
       schema:
         type: string
         maxLength: 64
+    EvidenceId:
+      name: evidence_id
+      in: path
+      required: true
+      description: Identifier of a guarded evidence row.
+      schema:
+        type: string
+        maxLength: 64
     ExecutionId:
       name: execution_id
       in: path
@@ -609,6 +697,14 @@ components:
             $ref: '#/components/schemas/Error'
     Unauthorized:
       description: Trusted bridge authentication is required.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StorageNotReady:
+      description: |
+        Guarded mutation evidence has no durable store while paid enforcement is
+        requested. No mutation is performed.
       content:
         application/json:
           schema:
@@ -827,6 +923,9 @@ components:
           const: dsg-decision-core
         preflight:
           type: string
+        mutation:
+          type: object
+          additionalProperties: true
         capabilities:
           type: object
           additionalProperties: true
@@ -892,6 +991,205 @@ components:
         trace_id:
           type: [string, 'null']
           maxLength: 128
+
+    GuardedMutationRequest:
+      type: object
+      additionalProperties: false
+      required: [plan_id, agent_identity, action, idempotency_key]
+      properties:
+        plan_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        agent_identity:
+          type: string
+          minLength: 1
+          maxLength: 255
+        action:
+          $ref: '#/components/schemas/ObservedAction'
+        idempotency_key:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:\-]{7,127}$'
+          description: |
+            Unique per tenant. Reusing it for a different action is refused, not
+            replayed.
+        required_capabilities:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/CapabilityRequirement'
+        channel:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: api
+        trace_id:
+          type: [string, 'null']
+          maxLength: 128
+        outputs:
+          type: object
+          maxProperties: 32
+          description: |
+            The executor's own observed result. Opaque data, stored as written and
+            never read as a verdict.
+          additionalProperties:
+            $ref: '#/components/schemas/Scalar'
+
+    GuardedEvidenceRecord:
+      type: object
+      description: One row of `dsg_guarded_evidence`, as storage returned it.
+      required: [evidence_id, tenant_id, idempotency_key, action_hash, evidence_hash]
+      properties:
+        evidence_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          description: The authenticated revenue account this row belongs to.
+        label:
+          type: string
+          maxLength: 200
+          description: Short human-readable name for the row.
+        idempotency_key:
+          type: string
+        action_hash:
+          $ref: '#/components/schemas/Sha256'
+        plan_id:
+          type: string
+        plan_hash:
+          $ref: '#/components/schemas/Sha256'
+        agent_identity:
+          type: string
+        channel:
+          type: string
+        step_id:
+          type: [string, 'null']
+        action:
+          type: string
+        target:
+          type: string
+        parameters:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/Scalar'
+        decision:
+          $ref: '#/components/schemas/ControlDecision'
+        control_hash:
+          $ref: '#/components/schemas/Sha256'
+        mutation_status:
+          type: string
+          enum: [succeeded, failed, skipped]
+        outputs:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/Scalar'
+        evidence_hash:
+          $ref: '#/components/schemas/Sha256'
+        recorded_at:
+          type: string
+
+    GuardedStorage:
+      type: object
+      properties:
+        backend:
+          type: string
+          enum: [postgres, memory]
+        table:
+          type: [string, 'null']
+        durable:
+          type: boolean
+        tenant_bound:
+          type: boolean
+          const: true
+        unique_on:
+          type: array
+          items:
+            type: string
+        read_back_in_write_transaction:
+          type: boolean
+          const: true
+        rows:
+          type: integer
+
+    GuardedIntegrity:
+      type: object
+      properties:
+        source:
+          type: string
+          const: read-back-from-store
+        evidence_hash_recomputed:
+          $ref: '#/components/schemas/Sha256'
+        matches_stored:
+          type: boolean
+        computed_by:
+          type: string
+          const: dsg-guarded-mutation
+
+    GuardedMutationResult:
+      type: object
+      required: [tenant_id, idempotency_key, control, executed]
+      properties:
+        tenant_id:
+          type: string
+        idempotency_key:
+          type: string
+        evidence_id:
+          type: string
+          format: uuid
+        action_hash:
+          $ref: '#/components/schemas/Sha256'
+        control:
+          $ref: '#/components/schemas/ControlDecisionResult'
+        executed:
+          type: boolean
+          description: True only when the Decision Core returned ALLOW.
+        created:
+          type: boolean
+          description: False when an existing row was replayed for this key.
+        replayed:
+          type: boolean
+        observed_evidence:
+          oneOf:
+            - $ref: '#/components/schemas/GuardedEvidenceRecord'
+            - type: 'null'
+        storage:
+          $ref: '#/components/schemas/GuardedStorage'
+        integrity:
+          $ref: '#/components/schemas/GuardedIntegrity'
+        computed_by:
+          type: string
+          const: dsg-guarded-mutation
+        next_step:
+          type: string
+        evaluated_at:
+          type: string
+
+    GuardedMutationReadBack:
+      type: object
+      required: [tenant_id, evidence_id, observed_evidence]
+      properties:
+        tenant_id:
+          type: string
+        evidence_id:
+          type: string
+          format: uuid
+        idempotency_key:
+          type: string
+        action_hash:
+          $ref: '#/components/schemas/Sha256'
+        observed_evidence:
+          $ref: '#/components/schemas/GuardedEvidenceRecord'
+        storage:
+          $ref: '#/components/schemas/GuardedStorage'
+        integrity:
+          $ref: '#/components/schemas/GuardedIntegrity'
+        computed_by:
+          type: string
+          const: dsg-guarded-mutation
+        read_at:
+          type: string
 
     MobileClientIdentity:
       type: object
@@ -1102,6 +1400,8 @@ components:
           type: string
         next_step:
           type: string
+        guarded_mutation_storage:
+          $ref: '#/components/schemas/GuardedStorage'
         independent_verification:
           $ref: '#/components/schemas/IndependentVerification'
 

@@ -63,6 +63,15 @@ async def control_contract() -> dict:
     return {
         "core": "dsg-decision-core",
         "preflight": "POST /api/v1/control/preflight",
+        "mutation": {
+            "execute": "POST /api/v1/control/mutations",
+            "read_back": "GET /api/v1/control/mutations/{mutation_id}",
+            "guarantee": (
+                "an ALLOW decision writes one tenant-bound guarded evidence row and reads it "
+                "back inside the same transaction; the response is that read-back"
+            ),
+            "idempotency": "unique (tenant_id, idempotency_key); the same key must carry the same action_hash",
+        },
         "capabilities": {
             "resolver": "server-side-dsg-capability-broker",
             "known": known_capabilities(),

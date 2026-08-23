@@ -23,6 +23,9 @@ EXECUTION_ALREADY_VERIFIED = "EXECUTION_ALREADY_VERIFIED"
 EVIDENCE_HASH_MISMATCH = "EVIDENCE_HASH_MISMATCH"
 EVIDENCE_DECODE_FAILED = "EVIDENCE_DECODE_FAILED"
 PROOF_NOT_FOUND = "PROOF_NOT_FOUND"
+MUTATION_NOT_FOUND = "MUTATION_NOT_FOUND"
+IDEMPOTENCY_KEY_CONFLICT = "IDEMPOTENCY_KEY_CONFLICT"
+GUARDED_STORAGE_NOT_READY = "GUARDED_STORAGE_NOT_READY"
 
 _CATALOG: dict[str, Remediation] = {
     AGENT_ASSERTED_VERDICT_REJECTED: Remediation(
@@ -131,6 +134,50 @@ _CATALOG: dict[str, Remediation] = {
         next_step="Verify the execution with POST /api/v1/executions/{execution_id}/verify.",
         self_service=True,
         endpoint="POST /api/v1/executions/{execution_id}/verify",
+        docs=DOCS,
+    ),
+    MUTATION_NOT_FOUND: Remediation(
+        code=MUTATION_NOT_FOUND,
+        problem="No guarded mutation exists with that identifier for this tenant.",
+        cause=(
+            "Guarded evidence rows are tenant-bound. The id was never written by this "
+            "tenant, or it belongs to a different one."
+        ),
+        next_step=(
+            "Execute the mutation with POST /api/v1/control/mutations and read back the "
+            "mutation_id it returns, using the same X-DSG-API-Key."
+        ),
+        self_service=True,
+        endpoint="POST /api/v1/control/mutations",
+        docs=DOCS,
+    ),
+    IDEMPOTENCY_KEY_CONFLICT: Remediation(
+        code=IDEMPOTENCY_KEY_CONFLICT,
+        problem="This idempotency key is already bound to a different action.",
+        cause=(
+            "A stored guarded mutation carries this key with another action_hash. Serving "
+            "the stored row would answer a retry that is not a retry."
+        ),
+        next_step=(
+            "Retry the identical action to receive the original record, or use a new "
+            "idempotency_key for the changed action."
+        ),
+        self_service=True,
+        endpoint="POST /api/v1/control/mutations",
+        docs=DOCS,
+    ),
+    GUARDED_STORAGE_NOT_READY: Remediation(
+        code=GUARDED_STORAGE_NOT_READY,
+        problem="Guarded mutation evidence has no durable store.",
+        cause=(
+            "Paid enforcement is requested while guarded evidence would be held in process "
+            "memory, which forgets every idempotency key on restart."
+        ),
+        next_step=(
+            "Configure DSG_REVENUE_DATABASE_URL so guarded evidence is written to "
+            "PostgreSQL/Supabase, then retry."
+        ),
+        self_service=True,
         docs=DOCS,
     ),
 }
