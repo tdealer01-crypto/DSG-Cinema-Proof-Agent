@@ -65,6 +65,8 @@ jobs:
       CONFIGURED_STRIPE_METER_EVENT_NAME: ${{ vars.DSG_STRIPE_METER_EVENT_NAME || 'dsg_verified_execution' }}
       CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_ID: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_ID }}
       CONFIGURED_STRIPE_WEBHOOK_ENDPOINT_URL: ${{ vars.DSG_STRIPE_WEBHOOK_ENDPOINT_URL }}
+      # GitHub App integration for marketplace listing and API access.
+      CONFIGURED_GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
       # Durable revenue storage. Enforcement stays refused until the ledger and
       # account registry survive a restart and have a single writer.
       REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
@@ -403,6 +405,17 @@ jobs:
           echo "STRIPE_CATALOG_SCOPED=$STRIPE_CATALOG_SCOPED" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_SECRET_PROVISIONED=$STRIPE_WEBHOOK_SECRET_PROVISIONED" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
+
+          # GitHub App private key for marketplace API access. Required for the
+          # marketplace webhook callback and OAuth flows. Missing configuration
+          # will not block deployment but will prevent marketplace integration.
+          if [[ -n "$CONFIGURED_GITHUB_APP_PRIVATE_KEY" ]]; then
+            CINEMA_SECRET_ARGS+=("github-app-private-key=$CONFIGURED_GITHUB_APP_PRIVATE_KEY")
+            CINEMA_ENV_ARGS+=(GITHUB_APP_PRIVATE_KEY=secretref:github-app-private-key)
+            echo "GitHub App private key configured ✓"
+          else
+            echo "WARNING: GITHUB_APP_PRIVATE_KEY is not configured; marketplace API access will be unavailable."
+          fi
 
           # Point the stores at the mounted share and attest only what this
           # deployment actually arranged. Single-writer is a property of the
