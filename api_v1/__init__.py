@@ -22,6 +22,7 @@ def install(app) -> None:
     importlib.import_module(f"{__name__}.mobile_control").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
+    importlib.import_module("revenue.stripe_marketplace").install(app)
 
 
 def __getattr__(name: str):  # lazy so importing constants does not pull FastAPI

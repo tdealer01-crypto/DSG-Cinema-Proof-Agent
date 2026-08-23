@@ -30,6 +30,18 @@ if (manifest.includes('tdealer01-crypto-dsg-control-plane') || manifest.includes
   throw new Error('Legacy Control Plane URL detected in generated manifest');
 }
 
+// Stripe fetches every redirect URL during review, so one pointing at a host
+// this build does not serve fails the submission rather than the build.
+const redirectUrls = parsed.oauth?.redirect_urls ?? [];
+if (redirectUrls.length === 0) {
+  throw new Error('Manifest declares no OAuth redirect URL');
+}
+for (const url of redirectUrls) {
+  if (!url.startsWith(`${backend}/`)) {
+    throw new Error(`OAuth redirect URL is not served by this backend: ${url}`);
+  }
+}
+
 await writeFile(manifestPath, `${JSON.stringify(parsed, null, 2)}\n`);
 await writeFile(
   runtimePath,
