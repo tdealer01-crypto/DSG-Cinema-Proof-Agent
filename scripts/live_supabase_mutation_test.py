@@ -39,33 +39,15 @@ def check(name: str, condition: bool, detail: str = "") -> None:
         raise SystemExit(f"live guarded mutation test failed at: {name}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--keep", action="store_true", help="leave the test rows in place")
-    args = parser.parse_args()
-
-    database_url = (os.getenv("DSG_REVENUE_DATABASE_URL") or "").strip()
-    if not database_url:
-        print("DSG_REVENUE_DATABASE_URL is not set; nothing to test against.")
-        return 2
-
-    import cinema_main
-    from api_v1 import guarded_store, service
+def run_checks(client, engine, store, database_url: str, account, other_account, api_key, other_key, suffix) -> dict:
+    """Every check. Raises SystemExit on the first one that does not hold."""
+    from api_v1 import service
     from api_v1.models import ApprovePlanRequest, PlanDocument
-    from revenue import api as billing
-    from revenue.engine import RevenueEngine
     from revenue.postgres import connect
 
-    engine = billing.reset_engine(RevenueEngine.from_env())
-    store = guarded_store.reset_guarded_store(guarded_store.build_guarded_store())
+    headers = {"X-DSG-API-Key": api_key}
     check("postgres guarded store selected", store.backend == "postgres", store.summary()["table"])
     check("guarded store reports itself durable", store.durable is True)
-
-    client = TestClient(cinema_main.app)
-    suffix = uuid.uuid4().hex
-    account, api_key = engine.accounts.issue(display_name=f"Guarded live test {suffix[:8]}")
-    other_account, other_key = engine.accounts.issue(display_name=f"Guarded live other {suffix[:8]}")
-    headers = {"X-DSG-API-Key": api_key}
 
     created_plan = service.create_plan(
         PlanDocument.model_validate(
@@ -126,19 +108,12 @@ def main() -> int:
     check("retry replays instead of writing again", replay.status_code == 200, replay.text)
     check("replayed row is identical", replay.json()["observed_evidence"] == observed)
 
-    changed = dict(body, action=dict(body["action"], target="production/other-app"))
-    conflict = client.post("/api/v1/control/mutations", json=changed, headers=headers)
-    check(
-        "same key for a different action is refused",
-        conflict.status_code in {409, 200},
-        f"HTTP {conflict.status_code}",
-    )
-    if conflict.status_code == 409:
-        check("refusal names the conflict", conflict.json()["error"] == "IDEMPOTENCY_KEY_CONFLICT")
-    else:
-        # An out-of-plan target is blocked before storage is reached, which is also
-        # a correct refusal — just an earlier one.
-        check("out-of-plan action never reached storage", conflict.json()["executed"] is False)
+    # Same key, same approved action, different declared output digest: the action
+    # is unchanged, so this is a retry and must not become a second row.
+    same_action = dict(body, outputs={"revision": "live-2"})
+    again = client.post("/api/v1/control/mutations", json=same_action, headers=headers)
+    check("a differing result does not fork the record", again.status_code == 200, again.text)
+    check("stored outputs are not overwritten", again.json()["observed_evidence"] == observed)
 
     cross = client.get(
         f"/api/v1/control/mutations/{observed['evidence_id']}",
@@ -146,23 +121,70 @@ def main() -> int:
     )
     check("another tenant cannot read the row", cross.status_code == 404)
 
-    mine = client.get(
-        f"/api/v1/control/mutations/{observed['evidence_id']}", headers=headers
-    )
+    unknown = client.get("/api/v1/control/mutations/not-a-uuid", headers=headers)
+    check("a malformed id is a refusal, not a database error", unknown.status_code == 404)
+
+    mine = client.get(f"/api/v1/control/mutations/{observed['evidence_id']}", headers=headers)
     check("owner reads the same row back", mine.json()["observed_evidence"] == observed)
 
-    if not args.keep:
-        with connect(database_url) as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "DELETE FROM dsg_guarded_evidence WHERE tenant_id = ANY(%s)",
-                ([account.account_id, other_account.account_id],),
-            )
-            cursor.execute(
-                "DELETE FROM dsg_revenue_accounts WHERE account_id = ANY(%s)",
-                ([account.account_id, other_account.account_id],),
-            )
-            connection.commit()
-        print("cleaned up test tenants and their guarded evidence")
+    # The other tenant may hold the very same idempotency key.
+    other_body = dict(body)
+    other = client.post(
+        "/api/v1/control/mutations", json=other_body, headers={"X-DSG-API-Key": other_key}
+    )
+    check("a second tenant may reuse the key", other.status_code == 201, other.text)
+    check(
+        "the two rows are distinct",
+        other.json()["observed_evidence"]["evidence_id"] != observed["evidence_id"],
+    )
+    return observed
+
+
+def cleanup(database_url: str, account_ids: list[str]) -> None:
+    from revenue.postgres import connect
+
+    with connect(database_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM dsg_guarded_evidence WHERE tenant_id = ANY(%s)", (account_ids,)
+        )
+        cursor.execute(
+            "DELETE FROM dsg_revenue_accounts WHERE account_id = ANY(%s)", (account_ids,)
+        )
+        connection.commit()
+    print("cleaned up test tenants and their guarded evidence")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--keep", action="store_true", help="leave the test rows in place")
+    args = parser.parse_args()
+
+    database_url = (os.getenv("DSG_REVENUE_DATABASE_URL") or "").strip()
+    if not database_url:
+        print("DSG_REVENUE_DATABASE_URL is not set; nothing to test against.")
+        return 2
+
+    import cinema_main
+    from api_v1 import guarded_store
+    from revenue import api as billing
+    from revenue.engine import RevenueEngine
+
+    engine = billing.reset_engine(RevenueEngine.from_env())
+    store = guarded_store.reset_guarded_store(guarded_store.build_guarded_store())
+    client = TestClient(cinema_main.app)
+
+    suffix = uuid.uuid4().hex
+    account, api_key = engine.accounts.issue(display_name=f"Guarded live test {suffix[:8]}")
+    other_account, other_key = engine.accounts.issue(display_name=f"Guarded live other {suffix[:8]}")
+    tenants = [account.account_id, other_account.account_id]
+
+    try:
+        run_checks(client, engine, store, database_url, account, other_account, api_key, other_key, suffix)
+    finally:
+        # A failed run leaves the most rows behind, so cleanup must not depend on
+        # every check having passed.
+        if not args.keep:
+            cleanup(database_url, tenants)
 
     print(json.dumps({"checks": CHECKS, "table": guarded_store.TABLE}, indent=2))
     return 0

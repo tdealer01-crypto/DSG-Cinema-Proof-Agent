@@ -53,11 +53,14 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     step_id TEXT,
     action TEXT NOT NULL,
     target TEXT NOT NULL,
-    parameters JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    parameters TEXT NOT NULL DEFAULT '{{}}',
     decision TEXT NOT NULL,
     control_hash TEXT NOT NULL,
     mutation_status TEXT NOT NULL,
-    outputs JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    outputs TEXT NOT NULL DEFAULT '{{}}',
+    output_sha256 TEXT,
+    started_at TEXT,
+    finished_at TEXT,
     evidence_hash TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -96,6 +99,9 @@ COLUMNS = (
     "control_hash",
     "mutation_status",
     "outputs",
+    "output_sha256",
+    "started_at",
+    "finished_at",
     "evidence_hash",
     "recorded_at",
 )
@@ -104,6 +110,9 @@ COLUMNS = (
 #: which is what makes the digest reproducible from a row read back later.
 _HASHED = tuple(name for name in COLUMNS if name != "evidence_hash")
 
+#: Held as canonical JSON *text*, not JSONB. JSONB normalises numbers on the way
+#: back out (1e16 returns as an integer), which would make a correctly written row
+#: fail its own digest check. Exactness matters more here than queryability.
 _JSON_COLUMNS = ("parameters", "outputs")
 
 
@@ -161,6 +170,9 @@ def build_record(
     control_hash: str,
     mutation_status: str,
     outputs: dict[str, Any],
+    output_sha256: Optional[str] = None,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
     evidence_id: Optional[str] = None,
     recorded_at: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -183,6 +195,9 @@ def build_record(
         "control_hash": control_hash,
         "mutation_status": mutation_status,
         "outputs": dict(outputs),
+        "output_sha256": output_sha256,
+        "started_at": started_at,
+        "finished_at": finished_at,
         "recorded_at": recorded_at or utc_now(),
     }
     record["evidence_hash"] = evidence_hash(record)
@@ -297,11 +312,17 @@ class PostgresGuardedEvidenceStore:
             created = cursor.rowcount == 1
             # Same transaction, same connection: the endpoint answers with the row
             # the database holds, not with the payload it was handed.
-            cursor.execute(
-                f"SELECT {names} FROM {TABLE} WHERE tenant_id = %s AND idempotency_key = %s",
-                (candidate["tenant_id"], candidate["idempotency_key"]),
-            )
-            row = cursor.fetchone()
+            row = None
+            for _ in range(2):
+                # Read committed: each statement takes a fresh snapshot, so a second
+                # look sees a row a concurrent writer committed a moment ago.
+                cursor.execute(
+                    f"SELECT {names} FROM {TABLE} WHERE tenant_id = %s AND idempotency_key = %s",
+                    (candidate["tenant_id"], candidate["idempotency_key"]),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    break
             if row is None:
                 connection.rollback()
                 raise GuardedEvidenceLost(
@@ -321,6 +342,12 @@ class PostgresGuardedEvidenceStore:
         return observed, created
 
     def get(self, tenant_id: str, evidence_id: str) -> Optional[dict[str, Any]]:
+        try:
+            # evidence_id is a uuid column, so anything else is not a row that
+            # exists — asking the database would only raise a type error.
+            uuid.UUID(evidence_id)
+        except (ValueError, AttributeError, TypeError):
+            return None
         names = ", ".join(COLUMNS)
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(

@@ -21,11 +21,12 @@ with `IDEMPOTENCY_KEY_CONFLICT` instead of silently returning the wrong receipt.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, Response
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from revenue import api as billing
 from revenue.remediation import UNKNOWN_KEY
@@ -35,6 +36,7 @@ from .canonical import canonical_hash, utc_now
 from .capability_broker import CapabilityRequirement
 from .control import UnifiedPreflightRequest, evaluate_unified_preflight
 from .errors import (
+    GUARDED_EVIDENCE_UNREADABLE,
     GUARDED_STORAGE_NOT_READY,
     IDEMPOTENCY_KEY_CONFLICT,
     MUTATION_NOT_FOUND,
@@ -86,6 +88,15 @@ class GuardedMutationRequest(Strict):
             if isinstance(item, str) and len(item) > 512:
                 raise ValueError("output values are at most 512 characters")
         return value
+
+    @model_validator(mode="after")
+    def _values_must_survive_a_round_trip(self) -> "GuardedMutationRequest":
+        """NaN and Infinity have no JSON spelling a digest could be recomputed from."""
+        for label, values in (("outputs", self.outputs), ("parameters", self.action.parameters)):
+            for name, item in values.items():
+                if isinstance(item, float) and not math.isfinite(item):
+                    raise ValueError(f"{label}.{name} must be a finite number")
+        return self
 
 
 def action_hash(
@@ -235,10 +246,21 @@ def execute_guarded_mutation(
         control_hash=control["control_hash"],
         mutation_status=request.action.status,
         outputs=request.outputs,
+        output_sha256=request.action.output_sha256,
+        started_at=request.action.started_at,
+        finished_at=request.action.finished_at,
     )
 
     try:
         record, created = store.record(candidate)
+    except guarded_store.GuardedEvidenceLost as lost:
+        raise ApiError(
+            503,
+            GUARDED_EVIDENCE_UNREADABLE,
+            str(lost),
+            tenant_id=account.account_id,
+            idempotency_key=request.idempotency_key,
+        ) from lost
     except guarded_store.IdempotencyConflict as conflict:
         raise ApiError(
             409,

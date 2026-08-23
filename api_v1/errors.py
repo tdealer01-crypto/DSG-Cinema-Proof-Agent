@@ -26,6 +26,7 @@ PROOF_NOT_FOUND = "PROOF_NOT_FOUND"
 MUTATION_NOT_FOUND = "MUTATION_NOT_FOUND"
 IDEMPOTENCY_KEY_CONFLICT = "IDEMPOTENCY_KEY_CONFLICT"
 GUARDED_STORAGE_NOT_READY = "GUARDED_STORAGE_NOT_READY"
+GUARDED_EVIDENCE_UNREADABLE = "GUARDED_EVIDENCE_UNREADABLE"
 
 _CATALOG: dict[str, Remediation] = {
     AGENT_ASSERTED_VERDICT_REJECTED: Remediation(
@@ -178,6 +179,21 @@ _CATALOG: dict[str, Remediation] = {
             "PostgreSQL/Supabase, then retry."
         ),
         self_service=True,
+        docs=DOCS,
+    ),
+    GUARDED_EVIDENCE_UNREADABLE: Remediation(
+        code=GUARDED_EVIDENCE_UNREADABLE,
+        problem="The guarded evidence row could not be read back after it was written.",
+        cause=(
+            "The write transaction found no row for this tenant and key. DSG answers with "
+            "the stored row or with nothing; it will not report a mutation it cannot show."
+        ),
+        next_step=(
+            "Retry the identical request with the same idempotency_key. It is safe: the "
+            "unique constraint means a retry can only return the stored row."
+        ),
+        self_service=True,
+        endpoint="POST /api/v1/control/mutations",
         docs=DOCS,
     ),
 }

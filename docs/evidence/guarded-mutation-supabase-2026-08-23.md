@@ -44,9 +44,25 @@ The `ON CONFLICT (tenant_id, idempotency_key) DO NOTHING` insert followed by a
 row: the second insert is discarded by the constraint, and the select then reads the
 committed original.
 
+## Second run — after independent review
+
+Review found that `parameters`/`outputs` as JSONB would break the product's central
+promise: JSONB normalises numbers on the way out, so a correctly written row could
+report `matches_stored: false` against its own digest. The columns were changed to
+canonical JSON text and the migration converts an existing JSONB column in place.
+
+Re-run with the value that exposes it, plus the executor observations the first
+version silently dropped:
+
+| Check | Result |
+|---|---|
+| `1e16` in `parameters` reads back unchanged | PASS — stored and returned as `1e+16`, not `10000000000000000` |
+| `evidence_hash` recomputed from that read-back matches | PASS — `f46784c2…0ba3e9d` |
+| `output_sha256`, `started_at`, `finished_at` are stored | PASS |
+
 ## Cleanup
 
-The two test tenants (`acct_dsg_live_…`, `acct_dsg_other_…`) and every guarded
+Both runs' test tenants (`acct_dsg_live_…`, `acct_dsg_other_…`) and every guarded
 evidence row they produced were deleted. The database was left holding only the one
 pre-existing prototype row described above.
 

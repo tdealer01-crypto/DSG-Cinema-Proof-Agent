@@ -703,8 +703,10 @@ components:
             $ref: '#/components/schemas/Error'
     StorageNotReady:
       description: |
-        Guarded mutation evidence has no durable store while paid enforcement is
-        requested. No mutation is performed.
+        Either guarded mutation evidence has no durable store while paid enforcement
+        is requested (`GUARDED_STORAGE_NOT_READY`, no mutation is performed), or the
+        written row could not be read back (`GUARDED_EVIDENCE_UNREADABLE`). Retrying
+        with the same idempotency_key is safe in both cases.
       content:
         application/json:
           schema:
@@ -792,7 +794,8 @@ components:
             AGENT_ASSERTED_VERDICT_REJECTED, PLAN_NOT_APPROVED, PLAN_HASH_MISMATCH,
             AGENT_IDENTITY_MISMATCH, EVIDENCE_HASH_MISMATCH,
             EXECUTION_ALREADY_VERIFIED, PROOF_NOT_FOUND, BACKEND_UNAVAILABLE,
-            VERIFICATION_NOT_PROVED.
+            VERIFICATION_NOT_PROVED, IDEMPOTENCY_KEY_CONFLICT, MUTATION_NOT_FOUND,
+            GUARDED_STORAGE_NOT_READY, GUARDED_EVIDENCE_UNREADABLE.
         message:
           type: string
         remediation:
@@ -1033,7 +1036,8 @@ components:
           maxProperties: 32
           description: |
             The executor's own observed result. Opaque data, stored as written and
-            never read as a verdict.
+            never read as a verdict. Values must be finite: NaN and Infinity have no
+            JSON spelling the evidence digest could be recomputed from.
           additionalProperties:
             $ref: '#/components/schemas/Scalar'
 
@@ -1085,6 +1089,15 @@ components:
           type: object
           additionalProperties:
             $ref: '#/components/schemas/Scalar'
+        output_sha256:
+          oneOf:
+            - $ref: '#/components/schemas/Sha256'
+            - type: 'null'
+          description: The executor's declared output digest, as it submitted it.
+        started_at:
+          type: [string, 'null']
+        finished_at:
+          type: [string, 'null']
         evidence_hash:
           $ref: '#/components/schemas/Sha256'
         recorded_at:

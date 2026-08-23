@@ -7,6 +7,8 @@ bound to one action, and a decision short of ALLOW leaves no evidence behind.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -20,6 +22,7 @@ from api_v1.guarded_store import (
     reset_guarded_store,
 )
 from api_v1.models import ApprovePlanRequest, PlanDocument
+from api_v1.mutation import GuardedMutationRequest
 from api_v1.store import RecordStore, reset_store
 from revenue import api as billing
 from revenue.engine import RevenueEngine
@@ -448,6 +451,119 @@ def test_postgres_refuses_a_key_whose_stored_action_differs(monkeypatch):
     assert error.value.submitted_action_hash == "e" * 64
     assert connection.committed == 0
     assert connection.rolled_back == 1
+
+
+def test_the_executor_observations_are_stored_not_dropped(tenant):
+    _, api_key = tenant
+    plan = approved_plan()
+    digest = "9" * 64
+
+    response = post(
+        mutation_payload(
+            plan["plan_id"],
+            action={
+                "output_sha256": digest,
+                "started_at": "2026-08-23T12:00:00Z",
+                "finished_at": "2026-08-23T12:00:04Z",
+            },
+        ),
+        api_key,
+    )
+
+    observed = response.json()["observed_evidence"]
+    assert observed["output_sha256"] == digest
+    assert observed["started_at"] == "2026-08-23T12:00:00Z"
+    assert observed["finished_at"] == "2026-08-23T12:00:04Z"
+    assert response.json()["integrity"]["matches_stored"] is True
+
+
+def test_a_differing_output_digest_is_a_retry_not_a_new_record(tenant):
+    """action_hash names the action; a result that differs is still the same action."""
+    _, api_key = tenant
+    plan = approved_plan()
+
+    first = post(mutation_payload(plan["plan_id"], action={"output_sha256": "a" * 64}), api_key)
+    second = post(mutation_payload(plan["plan_id"], action={"output_sha256": "b" * 64}), api_key)
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert second.json()["observed_evidence"]["output_sha256"] == "a" * 64
+    assert guarded_store.get_guarded_store().count() == 1
+
+
+def test_a_value_that_has_no_json_spelling_is_refused(tenant):
+    """A digest must be recomputable, so NaN/Infinity never reach a stored row."""
+    _, api_key = tenant
+    plan = approved_plan()
+
+    # 1e999 parses to inf, which JSON cannot spell and PostgreSQL will not store.
+    payload = mutation_payload(plan["plan_id"])
+    response = client.post(
+        "/api/v1/control/mutations",
+        content=json.dumps(payload).replace('{"revision": "rev-17"}', '{"ratio": 1e999}'),
+        headers={"X-DSG-API-Key": api_key, "Content-Type": "application/json"},
+    )
+    assert response.status_code in {400, 422}, response.text
+    assert guarded_store.get_guarded_store().count() == 0
+
+    # And the model refuses it directly, for callers that do not arrive over HTTP.
+    with pytest.raises(ValueError, match="finite"):
+        GuardedMutationRequest.model_validate(
+            {
+                "plan_id": plan["plan_id"],
+                "agent_identity": "dsg-executor",
+                "idempotency_key": "idem-nonfinite-01",
+                "action": {"action": "deploy_product", "target": "production/app"},
+                "outputs": {"ratio": float("inf")},
+            }
+        )
+
+
+def test_a_malformed_id_is_a_refusal_not_a_storage_error(tenant):
+    _, api_key = tenant
+    response = client.get(
+        "/api/v1/control/mutations/not-a-uuid", headers={"X-DSG-API-Key": api_key}
+    )
+    assert response.status_code == 404
+    assert response.json()["error"] == "MUTATION_NOT_FOUND"
+
+
+def test_postgres_rejects_a_non_uuid_id_without_asking_the_database(monkeypatch):
+    store, script, _connection = _postgres_store(monkeypatch, None)
+    assert store.get("acct_dsg_tenant", "not-a-uuid") is None
+    assert script == [], "a malformed id must not reach the database"
+
+
+def test_a_row_that_cannot_be_read_back_is_refused_with_a_next_step(tenant, monkeypatch):
+    _, api_key = tenant
+    plan = approved_plan()
+
+    def lose_the_row(_candidate):
+        raise guarded_store.GuardedEvidenceLost("row not readable")
+
+    monkeypatch.setattr(guarded_store.get_guarded_store(), "record", lose_the_row)
+    response = post(mutation_payload(plan["plan_id"]), api_key)
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"] == "GUARDED_EVIDENCE_UNREADABLE"
+    assert "same idempotency_key" in response.json()["remediation"]["next_step"]
+
+
+def test_payload_columns_are_canonical_json_text_so_the_digest_reproduces():
+    """JSONB normalises numbers on read-back; the evidence digest cannot survive that."""
+    sql = guarded_store.GUARDED_EVIDENCE_SCHEMA_SQL
+    assert "parameters TEXT NOT NULL" in sql
+    assert "outputs TEXT NOT NULL" in sql
+    assert "JSONB" not in sql
+
+    record = _candidate(parameters={"threshold": 1e16}, outputs={"ratio": 0.1})
+    values = {
+        name: json.dumps(record[name], sort_keys=True, separators=(",", ":"))
+        for name in ("parameters", "outputs")
+    }
+    round_tripped = {name: json.loads(text) for name, text in values.items()}
+    assert round_tripped["parameters"] == record["parameters"]
+    assert guarded_store.evidence_hash(dict(record, **round_tripped)) == record["evidence_hash"]
 
 
 def test_postgres_schema_binds_the_tenant_and_the_unique_key():

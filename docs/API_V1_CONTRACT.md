@@ -131,6 +131,9 @@ an echo of the request and not a value the process kept in memory.
   like an authorized one.
 - `GET /api/v1/control/mutations/{evidence_id}` reads a row back. A row belonging to
   another tenant is indistinguishable from a row that does not exist.
+- `parameters` and `outputs` are stored as canonical JSON **text**, not JSONB. JSONB
+  normalises numbers on the way back out, and a row whose payload reads back
+  differently than it was written could not reproduce its own `evidence_hash`.
 
 Storage is PostgreSQL/Supabase when `DSG_REVENUE_DATABASE_URL` is set — the same
 variable that selects the PostgreSQL revenue stores, so `tenant_id` carries a real
@@ -266,6 +269,7 @@ enforces that behavior.
 | `IDEMPOTENCY_KEY_CONFLICT` | the key is already bound to a different action_hash |
 | `MUTATION_NOT_FOUND` | no guarded evidence row with that id for this tenant |
 | `GUARDED_STORAGE_NOT_READY` | paid enforcement requested while guarded evidence has no durable store |
+| `GUARDED_EVIDENCE_UNREADABLE` | the row could not be read back; retry with the same key is safe |
 | `BACKEND_UNAVAILABLE` / `VERIFICATION_NOT_PROVED` | fail-closed proof path; no verified receipt |
 
 The essential invariant is simple: **DSG opens the path for work already approved,

@@ -21,13 +21,34 @@ ALTER TABLE dsg_guarded_evidence
     ADD COLUMN IF NOT EXISTS step_id TEXT,
     ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'prototype',
     ADD COLUMN IF NOT EXISTS target TEXT NOT NULL DEFAULT 'prototype',
-    ADD COLUMN IF NOT EXISTS parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS parameters TEXT NOT NULL DEFAULT '{}',
     ADD COLUMN IF NOT EXISTS decision TEXT NOT NULL DEFAULT 'PROTOTYPE',
     ADD COLUMN IF NOT EXISTS control_hash TEXT NOT NULL DEFAULT repeat('0', 64),
     ADD COLUMN IF NOT EXISTS mutation_status TEXT NOT NULL DEFAULT 'succeeded',
-    ADD COLUMN IF NOT EXISTS outputs JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS outputs TEXT NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS output_sha256 TEXT,
+    ADD COLUMN IF NOT EXISTS started_at TEXT,
+    ADD COLUMN IF NOT EXISTS finished_at TEXT,
     ADD COLUMN IF NOT EXISTS evidence_hash TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS recorded_at TEXT NOT NULL DEFAULT '';
+
+-- parameters and outputs are canonical JSON text rather than JSONB on purpose:
+-- JSONB normalises numbers on the way back out, and a row whose payload reads back
+-- differently than it was written could not reproduce its own evidence_hash.
+-- A database that already created them as JSONB is converted here.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'dsg_guarded_evidence'
+           AND column_name IN ('parameters', 'outputs')
+           AND data_type = 'jsonb'
+    ) THEN
+        ALTER TABLE dsg_guarded_evidence
+            ALTER COLUMN parameters TYPE TEXT USING parameters::text,
+            ALTER COLUMN outputs TYPE TEXT USING outputs::text;
+    END IF;
+END $$;
 
 -- recorded_at is the timestamp the evidence hash covers, so it is stored as the
 -- exact ISO-8601 string rather than as a TIMESTAMPTZ that would render back
