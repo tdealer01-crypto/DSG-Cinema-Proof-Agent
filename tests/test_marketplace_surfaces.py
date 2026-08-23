@@ -190,8 +190,11 @@ def test_production_deployments_have_one_coordinated_owner():
     assert "    environment: production" in azure
     assert "SOLVE_CODE=$(curl" in cinema
     assert "Cinema production did not converge to the new authenticated revision" in cinema
-    assert "CONFIGURED_Z3_SHARED_SECRET" in cinema
-    assert "refusing to mint a deployment credential" in cinema
+    assert "CONFIGURED_SOLVER_SHARED_SECRET" in cinema
+    assert "DSG_SOLVER_SHARED_SECRET is required" in cinema
+    assert "--revision-suffix \"z3-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}\"" in cinema
+    assert "--revision-suffix \"cinema-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}\"" in cinema
+    assert 'Z3_SECRET_ARGS+=("solver-previous-secret=' not in cinema
     assert "Z3_SECRET=$(openssl rand -hex 32)" not in cinema
     assert "  push:\n    branches: [main]" not in z3
     assert "deploy-cinema-production.yml" in z3
