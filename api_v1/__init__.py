@@ -19,6 +19,7 @@ def install(app) -> None:
     importlib.import_module(f"{__name__}.router").install(app)
     importlib.import_module(f"{__name__}.control").install(app)
     importlib.import_module(f"{__name__}.mutation").install(app)
+    importlib.import_module(f"{__name__}.stripe_app_executor").install(app)
     importlib.import_module(f"{__name__}.mobile_control").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)

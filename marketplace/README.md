@@ -29,7 +29,7 @@ The service does **not** claim SOC 2, ISO, regulatory, or third-party certificat
 | Channel | Current state | What is sellable now | Remaining external action |
 |---|---|---|---|
 | GitHub Marketplace Action | LIVE v1.1.0 | Existing DSG Secure Deploy Gate is publicly installable | Publish the prepared Verified Execution v2 release from the dedicated Action repo |
-| Stripe Apps Marketplace | v2.7 package implemented | Native Stripe verification UI/package | Stripe CLI upload, external test, then Submit for review in Stripe Dashboard |
+| Stripe Apps Marketplace | v2.7.1 upload artifact ready; production status `ACTION_REQUIRED` | Native Stripe payment-detail verification UI/package | Stripe CLI upload, bind six missing Dashboard-issued values, external test, then Submit for review |
 | OpenAI Skills | submission package ready | Bounded skill calling `/verify/evaluate` | Complete publisher verification and external submission |
 | Microsoft Marketplace | submission metadata ready | Start with `Contact me` SaaS listing for enterprise leads | Partner Center publisher enrollment/offer submission |
 | AWS Marketplace | blocked externally | SaaS offer specification only | Seller onboarding plus AWS Marketplace billing/entitlement integration before paid public listing |
@@ -85,4 +85,8 @@ A marketplace package is considered submission-ready only when all of these are 
 - Cinema API: `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io`
 - API documentation: `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs`
 
-Checkout is intentionally not linked because no live payment URL and receipt flow have been verified in this repository.
+Direct Stripe billing is linked and enforced according to the live
+`/billing/status` response. That does not make the separate Stripe App
+Marketplace channel live; `/marketplace/stripe/status` remains
+`ACTION_REQUIRED` until its upload-generated signing secret, mode-specific
+OAuth credentials, and exact authorize URLs are bound.

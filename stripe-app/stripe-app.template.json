@@ -1,77 +1,41 @@
 {
-  "$schema": "https://stripe.com/stripe-app.schema.json",
   "id": "pics.dsg.governance",
   "name": "DSG Governance Gate",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "icon": "./icon.png",
-  "description": "Real-time proof verification for Stripe transactions. Verify payment constraints with deterministic formal proofs before charges complete. Supports MCP agent routing and team subscriptions.",
-  "shortDescription": "Exact Z3-verified policy decisions inside Stripe payment views",
-  "documentationUrl": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/stripe-app/README.md",
-  "websiteUrl": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
-  "supportEmail": "support@dsg.pics",
+  "distribution_type": "public",
+  "sandbox_install_compatible": true,
+  "stripe_api_access_type": "oauth",
+  "allowed_redirect_uris": [
+    "__CINEMA_API_BASE__/marketplace/stripe/callback/live",
+    "__CINEMA_API_BASE__/marketplace/stripe/callback/test",
+    "__CINEMA_API_BASE__/marketplace/stripe/callback/sandbox"
+  ],
+  "permissions": [
+    {
+      "permission": "charge_read",
+      "purpose": "Read the payment amount, currency, status, and Radar risk level shown in this payment detail view so DSG can calculate the verification decision."
+    },
+    {
+      "permission": "payment_intent_read",
+      "purpose": "Read the current PaymentIntent amount, currency, and status shown in this payment detail view so DSG can calculate the verification decision."
+    }
+  ],
   "ui_extension": {
-    "views": [],
+    "views": [
+      {
+        "viewport": "stripe.dashboard.payment.detail",
+        "component": "ChargeGate"
+      }
+    ],
     "content_security_policy": {
       "connect-src": [
-        "__CINEMA_API_BASE__/"
+        "__CINEMA_API_BASE__/stripe/evaluate"
       ],
       "purpose": "Send bounded Stripe transaction context to the Cinema verification backend. The app never sends a Z3 credential or accepts arbitrary solver programs."
     }
   },
-  "features": [
-    {
-      "id": "verified_decision",
-      "title": "Verified decision",
-      "description": "See ALLOW, REVIEW, or BLOCK with the reason and risk score at the top of the payment detail panel."
-    },
-    {
-      "id": "exact_z3_proof",
-      "title": "Exact Z3 proof",
-      "description": "Cinema derives a fixed-size decision QUBO and accepts the result only when Z3 proves VERIFIED_GLOBAL_OPTIMUM."
-    },
-    {
-      "id": "fail_closed",
-      "title": "Fail-closed review",
-      "description": "Missing transaction context, backend errors, or unverified proofs are shown as REVIEW rather than approval."
-    }
-  ],
-  "permissions": [
-    {
-      "id": "account_information",
-      "name": "Account and user information",
-      "access_level": "read_only"
-    },
-    {
-      "id": "charges_refunds",
-      "name": "Charges and Refunds",
-      "access_level": "read_only"
-    },
-    {
-      "id": "external_access",
-      "name": "External access",
-      "access_level": "data_sharing",
-      "description": "Send only the transaction fields required for deterministic policy verification to the Cinema backend."
-    }
-  ],
-  "oauth": {
-    "redirect_urls": ["__CINEMA_API_BASE__/marketplace/stripe/callback"]
-  },
-  "marketing": {
-    "feature_images": [
-      {
-        "url": "https://raw.githubusercontent.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/main/public/stripe-marketplace/proof-verification-1600x900.png",
-        "alt_text": "Deterministic proof verification in payment flow"
-      },
-      {
-        "url": "https://raw.githubusercontent.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/main/public/stripe-marketplace/team-billing-1600x900.png",
-        "alt_text": "Team subscriptions with proof-based metering"
-      },
-      {
-        "url": "https://raw.githubusercontent.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/main/public/stripe-marketplace/governance-dashboard-1600x900.png",
-        "alt_text": "Governance dashboard for proof auditing"
-      }
-    ]
-  },
-  "distribution_type": "public",
-  "sandbox_install_compatible": true
+  "constants": {
+    "CINEMA_API_BASE": "__CINEMA_API_BASE__"
+  }
 }

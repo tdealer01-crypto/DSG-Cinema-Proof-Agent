@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import struct
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -60,7 +62,7 @@ def test_landing_exposes_every_supported_marketplace_status_truthfully():
     html = landing_html()
     expected = {
         "GitHub Marketplace": "LIVE V1.1.0",
-        "Stripe Apps": "PACKAGE V2.7 READY",
+        "Stripe Apps": "V2.7.1 UPLOAD READY",
         "OpenAI Skills": "READY TO SUBMIT",
         "Microsoft Marketplace": "CONTACT-ME PACK READY",
         "AWS Marketplace": "BLOCKED EXTERNAL",
@@ -98,16 +100,27 @@ def test_launch_manifest_matches_repository_artifacts():
     statuses = {item["channel"]: item["status"] for item in manifest["channels"]}
     assert statuses == {
         "GitHub Marketplace Action": "LIVE_V1",
-        "Stripe Apps Marketplace": "PACKAGE_V2_7_PREPARED",
+        "Stripe Apps Marketplace": "READY_FOR_EXTERNAL_UPLOAD",
         "Microsoft Marketplace": "SUBMISSION_PACK_PREPARED",
         "AWS Marketplace": "BLOCKED_EXTERNAL",
         "JetBrains Marketplace": "SPEC_ONLY",
         "OpenAI Skills": "READY_FOR_EXTERNAL_SUBMIT",
         "Direct API": "LIVE",
     }
-    assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
+    # This snapshot was raised only after the production route returned LINKED,
+    # LINKED_VERIFIED, charges_enabled, and all operational checks PASS. A
+    # Payment Link is a separate Stripe object and remains explicitly unclaimed.
+    assert manifest["product"]["checkout_status"] == "LINKED"
+    assert manifest["revenue_automation"]["verified_live"]["stripe_link_state"] == "LINKED_VERIFIED"
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
+
+    stripe_channel = next(
+        item for item in manifest["channels"] if item["channel"] == "Stripe Apps Marketplace"
+    )
+    assert stripe_channel["production_status"] == "ACTION_REQUIRED"
+    assert stripe_channel["submission_artifact"]["artifact_id"] == 9508761420
+    assert stripe_channel["submission_artifact"]["digest"].startswith("sha256:")
 
     official_landing = manifest["product"]["public_landing"]
     assert all(
@@ -115,10 +128,10 @@ def test_launch_manifest_matches_repository_artifacts():
         for item in manifest["channels"]
     )
 
-    stripe_app = json.loads(
-        (ROOT / "stripe-app" / "stripe-app.template.json").read_text(encoding="utf-8")
+    stripe_listing = (ROOT / "marketplace" / "stripe" / "LISTING.md").read_text(
+        encoding="utf-8"
     )
-    assert stripe_app["websiteUrl"] == official_landing
+    assert f"**Website:** {official_landing}" in stripe_listing
     openai_listing = (
         ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md"
     ).read_text(encoding="utf-8")
@@ -128,6 +141,25 @@ def test_launch_manifest_matches_repository_artifacts():
         package = item.get("package") or item.get("v2_package")
         if package:
             assert (ROOT / package).exists(), package
+
+
+def test_production_probe_reports_stripe_marketplace_readiness():
+    workflow = (
+        ROOT / ".github" / "workflows" / "probe-cinema-azure.yml"
+    ).read_text(encoding="utf-8")
+    required = [
+        '"https://$HOST/marketplace/stripe/status"',
+        'STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL',
+        'STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL',
+        'STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL',
+        'STRIPE_APP_OAUTH_TEST_SECRET_KEY',
+        'STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY',
+        'STRIPE_APP_SIGNING_SECRET',
+        'stripe_marketplace: {',
+        'Current production marketplace/stripe/status is unavailable or malformed.',
+    ]
+    for value in required:
+        assert value in workflow
 
 
 def test_request_flows_warn_against_secrets_and_false_checkout():
@@ -154,10 +186,93 @@ def test_every_prepared_marketplace_uses_the_official_product_website():
         ROOT / "marketplace" / "aws" / "offer.md",
         ROOT / "marketplace" / "jetbrains" / "offer.md",
         ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md",
-        ROOT / "stripe-app" / "stripe-app.template.json",
+        ROOT / "marketplace" / "stripe" / "LISTING.md",
     ]
     for path in listing_files:
         assert official in path.read_text(encoding="utf-8"), path
+
+
+def test_stripe_listing_and_icon_meet_objective_submission_limits():
+    listing = (ROOT / "marketplace" / "stripe" / "LISTING.md").read_text(
+        encoding="utf-8"
+    )
+    app_name = re.search(r"^- \*\*App name:\*\* (.+)$", listing, re.MULTILINE)
+    subtitle = re.search(r"^- \*\*Subtitle:\*\* (.+)$", listing, re.MULTILINE)
+    assert app_name is not None and len(app_name.group(1)) <= 35
+    assert subtitle is not None and len(subtitle.group(1)) <= 80
+    assert not re.search(
+        r"\b(?:stripe|app|free|paid|rak|generator|api key|authenticator)\b",
+        app_name.group(1),
+        re.IGNORECASE,
+    )
+
+    about = listing.split("**About field (under 1,000 characters):**", 1)[1]
+    about = " ".join(about.split("\n\n", 1)[0].split())
+    assert 1 <= len(about) <= 1000
+    assert "**Expected support response:** Within 2 business days." in listing
+    assert "**Supported language:** English" in listing
+    assert "**BLOCKED — Based in:**" in listing
+    assert "exact Public Install URL" in listing
+    assert "Settings" in listing
+    assert "No external DSG credentials are required" in listing
+    assert "$0.10 per Stripe policy decision proof" in listing
+    assert "The panel verifies\n   the current object automatically" in listing
+    assert "Verify with exact proof" not in listing
+
+    feature_blocks = re.findall(
+        r"^### Feature \d+\n\n(.*?)(?=^### Feature \d+|^## Pricing)",
+        listing,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert len(feature_blocks) == 3
+    for feature in feature_blocks:
+        title = re.search(r"^- \*\*Title:\*\* (.+)$", feature, re.MULTILINE)
+        assert title is not None and len(title.group(1)) <= 80
+        description = feature.split("- **Description:**", 1)[1].split(
+            "\n- **Image:**", 1
+        )[0]
+        normalized = " ".join(description.split())
+        assert 1 <= len(normalized) <= 300
+        assert "- **Image:** **BLOCKED**" in feature
+
+    icon = (ROOT / "stripe-app" / "icon.png").read_bytes()
+    assert len(icon) <= 10 * 1024 * 1024
+    assert icon[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", icon[16:24]) == (300, 300)
+
+
+def test_stripe_review_documents_cover_current_submission_gates():
+    checklist = (
+        ROOT / "marketplace" / "stripe" / "SUBMISSION_CHECKLIST.md"
+    ).read_text(encoding="utf-8")
+    support = (ROOT / "marketplace" / "stripe" / "SUPPORT.md").read_text(
+        encoding="utf-8"
+    )
+    privacy = (ROOT / "marketplace" / "stripe" / "PRIVACY.md").read_text(
+        encoding="utf-8"
+    )
+    for gate in (
+        "account is activated",
+        "not a Connect-enabled platform account",
+        "only app published",
+        "business purpose is not prohibited",
+        "Public Install URL",
+        "all three key features",
+        "Review and publish",
+        "click **Publish**",
+    ):
+        assert gate in checklist
+    assert "within 2 business days" in support
+    assert "confirm that each monitored route receives it" in support
+    assert "**Effective date:** August 24, 2026" in privacy
+
+
+def test_public_pricing_and_marketplace_claims_match_the_live_catalog():
+    html = landing_html()
+    assert "$0.05 <small>/ general proof receipt</small>" in html
+    assert "Stripe Dashboard policy decisions: $0.10 per verified proof" in html
+    assert "Marketplace-deployed" not in html
+    assert "Stripe Apps and OpenAI Skills are prepared packages pending external review" in html
 
 
 def test_retired_runtime_links_are_absent_from_current_surfaces():
@@ -200,3 +315,13 @@ def test_production_deployments_have_one_coordinated_owner():
     assert "Z3_SECRET=$(openssl rand -hex 32)" not in cinema
     assert "  push:\n    branches: [main]" not in z3
     assert "deploy-cinema-production.yml" in z3
+    deploy_cinema = cinema.split("- name: Deploy Cinema production", 1)[1].split(
+        "- name: Verify production Cinema", 1
+    )[0]
+    cinema_url_assignment = 'CINEMA_URL="https://$CINEMA_FQDN"'
+    live_callback = (
+        '"STRIPE_APP_OAUTH_LIVE_REDIRECT_URI='
+        '$CINEMA_URL/marketplace/stripe/callback/live"'
+    )
+    assert deploy_cinema.index(cinema_url_assignment) < deploy_cinema.index(live_callback)
+    assert "CONTAINER_ENV_DOMAIN=$(az containerapp env show" in deploy_cinema

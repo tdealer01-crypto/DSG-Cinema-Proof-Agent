@@ -61,6 +61,14 @@ jobs:
               STRIPE_METER_EVENT_NAME: ($names | index("STRIPE_METER_EVENT_NAME") != null),
               STRIPE_WEBHOOK_ENDPOINT_ID: ($names | index("STRIPE_WEBHOOK_ENDPOINT_ID") != null),
               STRIPE_WEBHOOK_ENDPOINT_URL: ($names | index("STRIPE_WEBHOOK_ENDPOINT_URL") != null),
+              STRIPE_APP_ID: ($names | index("STRIPE_APP_ID") != null),
+              STRIPE_APP_OAUTH_CLIENT_ID: ($names | index("STRIPE_APP_OAUTH_CLIENT_ID") != null),
+              STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL: ($names | index("STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL") != null),
+              STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL: ($names | index("STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL") != null),
+              STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL: ($names | index("STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL") != null),
+              STRIPE_APP_OAUTH_TEST_SECRET_KEY: ($names | index("STRIPE_APP_OAUTH_TEST_SECRET_KEY") != null),
+              STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY: ($names | index("STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY") != null),
+              STRIPE_APP_SIGNING_SECRET: ($names | index("STRIPE_APP_SIGNING_SECRET") != null),
               GITHUB_MARKETPLACE_WEBHOOK_SECRET: ($names | index("GITHUB_MARKETPLACE_WEBHOOK_SECRET") != null),
               GITHUB_MARKETPLACE_OAUTH_CLIENT_ID: ($names | index("GITHUB_MARKETPLACE_OAUTH_CLIENT_ID") != null),
               GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET: ($names | index("GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET") != null)
@@ -71,6 +79,7 @@ jobs:
           : > /tmp/cinema-health-body
           : > /tmp/billing-status-body
           : > /tmp/marketplace-status-body
+          : > /tmp/stripe-marketplace-status-body
 
           set +e
           HEALTH_CODE=$(curl --silent --show-error \
@@ -91,11 +100,18 @@ jobs:
             --max-time 30 \
             "https://$HOST/marketplace/github/status")
           MARKETPLACE_RC=$?
+          STRIPE_MARKETPLACE_CODE=$(curl --silent --show-error \
+            --output /tmp/stripe-marketplace-status-body \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://$HOST/marketplace/stripe/status")
+          STRIPE_MARKETPLACE_RC=$?
           set -e
 
           if [[ "$HEALTH_RC" != "0" ]]; then HEALTH_CODE=0; fi
           if [[ "$BILLING_RC" != "0" ]]; then BILLING_CODE=0; fi
           if [[ "$MARKETPLACE_RC" != "0" ]]; then MARKETPLACE_CODE=0; fi
+          if [[ "$STRIPE_MARKETPLACE_RC" != "0" ]]; then STRIPE_MARKETPLACE_CODE=0; fi
 
           HEALTH_READY=false
           if [[ "$HEALTH_CODE" == "200" ]] && \
@@ -116,6 +132,13 @@ jobs:
             MARKETPLACE_READABLE=true
           fi
 
+          STRIPE_MARKETPLACE_READABLE=false
+          if [[ "$STRIPE_MARKETPLACE_CODE" == "200" ]] && \
+             jq -e '.status and .checks and .callbacks and .truth_boundary' \
+               /tmp/stripe-marketplace-status-body >/dev/null 2>&1; then
+            STRIPE_MARKETPLACE_READABLE=true
+          fi
+
           CHECKOUT_STATUS=$(jq -r '.checkout_status // "UNAVAILABLE"' /tmp/billing-status-body 2>/dev/null || echo UNAVAILABLE)
           STRIPE_CHARGES_ENABLED=$(jq -r '.stripe.charges_enabled // false' /tmp/billing-status-body 2>/dev/null || echo false)
           METERING_ENFORCED=$(jq -r '.metering_enforced // false' /tmp/billing-status-body 2>/dev/null || echo false)
@@ -123,6 +146,7 @@ jobs:
           LEDGER_ENTRIES=$(jq -r '.ledger.entries // 0' /tmp/billing-status-body 2>/dev/null || echo 0)
           STRIPE_JSON=$(jq -c '.stripe // {}' /tmp/billing-status-body 2>/dev/null || echo '{}')
           MARKETPLACE_JSON=$(jq -c '.' /tmp/marketplace-status-body 2>/dev/null || echo '{}')
+          STRIPE_MARKETPLACE_JSON=$(jq -c '.' /tmp/stripe-marketplace-status-body 2>/dev/null || echo '{}')
 
           jq -n \
             --arg app_name "$CINEMA_APP" \
@@ -145,6 +169,9 @@ jobs:
             --argjson marketplace_http_status "$MARKETPLACE_CODE" \
             --argjson marketplace_readable "$MARKETPLACE_READABLE" \
             --argjson marketplace "$MARKETPLACE_JSON" \
+            --argjson stripe_marketplace_http_status "$STRIPE_MARKETPLACE_CODE" \
+            --argjson stripe_marketplace_readable "$STRIPE_MARKETPLACE_READABLE" \
+            --argjson stripe_marketplace "$STRIPE_MARKETPLACE_JSON" \
             '{
               target: "azure_container_app",
               app_name: $app_name,
@@ -172,6 +199,11 @@ jobs:
                 http_status: $marketplace_http_status,
                 readable: $marketplace_readable,
                 status: $marketplace
+              },
+              stripe_marketplace: {
+                http_status: $stripe_marketplace_http_status,
+                readable: $stripe_marketplace_readable,
+                status: $stripe_marketplace
               }
             }' > cinema_runtime_probe.json
 
@@ -190,6 +222,11 @@ jobs:
           if [[ "$MARKETPLACE_READABLE" != "true" ]]; then
             echo 'Current production marketplace/github/status is unavailable or malformed.' >&2
             cat /tmp/marketplace-status-body >&2 || true
+            exit 1
+          fi
+          if [[ "$STRIPE_MARKETPLACE_READABLE" != "true" ]]; then
+            echo 'Current production marketplace/stripe/status is unavailable or malformed.' >&2
+            cat /tmp/stripe-marketplace-status-body >&2 || true
             exit 1
           fi
 

@@ -1,11 +1,11 @@
 {
   "status": "PASS",
   "surface": "DSG ONE Azure 3D Landing",
-  "commit": "997e339ec293b1f0977e3b807fd4a5c6b249b475",
-  "run_id": "32657432691",
+  "commit": "07f51bda19260f5f03019e51f6b184dce267643e",
+  "run_id": "32706970358",
   "site_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
   "storage_account": "dsgoneverifiedweb",
   "current_system_only": true,
   "legacy_runtime_references": false,
-  "deployed_at": "2026-08-23T18:15:26Z"
+  "deployed_at": "2026-08-24T08:34:32Z"
 }
