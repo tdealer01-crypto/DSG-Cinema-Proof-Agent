@@ -22,6 +22,7 @@ on:
       - 'tests/test_decision_core.py'
       - 'tests/test_decision_core_channels.py'
       - 'tests/test_execution_boundary.py'
+      - 'tests/test_stripe_app_executor.py'
       - '.github/workflows/api-v1-verify.yml'
       - '.github/workflows/configure-github-marketplace-production.yml'
   push:
@@ -41,6 +42,7 @@ on:
       - 'tests/test_decision_core.py'
       - 'tests/test_decision_core_channels.py'
       - 'tests/test_execution_boundary.py'
+      - 'tests/test_stripe_app_executor.py'
       - '.github/workflows/api-v1-verify.yml'
       - '.github/workflows/configure-github-marketplace-production.yml'
   workflow_dispatch:
@@ -90,6 +92,7 @@ jobs:
             api_v1/router.py \
             api_v1/service.py \
             api_v1/store.py \
+            api_v1/stripe_app_executor.py \
             api_v1/verifier.py \
             revenue/github_marketplace.py \
             revenue/pricing.py
@@ -105,7 +108,8 @@ jobs:
             tests/test_mobile_control.py \
             tests/test_decision_core.py \
             tests/test_decision_core_channels.py \
-            tests/test_execution_boundary.py
+            tests/test_execution_boundary.py \
+            tests/test_stripe_app_executor.py
 
       - name: Assert all authorization adapters share the decision core
         shell: bash

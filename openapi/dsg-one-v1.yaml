@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: DSG ONE Verification API
-  version: 1.1.0
+  version: 1.2.0
   summary: Plan-authorized execution control plus independent verification behind an exact Z3 proof.
   description: |
     DSG ONE verifies that an agent execution conforms to an approved plan and to
@@ -252,6 +252,52 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/v1/control/configure-stripe-app:
+    post:
+      tags: [control]
+      operationId: configureStripeAppProduction
+      summary: Apply the exact approved Stripe App production configuration
+      description: |
+        This executor has a fixed action (`configure_stripe_app`), target
+        (`pics.dsg.governance`), step id (`stripe-production-setup`), empty
+        parameters, repository, and production environment. DSG re-runs plan
+        preflight before the server-side GitHub App writes five environment
+        secrets and one repository variable. The response is based on GitHub
+        read-back metadata; encrypted or plaintext secret values are never
+        returned. Missing GitHub App inputs or permissions produce
+        `WAITING_PERMISSION`; out-of-plan work produces `BLOCK` and no write.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigureStripeAppRequest'
+      responses:
+        '200':
+          description: ALLOW with GitHub read-back evidence, WAITING_PERMISSION, or BLOCK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeAppExecutorResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: A Stripe value failed format validation or a verdict was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: GitHub was reachable as a capability but the API operation failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeAppExecutorResult'
 
   /api/v1/mobile/client-contract:
     get:
@@ -929,6 +975,9 @@ components:
         mutation:
           type: object
           additionalProperties: true
+        executors:
+          type: object
+          additionalProperties: true
         capabilities:
           type: object
           additionalProperties: true
@@ -1040,6 +1089,117 @@ components:
             JSON spelling the evidence digest could be recomputed from.
           additionalProperties:
             $ref: '#/components/schemas/Scalar'
+
+    StripeAppProductionValues:
+      type: object
+      additionalProperties: false
+      required:
+        - STRIPE_APP_SIGNING_SECRET
+        - STRIPE_APP_OAUTH_TEST_SECRET_KEY
+        - STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY
+        - STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL
+        - STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL
+        - DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL
+      properties:
+        STRIPE_APP_SIGNING_SECRET:
+          type: string
+          writeOnly: true
+          description: Stripe App UI signing secret; must start with `absec_`.
+        STRIPE_APP_OAUTH_TEST_SECRET_KEY:
+          type: string
+          writeOnly: true
+          description: Stripe test-mode API secret; must start with `sk_test_`.
+        STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY:
+          type: string
+          writeOnly: true
+          description: Managed-sandbox API secret; must start with `sk_test_` and differ from the test key.
+        STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL:
+          type: string
+          format: uri
+          writeOnly: true
+          description: HTTPS External Test authorize URL; stored as an environment secret.
+        STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL:
+          type: string
+          format: uri
+          writeOnly: true
+          description: HTTPS managed-sandbox authorize URL; stored as an environment secret.
+        DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL:
+          type: string
+          format: uri
+          description: Public live install URL; stored as a repository variable.
+
+    ConfigureStripeAppRequest:
+      type: object
+      additionalProperties: false
+      required: [plan_id, agent_identity, idempotency_key, values]
+      properties:
+        plan_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        agent_identity:
+          type: string
+          minLength: 1
+          maxLength: 255
+        idempotency_key:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:\-]{7,127}$'
+        values:
+          $ref: '#/components/schemas/StripeAppProductionValues'
+        trace_id:
+          type: [string, 'null']
+          maxLength: 128
+
+    StripeAppExecutorResult:
+      type: object
+      description: |
+        Executor outcome. On success, `evidence` contains GitHub read-back names,
+        timestamps, and the live-variable equality check. It never contains a
+        secret value or encrypted payload.
+      required: [executed, secret_values_exposed]
+      properties:
+        decision:
+          type: string
+          enum: [ALLOW, WAITING_PERMISSION, BLOCK, ERROR]
+          readOnly: true
+        executed:
+          type: boolean
+          readOnly: true
+        action:
+          type: string
+          const: configure_stripe_app
+          readOnly: true
+        target:
+          type: string
+          const: pics.dsg.governance
+          readOnly: true
+        plan_id:
+          type: string
+        plan_hash:
+          $ref: '#/components/schemas/Sha256'
+        control:
+          $ref: '#/components/schemas/ControlDecisionResult'
+        capability:
+          type: object
+          additionalProperties: true
+          readOnly: true
+        evidence:
+          type: object
+          additionalProperties: true
+          readOnly: true
+        audit:
+          type: object
+          additionalProperties: true
+          readOnly: true
+        secret_values_exposed:
+          type: boolean
+          const: false
+          readOnly: true
+        next_step:
+          type: string
+          readOnly: true
 
     GuardedEvidenceRecord:
       type: object
