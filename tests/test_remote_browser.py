@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api_v1.models import PlanDocument, PlanStep
-from api_v1 import remote_browser
+from api_v1 import remote_browser, remote_transport
 
 
 @pytest.fixture()
@@ -45,13 +45,13 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(remote_browser, "_relay", fake_relay)
 
     app = FastAPI()
-    app.include_router(remote_browser.router)
+    app.include_router(remote_transport.router)
     return TestClient(app)
 
 
 def _create_session(client: TestClient) -> str:
     response = client.post(
-        "/api/v1/remote-browser/sessions",
+        "/remote-browser/sessions",
         json={
             "plan_id": "plan-remote-1",
             "agent_identity": "agent-a",
@@ -72,7 +72,7 @@ def test_remote_session_action_evidence_and_disconnect(client: TestClient, tmp_p
     token = _create_session(client)
 
     action = client.post(
-        "/api/v1/remote-browser/actions",
+        "/remote-browser/actions",
         json={
             "session_token": token,
             "action": {"kind": "pointer.click", "parameters": {"x": 320, "y": 180}},
@@ -89,7 +89,7 @@ def test_remote_session_action_evidence_and_disconnect(client: TestClient, tmp_p
     assert '"state":"COMPLETED"' in event_files[0].read_text(encoding="utf-8")
 
     disconnected = client.post(
-        "/api/v1/remote-browser/disconnect",
+        "/remote-browser/disconnect",
         json={"session_token": token},
     )
     assert disconnected.status_code == 200
@@ -97,7 +97,7 @@ def test_remote_session_action_evidence_and_disconnect(client: TestClient, tmp_p
     assert disconnected.json()["browser_session_terminated"] is False
 
     after_disconnect = client.post(
-        "/api/v1/remote-browser/actions",
+        "/remote-browser/actions",
         json={
             "session_token": token,
             "action": {"kind": "keyboard.press", "parameters": {"key": "Enter"}},
@@ -109,7 +109,7 @@ def test_remote_session_action_evidence_and_disconnect(client: TestClient, tmp_p
 def test_identity_secret_is_direct_user_input_not_remote_payload(client: TestClient) -> None:
     token = _create_session(client)
     response = client.post(
-        "/api/v1/remote-browser/actions",
+        "/remote-browser/actions",
         json={
             "session_token": token,
             "action": {"kind": "browser.type", "parameters": {"password": "not-sent"}},
@@ -122,7 +122,7 @@ def test_identity_secret_is_direct_user_input_not_remote_payload(client: TestCli
 def test_explicit_security_bypass_is_hard_block(client: TestClient) -> None:
     token = _create_session(client)
     response = client.post(
-        "/api/v1/remote-browser/actions",
+        "/remote-browser/actions",
         json={
             "session_token": token,
             "action": {
@@ -135,7 +135,7 @@ def test_explicit_security_bypass_is_hard_block(client: TestClient) -> None:
     assert response.json()["detail"]["error"] == "HARD_INVARIANT_BLOCKED"
 
 
-def test_private_remote_endpoint_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_private_remote_endpoint_is_rejected() -> None:
     with pytest.raises(Exception) as exc:
         remote_browser._public_https_endpoint("https://127.0.0.1:9222/session")
     assert getattr(exc.value, "status_code", None) == 400
