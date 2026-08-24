@@ -8,7 +8,8 @@
     "public_landing": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
     "receipt_version": "dsg-proof-receipt-1.0.0",
     "policy_version": "dsg-verified-execution-1.0.0",
-    "checkout_status": "NOT_VERIFIED_NOT_LINKED",
+    "checkout_status": "LINKED",
+    "production_verified_at": "2026-08-24",
     "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
     "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
     "support_contact": "t.dealer01@dsg.pics",
@@ -50,11 +51,12 @@
     },
     {
       "channel": "Stripe Apps Marketplace",
-      "status": "PACKAGE_V2_7_PREPARED",
+      "status": "IN_REMEDIATION",
       "app_id": "pics.dsg.governance",
+      "target_version": "2.7.1",
       "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "stripe-app/",
-      "next": "bind to production Cinema URL, upload with Stripe CLI, external test, submit review",
+      "next": "merge and deploy v2.7.1, upload with Stripe CLI, bind the generated app signing secret, run External Test, capture real Dashboard screenshots, then submit review",
       "commercial_role": "native Stripe distribution"
     },
     {
@@ -96,13 +98,13 @@
       "status": "LIVE",
       "public_url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs",
       "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
-      "next": "attach durable storage and verified Stripe commerce before enabling paid enforcement",
+      "next": "monitor durable storage, verified Stripe commerce, and paid enforcement through /billing/status",
       "commercial_role": "live verification integration and technical evaluation"
     }
   ],
   "revenue_automation": {
     "system": "dsg-revenue-1.1.0",
-    "status": "IMPLEMENTED_SAFE_RECORD_ONLY_CHARGES_NOT_VERIFIED",
+    "status": "LIVE_ENFORCED_STRIPE_LINKED_VERIFIED",
     "billable_unit": "one Z3 VERIFIED_GLOBAL_OPTIMUM proof receipt",
     "status_endpoint": "/billing/status",
     "usage_endpoint": "/billing/usage",
@@ -118,16 +120,31 @@
       "signature-verified Stripe webhooks scoped to the exact product, price, and subscription",
       "scheduled reconciliation that fails when required evidence is UNAVAILABLE"
     ],
+    "verified_live": {
+      "verified_at": "2026-08-24",
+      "checkout_status": "LINKED",
+      "stripe_link_state": "LINKED_VERIFIED",
+      "charges_enabled": true,
+      "metering_enforced": true,
+      "enforcement_ready": true,
+      "enforcement_blockers": [],
+      "operational_checks": {
+        "product": "PASS",
+        "price": "PASS",
+        "meter": "PASS",
+        "webhook": "PASS"
+      },
+      "ledger_entries": 345,
+      "source": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/status"
+    },
     "not_claimed": [
-      "an active Stripe checkout link",
+      "a Payment Link for the usage-based DSG price; production uses Checkout Sessions because Stripe disallows usage-based prices in Payment Links",
       "durable multi-replica billing storage",
       "independently audited or settlement-reconciled revenue",
       "independent financial audit"
     ],
     "external_action_required": [
-      "configure and verify the Stripe product, price, Payment Link, meter, webhook endpoint, API key, and webhook secret",
-      "attach durable stores and run one writer before enabling DSG_REVENUE_ENFORCE",
-      "set a stable DSG_REVENUE_ADMIN_SECRET for scheduled reconciliation"
+      "upload and externally test Stripe App v2.7.1, bind its app signing and sandbox OAuth secrets, capture real Dashboard screenshots, and obtain Stripe App Marketplace approval"
     ]
   },
   "channel_delivery": {
@@ -144,7 +161,7 @@
       "a diagnosis endpoint that names the blocking problem"
     ],
     "not_claimed": [
-      "an active Stripe checkout link",
+      "a Payment Link for the usage-based DSG price; paid activation uses an authenticated Checkout Session",
       "durable storage for activation records",
       "any change to a marketplace listing's real approval state"
     ],
@@ -162,6 +179,7 @@
       {
         "channel": "Stripe Apps Marketplace",
         "carries_api_key": false,
+        "authentication": "Stripe-Signature verified against the app signing secret",
         "shows_remediation": "decision panel"
       },
       {

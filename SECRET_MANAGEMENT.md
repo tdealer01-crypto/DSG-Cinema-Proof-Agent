@@ -1,9 +1,9 @@
 # Secret Management
 
-Not every secret in this system wants the same treatment. Two of them are
-regenerated on every deployment and never persist; two are long-lived and
-externally issued. Mixing those up makes the system weaker, not stronger, so
-they are handled differently on purpose.
+Not every secret in this system wants the same treatment. Two are regenerated
+on every deployment and never persist; the Stripe and operator credentials are
+long-lived and externally issued. Mixing those up makes the system weaker, not
+stronger, so they are handled differently on purpose.
 
 ## The inventory
 
@@ -14,6 +14,9 @@ they are handled differently on purpose.
 | `DSG_REVENUE_ADMIN_SECRET` | long-lived | GitHub repository secret | manual |
 | `STRIPE_SECRET_KEY` | long-lived, issued by Stripe | **Key Vault** (or repo secret) | manual, via Stripe |
 | `STRIPE_WEBHOOK_SECRET` | long-lived, issued by Stripe | **Key Vault** (or repo secret) | manual, via Stripe |
+| `STRIPE_APP_SIGNING_SECRET` | long-lived, issued after Apps upload | **Key Vault** (or repo secret) | manual, via Stripe Apps |
+| `STRIPE_APP_OAUTH_{TEST,SANDBOX}_SECRET_KEY` | long-lived, mode-specific | **Key Vault** (or repo secret) | manual, via Stripe |
+| `STRIPE_APP_OAUTH_{TEST,SANDBOX}_AUTHORIZE_URL` | external-test invite capability | **Key Vault** (or repo secret) | replace with each test link |
 | Customer API keys | long-lived | SHA-256 hash only, never the value | reissue |
 
 The first two are the strongest case in the system: `openssl rand -hex 32` on
@@ -66,6 +69,13 @@ code changes: `revenue/stripe_sync.py` still just reads the environment.
 After the variable is set, delete the `STRIPE_SECRET_KEY` and
 `STRIPE_WEBHOOK_SECRET` repository secrets. Leaving copies behind keeps a second
 place the key can leak from.
+
+The bootstrap script seeds only the billing key and webhook secret. Add Stripe
+App signing, mode-specific OAuth keys, and external-test authorize URLs to Key
+Vault separately, then point the corresponding
+`DSG_KEY_VAULT_STRIPE_APP_*_NAME` variables at those secret names. Public app
+IDs, OAuth client IDs, and the live public authorize URL remain repository
+variables; External Test URLs do not.
 
 ## Resolution order
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import struct
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -60,7 +62,7 @@ def test_landing_exposes_every_supported_marketplace_status_truthfully():
     html = landing_html()
     expected = {
         "GitHub Marketplace": "LIVE V1.1.0",
-        "Stripe Apps": "PACKAGE V2.7 READY",
+        "Stripe Apps": "V2.7.1 REMEDIATION",
         "OpenAI Skills": "READY TO SUBMIT",
         "Microsoft Marketplace": "CONTACT-ME PACK READY",
         "AWS Marketplace": "BLOCKED EXTERNAL",
@@ -98,14 +100,18 @@ def test_launch_manifest_matches_repository_artifacts():
     statuses = {item["channel"]: item["status"] for item in manifest["channels"]}
     assert statuses == {
         "GitHub Marketplace Action": "LIVE_V1",
-        "Stripe Apps Marketplace": "PACKAGE_V2_7_PREPARED",
+        "Stripe Apps Marketplace": "IN_REMEDIATION",
         "Microsoft Marketplace": "SUBMISSION_PACK_PREPARED",
         "AWS Marketplace": "BLOCKED_EXTERNAL",
         "JetBrains Marketplace": "SPEC_ONLY",
         "OpenAI Skills": "READY_FOR_EXTERNAL_SUBMIT",
         "Direct API": "LIVE",
     }
-    assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
+    # This snapshot was raised only after the production route returned LINKED,
+    # LINKED_VERIFIED, charges_enabled, and all operational checks PASS. A
+    # Payment Link is a separate Stripe object and remains explicitly unclaimed.
+    assert manifest["product"]["checkout_status"] == "LINKED"
+    assert manifest["revenue_automation"]["verified_live"]["stripe_link_state"] == "LINKED_VERIFIED"
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
 
@@ -115,10 +121,10 @@ def test_launch_manifest_matches_repository_artifacts():
         for item in manifest["channels"]
     )
 
-    stripe_app = json.loads(
-        (ROOT / "stripe-app" / "stripe-app.template.json").read_text(encoding="utf-8")
+    stripe_listing = (ROOT / "marketplace" / "stripe" / "LISTING.md").read_text(
+        encoding="utf-8"
     )
-    assert stripe_app["websiteUrl"] == official_landing
+    assert f"**Website:** {official_landing}" in stripe_listing
     openai_listing = (
         ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md"
     ).read_text(encoding="utf-8")
@@ -154,10 +160,37 @@ def test_every_prepared_marketplace_uses_the_official_product_website():
         ROOT / "marketplace" / "aws" / "offer.md",
         ROOT / "marketplace" / "jetbrains" / "offer.md",
         ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md",
-        ROOT / "stripe-app" / "stripe-app.template.json",
+        ROOT / "marketplace" / "stripe" / "LISTING.md",
     ]
     for path in listing_files:
         assert official in path.read_text(encoding="utf-8"), path
+
+
+def test_stripe_listing_and_icon_meet_objective_submission_limits():
+    listing = (ROOT / "marketplace" / "stripe" / "LISTING.md").read_text(
+        encoding="utf-8"
+    )
+    app_name = re.search(r"^- \*\*App name:\*\* (.+)$", listing, re.MULTILINE)
+    subtitle = re.search(r"^- \*\*Subtitle:\*\* (.+)$", listing, re.MULTILINE)
+    assert app_name is not None and len(app_name.group(1)) <= 35
+    assert subtitle is not None and len(subtitle.group(1)) <= 80
+    assert not re.search(
+        r"\b(?:stripe|app|free|paid|rak|generator|api key|authenticator)\b",
+        app_name.group(1),
+        re.IGNORECASE,
+    )
+
+    about = listing.split("**About field (under 1,000 characters):**", 1)[1]
+    about = " ".join(about.split("\n\n", 1)[0].split())
+    assert 1 <= len(about) <= 1000
+    assert "**Expected support response:** Within 2 business days." in listing
+    assert "**Supported language:** English" in listing
+    assert "**BLOCKED — Based in:**" in listing
+
+    icon = (ROOT / "stripe-app" / "icon.png").read_bytes()
+    assert len(icon) <= 10 * 1024 * 1024
+    assert icon[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", icon[16:24]) == (300, 300)
 
 
 def test_retired_runtime_links_are_absent_from_current_surfaces():
