@@ -1,0 +1,54 @@
+name: Verify Remote Browser Transport
+
+on:
+  pull_request:
+    paths:
+      - 'api_v1/remote_browser.py'
+      - 'api_v1/remote_transport.py'
+      - 'api_v1/__init__.py'
+      - 'tests/test_remote_browser.py'
+      - '.github/workflows/remote-browser-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api_v1/remote_browser.py'
+      - 'api_v1/remote_transport.py'
+      - 'api_v1/__init__.py'
+      - 'tests/test_remote_browser.py'
+      - '.github/workflows/remote-browser-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-remote-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Cinema dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+
+      - name: Compile remote transport
+        run: |
+          python -m py_compile \
+            api_v1/remote_browser.py \
+            api_v1/remote_transport.py \
+            api_v1/__init__.py
+
+      - name: Verify shared browser behavior
+        run: python -m pytest -q tests/test_remote_browser.py
+
+      - name: Verify verification-v1 contract remains separate
+        run: python -m pytest -q tests/test_api_contract.py
