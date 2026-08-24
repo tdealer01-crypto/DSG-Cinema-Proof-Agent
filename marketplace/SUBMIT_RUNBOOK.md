@@ -1,10 +1,13 @@
 # Marketplace Submission Runbook
 
-Marketplace status must be verified per artifact. In particular, Stripe App
-v2.7.0 from PR #106 is **not** submit-ready: its manifest and UI/backend
-authentication contract fail current Stripe requirements. The v2.7.1
-remediation must be merged, deployed, uploaded, and externally tested before
-any review submission.
+Marketplace status must be verified per artifact. PR #108 merged the Stripe App
+v2.7.1 application remediation, but its production workflow failed in the
+Cinema deploy step: the new callback environment values read `CINEMA_URL`
+before that shell variable was assigned. The production service therefore
+still exposes the previous OAuth contract. The deployment-order fix must land
+and production must be rerun before upload, External Test, evidence capture, or
+review submission. PR #109 is the separate latest-SDK upgrade; recheck the npm
+registry immediately before upload and merge that change as well.
 
 Production runtime probes were verified on 2026-08-24. They prove the Cinema
 backend is live; they do not prove that a Stripe App bundle passes review.
@@ -59,7 +62,8 @@ deterministic constraints with exact Z3 proof receipts.
 
 ## 2 — Stripe Apps Marketplace
 
-**Status:** v2.7.0 must not be submitted. v2.7.1 remediation is under test.
+**Status:** v2.7.0 must not be submitted. The v2.7.1 application remediation is
+merged; production rollout repair and all Stripe-side review actions remain.
 
 | Blocker found in PR #106 / v2.7.0 | v2.7.1 remediation |
 |---|---|
@@ -79,13 +83,14 @@ landing returned `200`), and the Stripe callback was absent from the production
 OpenAPI document at the time. Production now exposes the Azure callback; do not
 restore the retired `dsg.pics` redirect unless it independently serves HTTPS.
 
-`revenue/stripe_marketplace.py` now serves the flow, mirroring the GitHub
-Marketplace bridge:
+The merged `revenue/stripe_marketplace.py` defines the replacement flow,
+mirroring the GitHub Marketplace bridge. Do not claim these routes are live
+until `/openapi.json` shows them after a successful production rerun:
 
 | Route | Purpose |
 |---|---|
 | `GET /marketplace/stripe/status` | Config readiness, same shape as the GitHub one |
-| `GET /marketplace/stripe/setup` | Starts the install, redirects to Stripe with signed state |
+| `GET /marketplace/stripe/setup` | Explains onboarding; its continue action redirects to Stripe with signed state |
 | `GET /marketplace/stripe/callback/{live,test,sandbox}` | Mode-specific redirect URLs Stripe tests |
 
 The callback exchanges the code at `POST /v1/oauth/token`, then reads the
@@ -129,8 +134,11 @@ is registered. Until it is set, `/marketplace/stripe/status` reports
    into repository secret `STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL` (or use
    `DSG_KEY_VAULT_STRIPE_APP_OAUTH_SANDBOX_URL_NAME`). Treat this invite-style
    URL as a bearer capability rather than a public identifier. Store the
-   test-mode link in secret `STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL`; store the public link from
-   **Settings** in `DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL` before review.
+   test-mode link in secret `STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL`; store the
+   exact Public Install URL from **Settings** in
+   `DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL` before review. The service has no
+   generic live-link fallback: this check must remain missing until the real
+   Settings URL is supplied.
 7. Re-run the Cinema production deploy so the Container App picks up all
    identifiers and secrets.
 8. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
@@ -138,9 +146,10 @@ is registered. Until it is set, `/marketplace/stripe/status` reports
    `oauth_test_secret_key`, `oauth_sandbox_secret_key`, both non-live authorize
    URLs, all three mode-specific redirect URIs, and every other
    required check `PASS`.
-9. Start External Test from `/marketplace/stripe/setup?link_type=sandbox` and
-   verify the authorize path is exactly `/oauth/v2/authorize` and its
-   `redirect_uri` ends in `/marketplace/stripe/callback/sandbox`; the obsolete
+9. Open `/marketplace/stripe/setup?link_type=sandbox`, read the onboarding
+   instructions, and use **Continue to Stripe** for External Test. Verify the
+   authorize path is exactly `/oauth/v2/authorize` and its `redirect_uri` ends
+   in `/marketplace/stripe/callback/sandbox`; the obsolete
    `/oauth/v2/{app_id}/authorize` shape and a shared cross-mode callback must
    not be used.
 
@@ -148,8 +157,10 @@ is registered. Until it is set, `/marketplace/stripe/status` reports
 
 The three PNG files have the required pixel dimensions but are placeholder
 graphics, not screenshots showing the app inside the Stripe Dashboard. Do not
-upload them to the listing. After installing v2.7.1 in a sandbox, capture the
-actual payment-detail panel at 1600×900 or wider and replace the placeholders.
+upload them to the listing. After External Test and production deployment,
+capture one matching image for each listed feature from the final candidate,
+at least 1600 pixels wide, using synthetic data and no debug/testing state.
+Also record the complete onboarding and three-feature flow for review guidance.
 
 ### Submit
 
@@ -252,9 +263,12 @@ work before any submission step applies. See `marketplace/jetbrains/offer.md`.
 
 ## Recommended order
 
-Stripe first, but do not submit v2.7.0. Merge and deploy v2.7.1, upload once,
-bind the signing secret, confirm `/marketplace/stripe/status` reads `READY`, run
-the external test, and capture real screenshots before submission.
+Stripe first, but do not submit v2.7.0. Merge the deployment-order fix and the
+separate latest-SDK PR #109, recheck the npm registry, rerun production for the
+already-merged v2.7.1 code, upload once, bind the signing secret and exact
+Dashboard-issued links, confirm
+`/marketplace/stripe/status` reads `READY`, run External Test, and capture real
+screenshots and a recording before submission.
 
 GitHub v2 second: the patch is written and only needs the app install. OpenAI
 third — it is genuinely ready. Microsoft's enrollment can run in the background

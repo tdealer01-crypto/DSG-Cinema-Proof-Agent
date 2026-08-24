@@ -41,7 +41,6 @@ router = APIRouter(prefix="/marketplace/stripe", tags=["stripe-marketplace"])
 
 STRIPE_API_BASE = "https://api.stripe.com"
 STRIPE_OAUTH_TOKEN = f"{STRIPE_API_BASE}/v1/oauth/token"
-STRIPE_APP_AUTHORIZE = "https://marketplace.stripe.com/oauth/v2/authorize"
 EXPECTED_APP_ID = "pics.dsg.governance"
 STORE_VERSION = 1
 STATE_TTL_SECONDS = 10 * 60
@@ -175,8 +174,6 @@ def _oauth_authorize_url(link_type: OAuthLinkType) -> str:
         "sandbox": "STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL",
     }
     configured = (os.getenv(env_names[link_type]) or "").strip()
-    if not configured and link_type == "live":
-        configured = STRIPE_APP_AUTHORIZE
     if not configured:
         raise StripeMarketplaceConfigurationError(
             f"{env_names[link_type]} is missing"
@@ -193,11 +190,10 @@ def _oauth_authorize_url(link_type: OAuthLinkType) -> str:
             f"{env_names[link_type]} must be a Stripe Marketplace OAuth v2 authorize URL"
         )
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    if query.get("client_id") not in {None, _client_id()}:
+    if query.get("client_id") != _client_id():
         raise StripeMarketplaceConfigurationError(
-            f"{env_names[link_type]} client_id does not match STRIPE_APP_OAUTH_CLIENT_ID"
+            f"{env_names[link_type]} must contain the matching Dashboard-issued client_id"
         )
-    query["client_id"] = _client_id()
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
@@ -613,21 +609,50 @@ def stripe_marketplace_status() -> dict[str, Any]:
     }
 
 
-@router.get("/setup")
+@router.get("/setup", response_model=None)
 def stripe_marketplace_setup(
     link_type: OAuthLinkType = Query(default="live"),
-) -> RedirectResponse:
+    begin: bool = Query(default=False),
+) -> HTMLResponse | RedirectResponse:
     try:
         authorize = urlparse(_oauth_authorize_url(link_type))
+        redirect_uri = _redirect_uri(link_type)
+    except StripeMarketplaceConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if begin:
         query = dict(parse_qsl(authorize.query, keep_blank_values=True))
         query.update(
-            redirect_uri=_redirect_uri(link_type),
+            redirect_uri=redirect_uri,
             state=_encode_state(link_type),
         )
         target = urlunparse(authorize._replace(query=urlencode(query)))
-    except StripeMarketplaceConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return RedirectResponse(target, status_code=302)
+        return RedirectResponse(target, status_code=302)
+
+    mode_label = {
+        "live": "live mode",
+        "test": "test mode",
+        "sandbox": "a managed sandbox",
+    }[link_type]
+    continue_href = html.escape(
+        f"/marketplace/stripe/setup?{urlencode({'link_type': link_type, 'begin': 'true'})}",
+        quote=True,
+    )
+    return _page(
+        f"""<main>
+<h1>Connect DSG Governance Gate</h1>
+<p>You are about to install DSG Governance Gate in {mode_label}.</p>
+<ol>
+  <li>Continue to Stripe and review the requested Payments read permission.</li>
+  <li>Approve the install for the intended Stripe account.</li>
+  <li>Stripe returns here and activates the free 25-proof monthly entitlement.</li>
+</ol>
+<p>The app reads bounded payment context and displays a policy decision and proof receipt. It never captures, refunds, or blocks a payment automatically.</p>
+<p><a href="{continue_href}">Continue to Stripe</a></p>
+<p>You can cancel on Stripe without changing your account.</p>
+</main>""",
+        status_code=200,
+    )
 
 
 @router.get("/callback/{callback_link_type}")

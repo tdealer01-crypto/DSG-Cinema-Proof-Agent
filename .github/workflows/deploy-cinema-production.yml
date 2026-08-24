@@ -338,6 +338,24 @@ jobs:
             return 1
           }
 
+          # OAuth callback URLs must be known before CINEMA_ENV_ARGS is built.
+          # Existing apps expose the authoritative ingress FQDN. For a first
+          # deployment, Azure Container Apps deterministically combines the app
+          # name with the environment's default domain.
+          if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
+            CINEMA_FQDN=$(az containerapp show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query properties.configuration.ingress.fqdn --output tsv)
+          else
+            CONTAINER_ENV_DOMAIN=$(az containerapp env show \
+              --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_ENV" \
+              --query properties.defaultDomain --output tsv)
+            test -n "$CONTAINER_ENV_DOMAIN"
+            CINEMA_FQDN="$CINEMA_APP.$CONTAINER_ENV_DOMAIN"
+          fi
+          test -n "$CINEMA_FQDN"
+          CINEMA_URL="https://$CINEMA_FQDN"
+
           # Secret and env sets are assembled once, so an optional credential adds
           # one array entry instead of another copy of the whole deployment call.
           CINEMA_SECRET_ARGS=("backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET")
@@ -596,6 +614,7 @@ jobs:
 
           CINEMA_FQDN=$(az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --query properties.configuration.ingress.fqdn --output tsv)
           test -n "$CINEMA_FQDN"
+          CINEMA_URL="https://$CINEMA_FQDN"
           echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
 
       - name: Verify production Cinema to Z3 E2E and replay

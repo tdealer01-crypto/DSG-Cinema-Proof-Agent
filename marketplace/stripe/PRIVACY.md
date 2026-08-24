@@ -1,9 +1,9 @@
 # Privacy Policy — DSG Governance Gate
 
-**Effective date:** 24 August 2026  
-**Service:** DSG Governance Gate / DSG Verified Execution  
-**Rights holder and primary contact:** Thanawat Suparongsuwan  
-**Contact:** [t.dealer01@dsg.pics](mailto:t.dealer01@dsg.pics)
+- **Effective date:** August 24, 2026
+- **Service:** DSG Governance Gate / DSG Verified Execution
+- **Rights holder and primary contact:** Thanawat Suparongsuwan
+- **Contact:** [t.dealer01@dsg.pics](mailto:t.dealer01@dsg.pics)
 
 This policy describes how DSG Governance Gate processes information when a
 Stripe user installs the app or requests a payment verification.

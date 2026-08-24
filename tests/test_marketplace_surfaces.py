@@ -62,7 +62,7 @@ def test_landing_exposes_every_supported_marketplace_status_truthfully():
     html = landing_html()
     expected = {
         "GitHub Marketplace": "LIVE V1.1.0",
-        "Stripe Apps": "V2.7.1 REMEDIATION",
+        "Stripe Apps": "V2.7.1 DEPLOY FIX",
         "OpenAI Skills": "READY TO SUBMIT",
         "Microsoft Marketplace": "CONTACT-ME PACK READY",
         "AWS Marketplace": "BLOCKED EXTERNAL",
@@ -186,11 +186,67 @@ def test_stripe_listing_and_icon_meet_objective_submission_limits():
     assert "**Expected support response:** Within 2 business days." in listing
     assert "**Supported language:** English" in listing
     assert "**BLOCKED — Based in:**" in listing
+    assert "exact Public Install URL" in listing
+    assert "Settings" in listing
+    assert "No external DSG credentials are required" in listing
+    assert "$0.10 per Stripe policy decision proof" in listing
+    assert "The panel verifies\n   the current object automatically" in listing
+    assert "Verify with exact proof" not in listing
+
+    feature_blocks = re.findall(
+        r"^### Feature \d+\n\n(.*?)(?=^### Feature \d+|^## Pricing)",
+        listing,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert len(feature_blocks) == 3
+    for feature in feature_blocks:
+        title = re.search(r"^- \*\*Title:\*\* (.+)$", feature, re.MULTILINE)
+        assert title is not None and len(title.group(1)) <= 80
+        description = feature.split("- **Description:**", 1)[1].split(
+            "\n- **Image:**", 1
+        )[0]
+        normalized = " ".join(description.split())
+        assert 1 <= len(normalized) <= 300
+        assert "- **Image:** **BLOCKED**" in feature
 
     icon = (ROOT / "stripe-app" / "icon.png").read_bytes()
     assert len(icon) <= 10 * 1024 * 1024
     assert icon[:8] == b"\x89PNG\r\n\x1a\n"
     assert struct.unpack(">II", icon[16:24]) == (300, 300)
+
+
+def test_stripe_review_documents_cover_current_submission_gates():
+    checklist = (
+        ROOT / "marketplace" / "stripe" / "SUBMISSION_CHECKLIST.md"
+    ).read_text(encoding="utf-8")
+    support = (ROOT / "marketplace" / "stripe" / "SUPPORT.md").read_text(
+        encoding="utf-8"
+    )
+    privacy = (ROOT / "marketplace" / "stripe" / "PRIVACY.md").read_text(
+        encoding="utf-8"
+    )
+    for gate in (
+        "account is activated",
+        "not a Connect-enabled platform account",
+        "only app published",
+        "business purpose is not prohibited",
+        "Public Install URL",
+        "all three key features",
+        "Review and publish",
+        "click **Publish**",
+    ):
+        assert gate in checklist
+    assert "within 2 business days" in support
+    assert "confirm that each monitored route receives it" in support
+    assert "**Effective date:** August 24, 2026" in privacy
+
+
+def test_public_pricing_and_marketplace_claims_match_the_live_catalog():
+    html = landing_html()
+    assert "$0.05 <small>/ general proof receipt</small>" in html
+    assert "Stripe Dashboard policy decisions: $0.10 per verified proof" in html
+    assert "Marketplace-deployed" not in html
+    assert "Stripe Apps and OpenAI Skills are prepared packages pending external review" in html
 
 
 def test_retired_runtime_links_are_absent_from_current_surfaces():
@@ -233,3 +289,13 @@ def test_production_deployments_have_one_coordinated_owner():
     assert "Z3_SECRET=$(openssl rand -hex 32)" not in cinema
     assert "  push:\n    branches: [main]" not in z3
     assert "deploy-cinema-production.yml" in z3
+    deploy_cinema = cinema.split("- name: Deploy Cinema production", 1)[1].split(
+        "- name: Verify production Cinema", 1
+    )[0]
+    cinema_url_assignment = 'CINEMA_URL="https://$CINEMA_FQDN"'
+    live_callback = (
+        '"STRIPE_APP_OAUTH_LIVE_REDIRECT_URI='
+        '$CINEMA_URL/marketplace/stripe/callback/live"'
+    )
+    assert deploy_cinema.index(cinema_url_assignment) < deploy_cinema.index(live_callback)
+    assert "CONTAINER_ENV_DOMAIN=$(az containerapp env show" in deploy_cinema
