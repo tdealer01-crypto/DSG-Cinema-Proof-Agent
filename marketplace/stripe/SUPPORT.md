@@ -2,6 +2,10 @@
 
 Public support: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues
 
+Expected response time: within 2 business days. Before submission, the account
+owner must send a test request through both the public issue channel and the
+privacy email below and confirm that each monitored route receives it.
+
 Include the app version, sandbox/live mode, charge or PaymentIntent object type,
 the displayed decision or error, non-secret reproduction steps, and shortened
 proof/context hashes when safe. Never post full customer records, API keys,

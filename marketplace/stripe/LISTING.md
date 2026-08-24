@@ -1,7 +1,8 @@
 # Stripe App Marketplace listing — DSG Governance Gate
 
-Use this copy only after version 2.7.1 passes its sandbox External Test. Fields
-marked **BLOCKED** must not be filled with placeholder evidence.
+Use this copy only after version 2.7.1 passes its sandbox External Test and the
+same candidate is deployed to production. Fields marked **BLOCKED** must not be
+filled with placeholder evidence.
 
 ## Identity
 
@@ -19,6 +20,9 @@ marked **BLOCKED** must not be filled with placeholder evidence.
 - **Privacy policy:** https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/stripe/PRIVACY.md
 - **Pricing page:** https://dsgoneverifiedweb.z1.web.core.windows.net/#pricing
 - **Public OAuth onboarding URL for review:** https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/marketplace/stripe/setup?link_type=live
+- **OAuth source gate:** **BLOCKED** until production status confirms that the
+  live authorize URL is the exact Public Install URL copied from the app's
+  **Settings** tab. Never substitute an External Test URL.
 - **Supported language:** English
 - **BLOCKED — Based in:** Confirm the legal headquarters location in the Stripe Dashboard; do not infer it from repository or account data.
 
@@ -40,12 +44,29 @@ solver credential.
 
 ## Key features
 
-1. **Verified payment decision** — Shows ALLOW, REVIEW, or BLOCK with the
-   factors and risk score on the payment detail page.
-2. **Exact proof receipt** — Shows proof and transaction-binding references
-   only after the backend returns `VERIFIED_GLOBAL_OPTIMUM`.
-3. **Fail-closed result** — Authentication, entitlement, timeout, or proof
-   failures remain REVIEW with an actionable next step.
+### Feature 1
+
+- **Title:** Verified payment decision
+- **Description:** View ALLOW, REVIEW, or BLOCK with a plain-language reason
+  and risk score on the payment detail page. DSG provides guidance only and
+  never captures, refunds, or blocks a payment automatically.
+- **Image:** **BLOCKED** — final Dashboard screenshot of this exact panel state.
+
+### Feature 2
+
+- **Title:** Exact proof receipt
+- **Description:** See the policy version and shortened proof reference only
+  after the backend returns an exact Z3 global-optimum verification, making the
+  displayed decision traceable to its proof receipt.
+- **Image:** **BLOCKED** — final Dashboard screenshot showing these exact fields.
+
+### Feature 3
+
+- **Title:** Transaction-bound verification
+- **Description:** Match the shortened context reference to the current Stripe
+  payment. The binding prevents a verified result for one transaction from
+  being presented as the result for another.
+- **Image:** **BLOCKED** — final Dashboard screenshot showing this exact field.
 
 ## Pricing
 
@@ -61,24 +82,43 @@ separate Stripe Checkout flow and a current linked entitlement.
 
 ## Reviewer test instructions
 
-1. Open `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/marketplace/stripe/setup?link_type=sandbox`,
-   install version 2.7.1 in a Stripe sandbox, and complete the DSG onboarding
-   redirect.
-2. Create or open a test-mode charge or PaymentIntent.
-3. Open its payment detail page and locate **DSG Governance Gate**.
-4. Confirm the panel reaches ALLOW, REVIEW, or BLOCK and displays a risk score,
-   policy version, proof reference, and transaction binding.
-5. Temporarily make the Cinema endpoint unavailable or use an unlinked install
-   and confirm the safe state is REVIEW, never ALLOW.
+These steps cover onboarding and all three listed features against the
+production Cinema service without requiring a destructive or artificial
+outage.
 
-No reviewer password or DSG API key is required. The Stripe-signed install is
-resolved to the free evaluation entitlement.
+1. Open the App Review URL above. Read the onboarding page, select **Continue
+   to Stripe**, review the requested Payments read permission, and approve the
+   install in Stripe's review account.
+2. After Stripe returns to DSG, return to the Stripe Dashboard and open a
+   synthetic test-mode charge or PaymentIntent with a final status.
+3. On its payment detail page, open **DSG Governance Gate**. The panel verifies
+   the current object automatically; **Retry verification** appears only when
+   the first attempt cannot complete.
+4. Confirm Feature 1: the panel displays ALLOW, REVIEW, or BLOCK with its reason
+   and risk score.
+5. Confirm Feature 2: the same completed result displays the policy version,
+   **Z3 global optimum verified**, and a shortened proof reference.
+6. Confirm Feature 3: the same completed result displays a shortened context
+   reference bound to the open charge or PaymentIntent.
+
+**Test credentials:** No external DSG credentials are required. The
+Stripe-authorized install grants a free 25-proof monthly entitlement, and UI
+requests are signed by Stripe. Do not enter a real customer account, DSG API
+key, or shared password in the review form. If the form requires credentials
+despite this credential-free flow, contact Stripe Support instead of inventing
+an account.
+
+**BLOCKED — screen recording:** Record the final onboarding and three-feature
+flow above after production deployment. Use only synthetic Stripe test data and
+show no credentials, customer data, debug overlays, or secrets.
 
 ## Listing assets
 
 - Icon: `stripe-app/icon.png` — validated at 300×300 PNG.
-- **BLOCKED:** Key feature screenshots must be captured from the actual v2.7.1
-  sandbox payment-detail panel at 1600×900 or wider after External Test passes.
+- **BLOCKED:** Each key-feature screenshot must match its title and description
+  and be captured from the final v2.7.1 payment-detail panel at least 1600
+  pixels wide, after External Test passes. Use synthetic data and no debug or
+  in-progress testing state.
 - Do not use the current files in `public/stripe-marketplace/`; they are
   dimensionally valid placeholders, not product screenshots.
 

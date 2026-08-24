@@ -56,7 +56,7 @@
       "target_version": "2.7.1",
       "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "stripe-app/",
-      "next": "merge and deploy v2.7.1, upload with Stripe CLI, bind the generated app signing secret, run External Test, capture real Dashboard screenshots, then submit review",
+      "next": "merge the deployment-order fix and separate latest-SDK PR #109, rerun production for v2.7.1, recheck the npm registry, upload with Stripe CLI, bind the generated app signing secret and exact Dashboard OAuth links, run External Test, capture real Dashboard evidence, then submit review",
       "commercial_role": "native Stripe distribution"
     },
     {

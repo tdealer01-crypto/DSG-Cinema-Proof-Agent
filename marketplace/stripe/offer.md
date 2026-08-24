@@ -46,11 +46,19 @@ Do not claim certification or regulatory compliance without independent evidence
    `STRIPE_APP_OAUTH_TEST_SECRET_KEY` and
    `STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY`; OAuth codes are exchanged with the
    key matching both the callback path and signed, single-use `state`.
-7. Start sandbox onboarding at
-   `/marketplace/stripe/setup?link_type=sandbox`, install version `2.7.1`, and
-   complete the external test.
-8. Capture real 1600×900 Stripe Dashboard screenshots from that tested build.
-9. Fill the listing, verify support/privacy links, and submit version `2.7.1`.
+7. Copy the managed-sandbox External Test authorize URL into its secret and
+   the exact live Public Install URL from the app's **Settings** tab into
+   `DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL`. Never use an External Test URL
+   for App Review.
+8. Start sandbox onboarding at
+   `/marketplace/stripe/setup?link_type=sandbox`, read the instructions, select
+   **Continue to Stripe**, install version `2.7.1`, and complete External Test.
+9. Deploy the same candidate to production and verify every Stripe Marketplace
+   status check passes, including the live Settings URL.
+10. Capture three real Stripe Dashboard screenshots at least 1600 pixels wide
+    plus a screen recording from the final candidate, using synthetic data.
+11. Fill the listing, verify support/privacy links and publisher eligibility,
+    submit version `2.7.1`, and publish only after Stripe approves it.
 
 The repository workflow `.github/workflows/stripe-app-v2-7.yml` prepares a
 production-bound submission artifact only after the live Cinema proof endpoint,

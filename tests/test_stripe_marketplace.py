@@ -53,6 +53,10 @@ def marketplace(monkeypatch, tmp_path):
             f"https://cinema.example.test/marketplace/stripe/callback/{link_type}",
         )
     monkeypatch.setenv(
+        "STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL",
+        f"https://marketplace.stripe.com/oauth/v2/authorize?client_id={CLIENT_ID}",
+    )
+    monkeypatch.setenv(
         "STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL",
         f"https://marketplace.stripe.com/oauth/v2/authorize?client_id={CLIENT_ID}",
     )
@@ -150,6 +154,25 @@ def test_status_requires_dashboard_sandbox_authorize_url(marketplace, monkeypatc
         follow_redirects=False,
     )
     assert response.status_code == 503
+
+
+def test_status_requires_dashboard_live_authorize_url(marketplace, monkeypatch):
+    monkeypatch.delenv("STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL")
+    body = client.get("/marketplace/stripe/status").json()
+    assert body["status"] == "ACTION_REQUIRED"
+    assert body["checks"]["oauth_live_authorize_url"] == "MISSING"
+    response = client.get("/marketplace/stripe/setup", follow_redirects=False)
+    assert response.status_code == 503
+
+
+def test_status_rejects_generic_live_authorize_url(marketplace, monkeypatch):
+    monkeypatch.setenv(
+        "STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL",
+        "https://marketplace.stripe.com/oauth/v2/authorize",
+    )
+    body = client.get("/marketplace/stripe/status").json()
+    assert body["status"] == "ACTION_REQUIRED"
+    assert body["checks"]["oauth_live_authorize_url"] == "MISSING"
 
 
 def test_status_requires_test_mode_key_and_authorize_url(marketplace, monkeypatch):
@@ -321,8 +344,21 @@ def test_signed_ui_request_fails_closed_without_signing_secret(marketplace, monk
     assert response.json()["detail"]["error"] == "STRIPE_APP_SIGNING_SECRET_MISSING"
 
 
-def test_setup_redirects_to_stripe_authorize_with_signed_state(marketplace):
+def test_setup_explains_install_before_leaving_for_stripe(marketplace):
     response = client.get("/marketplace/stripe/setup", follow_redirects=False)
+    assert response.status_code == 200
+    assert "Connect DSG Governance Gate" in response.text
+    assert "free 25-proof monthly entitlement" in response.text
+    assert "never captures, refunds, or blocks" in response.text
+    assert "/marketplace/stripe/setup?link_type=live&amp;begin=true" in response.text
+    assert marketplace[1].snapshot()["oauth_states"] == {}
+
+
+def test_setup_redirects_to_stripe_authorize_with_signed_state(marketplace):
+    response = client.get(
+        "/marketplace/stripe/setup?link_type=live&begin=true",
+        follow_redirects=False,
+    )
     assert response.status_code == 302
     parsed = urlparse(response.headers["location"])
     assert parsed.scheme == "https"
@@ -340,7 +376,7 @@ def test_setup_redirects_to_stripe_authorize_with_signed_state(marketplace):
 
 def test_setup_binds_sandbox_link_type_into_state(marketplace):
     response = client.get(
-        "/marketplace/stripe/setup?link_type=sandbox",
+        "/marketplace/stripe/setup?link_type=sandbox&begin=true",
         follow_redirects=False,
     )
     query = parse_qs(urlparse(response.headers["location"]).query)
