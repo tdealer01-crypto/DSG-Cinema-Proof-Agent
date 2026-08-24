@@ -42,9 +42,15 @@ Do not claim certification or regulatory compliance without independent evidence
 4. Upload the app with Stripe CLI. Upload must happen before signed-request
    testing because Stripe creates the app signing secret during the first upload.
 5. Bind the app signing secret to production as `STRIPE_APP_SIGNING_SECRET`.
-6. Install version `2.7.1` in a Stripe sandbox and complete the external test.
-7. Capture real 1600×900 Stripe Dashboard screenshots from that tested build.
-8. Fill the listing, verify support/privacy links, and submit version `2.7.1`.
+6. Bind the test-mode and managed-sandbox developer keys as
+   `STRIPE_APP_OAUTH_TEST_SECRET_KEY` and
+   `STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY`; OAuth codes are exchanged with the
+   key matching both the callback path and signed, single-use `state`.
+7. Start sandbox onboarding at
+   `/marketplace/stripe/setup?link_type=sandbox`, install version `2.7.1`, and
+   complete the external test.
+8. Capture real 1600×900 Stripe Dashboard screenshots from that tested build.
+9. Fill the listing, verify support/privacy links, and submit version `2.7.1`.
 
 The repository workflow `.github/workflows/stripe-app-v2-7.yml` prepares a
 production-bound submission artifact only after the live Cinema proof endpoint,

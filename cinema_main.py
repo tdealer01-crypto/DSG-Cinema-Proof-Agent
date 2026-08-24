@@ -112,6 +112,7 @@ class StripeVerifyRequest(BaseModel):
     stripe_account_id: str = Field(min_length=6, max_length=255)
     user_id: str | None = Field(default=None, min_length=4, max_length=255)
     account_id: str | None = Field(default=None, min_length=6, max_length=255)
+    livemode: bool | None = None
     object_type: Literal["charge", "payment_intent", "payout", "refund"]
     object_id: str = Field(min_length=4, max_length=255)
     amount_cents: int | None = Field(default=None, ge=0, le=100_000_000_000)
@@ -317,6 +318,7 @@ def _decision_from_witness(witness: Any) -> Literal["ALLOW", "REVIEW", "BLOCK"]:
 def _stripe_context_hash(request: StripeVerifyRequest, risk_score: int) -> str:
     canonical = {
         "stripe_account_id": request.stripe_account_id,
+        "livemode": request.livemode,
         "object_type": request.object_type,
         "object_id": request.object_id,
         "amount_cents": request.amount_cents,
@@ -338,6 +340,8 @@ def _stripe_app_authorization(
     """Authenticate a Stripe UI request and bind it to its installed account."""
     try:
         signing_secret = _required_secret("STRIPE_APP_SIGNING_SECRET")
+        if not signing_secret.startswith("absec_"):
+            raise ConfigurationError("STRIPE_APP_SIGNING_SECRET must start with absec_")
     except ConfigurationError as exc:
         raise HTTPException(
             status_code=503,
@@ -372,8 +376,16 @@ def _stripe_app_authorization(
             status_code=403,
             detail="signed Stripe account does not match stripe_account_id",
         )
+    if not isinstance(request.livemode, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="signed Stripe App requests require livemode",
+        )
 
-    link = get_stripe_marketplace_store().link_for(request.account_id)
+    link = get_stripe_marketplace_store().link_for(
+        request.account_id,
+        livemode=request.livemode,
+    )
     linked_account_id = link.get("account_id") if link else None
     if not isinstance(linked_account_id, str) or not linked_account_id:
         raise HTTPException(

@@ -7,7 +7,6 @@ const root = path.resolve(here, '..');
 const manifest = JSON.parse(await readFile(path.join(root, 'stripe-app.json'), 'utf8'));
 
 const allowedTopLevel = new Set([
-  '$schema',
   'allowed_redirect_uris',
   'constants',
   'distribution_type',
@@ -36,12 +35,18 @@ if (
   throw new Error('Stripe app identity, distribution, or authentication contract is invalid');
 }
 
-if (!Array.isArray(manifest.allowed_redirect_uris) || manifest.allowed_redirect_uris.length !== 1) {
-  throw new Error('Exactly one production OAuth redirect URI is required');
+if (!Array.isArray(manifest.allowed_redirect_uris) || manifest.allowed_redirect_uris.length !== 3) {
+  throw new Error('Live, test-mode, and managed-sandbox OAuth redirect URIs are required');
 }
-const [redirectUri] = manifest.allowed_redirect_uris;
-if (!/^https:\/\/[^/]+\/marketplace\/stripe\/callback$/.test(redirectUri)) {
-  throw new Error(`OAuth redirect URI is not a concrete HTTPS callback: ${redirectUri}`);
+const redirectOrigin = new URL(manifest.allowed_redirect_uris[0]).origin;
+if (!redirectOrigin.startsWith('https://')) {
+  throw new Error('OAuth redirect origin must use HTTPS');
+}
+const expectedRedirects = ['live', 'test', 'sandbox'].map(
+  (mode) => `${redirectOrigin}/marketplace/stripe/callback/${mode}`,
+);
+if (JSON.stringify(manifest.allowed_redirect_uris) !== JSON.stringify(expectedRedirects)) {
+  throw new Error('OAuth redirects must be the ordered, mode-specific Cinema callbacks');
 }
 
 const expectedPermissions = new Set(['charge_read', 'payment_intent_read']);

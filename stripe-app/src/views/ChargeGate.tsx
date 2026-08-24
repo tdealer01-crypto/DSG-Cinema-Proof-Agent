@@ -20,8 +20,34 @@ type StripeObjectType = 'charge' | 'payment_intent';
 
 const stripe = new Stripe(STRIPE_API_KEY, {
   httpClient: createHttpClient(),
+  apiVersion: '2025-08-27.basil',
 });
 const REQUEST_TIMEOUT_MS = 20_000;
+
+function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      const error = new Error('Operation aborted');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 interface Remediation {
   code: string;
@@ -109,20 +135,27 @@ function readTransactionContext({ userContext, environment }: ExtensionContextVa
   };
 }
 
-async function retrieveTransaction(objectType: StripeObjectType, objectId: string) {
+async function retrieveTransaction(
+  objectType: StripeObjectType,
+  objectId: string,
+  timeoutMs: number,
+) {
   if (objectType === 'charge') {
-    const charge = await stripe.charges.retrieve(objectId);
+    const charge = await stripe.charges.retrieve(objectId, { timeout: timeoutMs });
     return {
       amountCents: charge.amount,
       currency: charge.currency,
       stripeStatus: charge.status,
       riskLevel: normalizeRiskLevel(charge.outcome?.risk_level),
+      livemode: charge.livemode,
     };
   }
 
-  const paymentIntent = await stripe.paymentIntents.retrieve(objectId, {
-    expand: ['latest_charge'],
-  });
+  const paymentIntent = await stripe.paymentIntents.retrieve(
+    objectId,
+    { expand: ['latest_charge'] },
+    { timeout: timeoutMs },
+  );
   const latestCharge =
     paymentIntent.latest_charge && typeof paymentIntent.latest_charge !== 'string'
       ? paymentIntent.latest_charge
@@ -132,6 +165,7 @@ async function retrieveTransaction(objectType: StripeObjectType, objectId: strin
     currency: paymentIntent.currency,
     stripeStatus: paymentIntent.status,
     riskLevel: normalizeRiskLevel(latestCharge?.outcome?.risk_level),
+    livemode: paymentIntent.livemode,
   };
 }
 
@@ -149,9 +183,11 @@ export default function ChargeGate(extensionContext: ExtensionContextValue) {
 
   useEffect(() => {
     let cancelled = false;
+    let controller: AbortController | undefined;
 
     const verify = async () => {
       let requestTimeout: ReturnType<typeof setTimeout> | undefined;
+      let requestTimedOut = false;
       if (
         !transaction.accountId ||
         !transaction.userId ||
@@ -170,12 +206,22 @@ export default function ChargeGate(extensionContext: ExtensionContextValue) {
       setRemediation(null);
 
       try {
-        const stripeObject = await retrieveTransaction(
-          transaction.objectType,
-          transaction.objectId,
+        controller = new AbortController();
+        requestTimeout = setTimeout(() => {
+          requestTimedOut = true;
+          controller?.abort();
+        }, REQUEST_TIMEOUT_MS);
+        const stripeObject = await withAbort(
+          retrieveTransaction(
+            transaction.objectType,
+            transaction.objectId,
+            REQUEST_TIMEOUT_MS,
+          ),
+          controller.signal,
         );
         const signedPayload: Record<string, string | number | boolean> = {
           stripe_account_id: transaction.accountId,
+          livemode: stripeObject.livemode,
           object_type: transaction.objectType,
           object_id: transaction.objectId,
           amount_cents: stripeObject.amountCents,
@@ -186,14 +232,19 @@ export default function ChargeGate(extensionContext: ExtensionContextValue) {
           signedPayload.risk_level = stripeObject.riskLevel;
         }
 
-        const controller = new AbortController();
-        requestTimeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        // Stripe adds the current user_id and account_id to this signature.
+        // Per the Stripe Apps backend guide, pass only the additional payload,
+        // then append those two context fields to the body.
+        const stripeSignature = await withAbort(
+          fetchStripeSignature(signedPayload),
+          controller.signal,
+        );
         const response = await fetch(`${CINEMA_API_BASE}/stripe/evaluate`, {
           method: 'POST',
           headers: {
             Accept: 'application/json',
             'Content-Type': 'application/json',
-            'Stripe-Signature': await fetchStripeSignature(signedPayload),
+            'Stripe-Signature': stripeSignature,
           },
           body: JSON.stringify({
             ...signedPayload,
@@ -232,7 +283,7 @@ export default function ChargeGate(extensionContext: ExtensionContextValue) {
         if (!cancelled) {
           setResult(null);
           setError(
-            err instanceof Error && err.name === 'AbortError'
+            requestTimedOut || (err instanceof Error && err.name === 'AbortError')
               ? 'Verification timed out. Retry after checking the Cinema service status.'
               : err instanceof Error
                 ? err.message
@@ -253,6 +304,7 @@ export default function ChargeGate(extensionContext: ExtensionContextValue) {
 
     return () => {
       cancelled = true;
+      controller?.abort();
     };
   }, [
     transaction.accountId,

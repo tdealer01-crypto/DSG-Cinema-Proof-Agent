@@ -27,8 +27,8 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
-from urllib.parse import urlencode
+from typing import Any, Literal, Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -41,10 +41,12 @@ router = APIRouter(prefix="/marketplace/stripe", tags=["stripe-marketplace"])
 
 STRIPE_API_BASE = "https://api.stripe.com"
 STRIPE_OAUTH_TOKEN = f"{STRIPE_API_BASE}/v1/oauth/token"
-STRIPE_APP_AUTHORIZE = "https://marketplace.stripe.com/oauth/v2"
+STRIPE_APP_AUTHORIZE = "https://marketplace.stripe.com/oauth/v2/authorize"
+EXPECTED_APP_ID = "pics.dsg.governance"
 STORE_VERSION = 1
 STATE_TTL_SECONDS = 10 * 60
 INSTALL_PLAN = "free"
+OAuthLinkType = Literal["live", "test", "sandbox"]
 
 
 class StripeMarketplaceConfigurationError(RuntimeError):
@@ -74,15 +76,55 @@ def _secret(name: str) -> str:
 
 def _app_id() -> str:
     value = (os.getenv("STRIPE_APP_ID") or "").strip()
-    if not value:
-        raise StripeMarketplaceConfigurationError("STRIPE_APP_ID is missing")
+    if value != EXPECTED_APP_ID:
+        raise StripeMarketplaceConfigurationError(
+            f"STRIPE_APP_ID must match the manifest id {EXPECTED_APP_ID}"
+        )
     return value
 
 
 def _client_id() -> str:
     value = (os.getenv("STRIPE_APP_OAUTH_CLIENT_ID") or "").strip()
-    if not value:
-        raise StripeMarketplaceConfigurationError("STRIPE_APP_OAUTH_CLIENT_ID is missing")
+    if not value.startswith("ca_"):
+        raise StripeMarketplaceConfigurationError(
+            "STRIPE_APP_OAUTH_CLIENT_ID must be a Stripe ca_ client id"
+        )
+    return value
+
+
+def _developer_key(name: str, *, prefix: str) -> str:
+    value = _secret(name)
+    if not value.startswith(prefix):
+        raise StripeMarketplaceConfigurationError(f"{name} must start with {prefix}")
+    return value
+
+
+def _redirect_uri(link_type: OAuthLinkType) -> str:
+    """Return the mode-specific callback registered in the app manifest.
+
+    Stripe's sandbox guidance requires separate redirect URIs for live mode,
+    test mode, and general sandboxes so the backend can select the matching
+    developer key before it handles an authorization code.  The signed state
+    carries the same mode as a second, independent binding.
+    """
+    env_names = {
+        "live": "STRIPE_APP_OAUTH_LIVE_REDIRECT_URI",
+        "test": "STRIPE_APP_OAUTH_TEST_REDIRECT_URI",
+        "sandbox": "STRIPE_APP_OAUTH_SANDBOX_REDIRECT_URI",
+    }
+    value = (os.getenv(env_names[link_type]) or "").strip()
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.path != f"/marketplace/stripe/callback/{link_type}"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise StripeMarketplaceConfigurationError(
+            f"{env_names[link_type]} must be the HTTPS Cinema {link_type} callback"
+        )
     return value
 
 
@@ -95,8 +137,70 @@ def _state_signing_secret() -> str:
     return _secret("STRIPE_SECRET_KEY")
 
 
+def _oauth_exchange_secret(link_type: OAuthLinkType) -> str:
+    """Return the developer key matching the OAuth install-link mode.
+
+    Stripe issues distinct live, test-mode, and managed-sandbox OAuth links.
+    Codes from those links must be exchanged with the corresponding developer
+    key; silently falling back to the live billing key would make External Test
+    fail only after the reviewer reaches the callback.
+    """
+    if link_type == "live":
+        override = (os.getenv("STRIPE_APP_OAUTH_LIVE_SECRET_KEY") or "").strip()
+        if override:
+            if len(override) < 32 or not override.startswith("sk_live_"):
+                raise StripeMarketplaceConfigurationError(
+                    "STRIPE_APP_OAUTH_LIVE_SECRET_KEY must be a live secret key"
+                )
+            return override
+        return _developer_key("STRIPE_SECRET_KEY", prefix="sk_live_")
+    if link_type == "test":
+        return _developer_key("STRIPE_APP_OAUTH_TEST_SECRET_KEY", prefix="sk_test_")
+    if link_type == "sandbox":
+        return _developer_key("STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY", prefix="sk_test_")
+    raise StripeMarketplaceConfigurationError("unsupported Stripe OAuth link type")
+
+
+def _oauth_authorize_url(link_type: OAuthLinkType) -> str:
+    """Return and validate the Dashboard-issued authorize link for a mode."""
+    env_names = {
+        "live": "STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL",
+        "test": "STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL",
+        "sandbox": "STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL",
+    }
+    configured = (os.getenv(env_names[link_type]) or "").strip()
+    if not configured and link_type == "live":
+        configured = STRIPE_APP_AUTHORIZE
+    if not configured:
+        raise StripeMarketplaceConfigurationError(
+            f"{env_names[link_type]} is missing"
+        )
+
+    parsed = urlparse(configured)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "marketplace.stripe.com"
+        or parsed.path != "/oauth/v2/authorize"
+        or parsed.fragment
+    ):
+        raise StripeMarketplaceConfigurationError(
+            f"{env_names[link_type]} must be a Stripe Marketplace OAuth v2 authorize URL"
+        )
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if query.get("client_id") not in {None, _client_id()}:
+        raise StripeMarketplaceConfigurationError(
+            f"{env_names[link_type]} client_id does not match STRIPE_APP_OAUTH_CLIENT_ID"
+        )
+    query["client_id"] = _client_id()
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 def _empty_state() -> dict[str, Any]:
-    return {"version": STORE_VERSION, "links": {}}
+    return {"version": STORE_VERSION, "links": {}, "oauth_states": {}}
+
+
+def _link_key(stripe_user_id: str, livemode: bool) -> str:
+    return f"{'live' if livemode else 'test'}:{stripe_user_id}"
 
 
 class StripeMarketplaceStore:
@@ -130,6 +234,13 @@ class StripeMarketplaceStore:
             raise ValueError("unsupported Stripe Marketplace store")
         if not isinstance(raw.get("links"), dict):
             raise ValueError("invalid Stripe Marketplace store")
+        # Version 1 stores created before OAuth state persistence don't have
+        # this key.  Adding it in memory is a backward-compatible migration;
+        # the next state or link write persists the upgraded shape.
+        if "oauth_states" not in raw:
+            raw["oauth_states"] = {}
+        if not isinstance(raw.get("oauth_states"), dict):
+            raise ValueError("invalid Stripe Marketplace OAuth state store")
         self._state = raw
         self._loaded_signature = self._signature()
 
@@ -174,10 +285,57 @@ class StripeMarketplaceStore:
         with self._critical():
             return json.loads(json.dumps(self._state))
 
-    def link_for(self, stripe_user_id: str) -> Optional[dict[str, Any]]:
+    def link_for(self, stripe_user_id: str, *, livemode: bool) -> Optional[dict[str, Any]]:
         with self._critical():
-            link = self._state["links"].get(stripe_user_id)
+            link = self._state["links"].get(_link_key(stripe_user_id, livemode))
+            # Read the pre-mode-bound key only when its stored mode agrees.
+            # A later write migrates it to the composite key.
+            if not isinstance(link, dict):
+                legacy = self._state["links"].get(stripe_user_id)
+                if isinstance(legacy, dict) and legacy.get("livemode") is livemode:
+                    link = legacy
             return dict(link) if isinstance(link, dict) else None
+
+    def remember_oauth_state(
+        self,
+        *,
+        nonce: str,
+        link_type: OAuthLinkType,
+        expires_at: int,
+    ) -> None:
+        with self._critical():
+            now = _utc_epoch()
+            states = self._state["oauth_states"]
+
+            def unexpired(value: Any) -> bool:
+                if not isinstance(value, dict):
+                    return False
+                candidate = value.get("expires_at")
+                return isinstance(candidate, int) and candidate >= now
+
+            self._state["oauth_states"] = {
+                key: value
+                for key, value in states.items()
+                if unexpired(value)
+            }
+            self._state["oauth_states"][nonce] = {
+                "link_type": link_type,
+                "expires_at": expires_at,
+            }
+            self._persist()
+
+    def consume_oauth_state(self, *, nonce: str, link_type: OAuthLinkType) -> bool:
+        """Consume a saved OAuth state exactly once."""
+        with self._critical():
+            state = self._state["oauth_states"].pop(nonce, None)
+            self._persist()
+            expires_at = state.get("expires_at") if isinstance(state, dict) else None
+            return bool(
+                isinstance(state, dict)
+                and state.get("link_type") == link_type
+                and isinstance(expires_at, int)
+                and expires_at >= _utc_epoch()
+            )
 
     def issue_browser_key(
         self,
@@ -189,7 +347,13 @@ class StripeMarketplaceStore:
         """Rotate to a fresh one-time API key after proving the install."""
         engine = billing.get_engine()
         with self._critical():
-            existing = self._state["links"].get(stripe_user_id)
+            key = _link_key(stripe_user_id, livemode)
+            existing = self._state["links"].get(key)
+            legacy_key = stripe_user_id
+            if not isinstance(existing, dict):
+                legacy = self._state["links"].get(legacy_key)
+                if isinstance(legacy, dict) and legacy.get("livemode") is livemode:
+                    existing = legacy
             existing = dict(existing) if isinstance(existing, dict) else {}
             plan_key = existing.get("plan_key") or INSTALL_PLAN
             try:
@@ -220,7 +384,8 @@ class StripeMarketplaceStore:
                 "plan_key": plan_key,
                 "updated_at": _utc_epoch(),
             }
-            self._state["links"][stripe_user_id] = link
+            self._state["links"][key] = link
+            self._state["links"].pop(legacy_key, None)
             self._persist()
             return dict(link), api_key
 
@@ -245,9 +410,15 @@ def reset_store(store: Optional[StripeMarketplaceStore] = None) -> StripeMarketp
     return _store
 
 
-def _encode_state() -> str:
+def _encode_state(link_type: OAuthLinkType = "live") -> str:
+    issued_at = _utc_epoch()
+    nonce = secrets.token_hex(12)
     payload = json.dumps(
-        {"issued_at": _utc_epoch(), "nonce": secrets.token_hex(12)},
+        {
+            "issued_at": issued_at,
+            "link_type": link_type,
+            "nonce": nonce,
+        },
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
@@ -255,6 +426,11 @@ def _encode_state() -> str:
     signature = hmac.new(
         _state_signing_secret().encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
     ).hexdigest()
+    get_store().remember_oauth_state(
+        nonce=nonce,
+        link_type=link_type,
+        expires_at=issued_at + STATE_TTL_SECONDS,
+    )
     return f"{encoded}.{signature}"
 
 
@@ -274,25 +450,27 @@ def _decode_state(value: str) -> dict[str, Any]:
     issued_at = body.get("issued_at")
     if not isinstance(issued_at, int) or abs(_utc_epoch() - issued_at) > STATE_TTL_SECONDS:
         raise ValueError("OAuth state expired")
+    if body.get("link_type") not in {"live", "test", "sandbox"}:
+        raise ValueError("OAuth state has an invalid link type")
+    nonce = body.get("nonce")
+    if not isinstance(nonce, str) or len(nonce) != 24:
+        raise ValueError("OAuth state has an invalid nonce")
     return body
 
 
-async def _exchange_oauth_code(code: str) -> dict[str, Any]:
+async def _exchange_oauth_code(code: str, link_type: OAuthLinkType) -> dict[str, Any]:
     """Trade the authorization code for an access token.
 
-    Stripe authenticates this call with the platform secret key sent as
-    ``client_secret``; the response names the account that authorized.
+    Stripe authenticates this call with the mode-matched app developer key in
+    HTTP Basic auth; the response names the account that authorized.
     """
-    payload = {
-        "client_secret": _secret("STRIPE_SECRET_KEY"),
-        "code": code,
-        "grant_type": "authorization_code",
-    }
+    payload = {"code": code, "grant_type": "authorization_code"}
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
         response = await client.post(
             STRIPE_OAUTH_TOKEN,
             headers={"Accept": "application/json"},
             data=payload,
+            auth=(_oauth_exchange_secret(link_type), ""),
         )
     try:
         body = response.json()
@@ -302,14 +480,19 @@ async def _exchange_oauth_code(code: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail="Stripe OAuth token exchange failed")
     token = body.get("access_token")
     stripe_user_id = body.get("stripe_user_id")
+    livemode = body.get("livemode")
     if not isinstance(token, str) or not token:
         raise HTTPException(status_code=502, detail="Stripe OAuth did not return an access token")
     if not isinstance(stripe_user_id, str) or not stripe_user_id.startswith("acct_"):
         raise HTTPException(status_code=502, detail="Stripe OAuth did not return an account id")
+    if not isinstance(livemode, bool):
+        raise HTTPException(status_code=502, detail="Stripe OAuth did not return its mode")
+    if livemode is not (link_type == "live"):
+        raise HTTPException(status_code=403, detail="Stripe OAuth mode did not match the install link")
     return body
 
 
-async def _verified_account(token: str, stripe_user_id: str) -> tuple[str, bool]:
+async def _verified_account(token: str, stripe_user_id: str) -> str:
     """Read the account back with the issued token before linking it."""
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
@@ -333,22 +516,70 @@ async def _verified_account(token: str, stripe_user_id: str) -> tuple[str, bool]
         display = body.get("business_profile", {}).get("name") if isinstance(body, dict) else None
     if not isinstance(display, str) or not display.strip():
         display = account_id
-    return display.strip(), bool(body.get("livemode"))
+    return display.strip()
 
 
 @router.get("/status")
 def stripe_marketplace_status() -> dict[str, Any]:
     store = get_store()
+    identity_ready: dict[str, bool] = {}
+    for name, check in (("app_id", _app_id), ("oauth_client_id", _client_id)):
+        try:
+            check()
+            identity_ready[name] = True
+        except StripeMarketplaceConfigurationError:
+            identity_ready[name] = False
+    key_ready: dict[OAuthLinkType, bool] = {}
+    for link_type in ("live", "test", "sandbox"):
+        try:
+            _oauth_exchange_secret(link_type)
+            key_ready[link_type] = True
+        except StripeMarketplaceConfigurationError:
+            key_ready[link_type] = False
+    redirect_ready: dict[OAuthLinkType, bool] = {}
+    authorize_url_ready: dict[OAuthLinkType, bool] = {}
+    for link_type in ("live", "test", "sandbox"):
+        try:
+            _redirect_uri(link_type)
+            redirect_ready[link_type] = True
+        except StripeMarketplaceConfigurationError:
+            redirect_ready[link_type] = False
+        try:
+            _oauth_authorize_url(link_type)
+            authorize_url_ready[link_type] = True
+        except StripeMarketplaceConfigurationError:
+            authorize_url_ready[link_type] = False
     checks = {
         "durable_store": "PASS" if store.durable else "MISSING",
-        "app_id": "PASS" if (os.getenv("STRIPE_APP_ID") or "").strip() else "MISSING",
-        "oauth_client_id": "PASS" if (os.getenv("STRIPE_APP_OAUTH_CLIENT_ID") or "").strip() else "MISSING",
+        "app_id": "PASS" if identity_ready["app_id"] else "MISSING",
+        "oauth_client_id": "PASS" if identity_ready["oauth_client_id"] else "MISSING",
+        "oauth_live_redirect_uri": "PASS" if redirect_ready["live"] else "MISSING",
+        "oauth_test_redirect_uri": "PASS" if redirect_ready["test"] else "MISSING",
+        "oauth_sandbox_redirect_uri": "PASS" if redirect_ready["sandbox"] else "MISSING",
+        "oauth_live_authorize_url": (
+            "PASS" if authorize_url_ready["live"] else "MISSING"
+        ),
+        "oauth_test_authorize_url": (
+            "PASS" if authorize_url_ready["test"] else "MISSING"
+        ),
+        "oauth_sandbox_authorize_url": (
+            "PASS" if authorize_url_ready["sandbox"] else "MISSING"
+        ),
+        "oauth_live_secret_key": "PASS" if key_ready["live"] else "MISSING",
+        "oauth_test_secret_key": "PASS" if key_ready["test"] else "MISSING",
+        "oauth_sandbox_secret_key": "PASS" if key_ready["sandbox"] else "MISSING",
         "app_signing_secret": (
             "PASS"
-            if len((os.getenv("STRIPE_APP_SIGNING_SECRET") or "").strip()) >= 32
+            if (os.getenv("STRIPE_APP_SIGNING_SECRET") or "").strip().startswith("absec_")
+            and len((os.getenv("STRIPE_APP_SIGNING_SECRET") or "").strip()) >= 32
             else "MISSING"
         ),
-        "secret_key": "PASS" if len((os.getenv("STRIPE_SECRET_KEY") or "").strip()) >= 32 else "MISSING",
+        "secret_key": (
+            "PASS"
+            if (os.getenv("STRIPE_SECRET_KEY") or "").strip().startswith("sk_live_")
+            and len((os.getenv("STRIPE_SECRET_KEY") or "").strip()) >= 32
+            else "MISSING"
+        ),
     }
     ready = all(value == "PASS" for value in checks.values())
     snapshot = store.snapshot()
@@ -359,33 +590,41 @@ def stripe_marketplace_status() -> dict[str, Any]:
         "checks": checks,
         "linked_accounts": len(snapshot["links"]),
         "setup": "/marketplace/stripe/setup",
-        "callback": "/marketplace/stripe/callback",
+        "callbacks": {
+            link_type: f"/marketplace/stripe/callback/{link_type}"
+            for link_type in ("live", "test", "sandbox")
+        },
         "truth_boundary": {
             "install_grants_free_plan_only": True,
             "paid_upgrade_requires_checkout": True,
             "callback_parameter_trusted_alone": False,
+            "oauth_link_mode_bound_in_state": True,
+            "oauth_state_single_use": True,
+            "entitlement_mode_bound": True,
         },
     }
 
 
 @router.get("/setup")
-def stripe_marketplace_setup() -> RedirectResponse:
+def stripe_marketplace_setup(
+    link_type: OAuthLinkType = Query(default="live"),
+) -> RedirectResponse:
     try:
-        query = urlencode(
-            {
-                "client_id": _client_id(),
-                "state": _encode_state(),
-                "response_type": "code",
-            }
+        authorize = urlparse(_oauth_authorize_url(link_type))
+        query = dict(parse_qsl(authorize.query, keep_blank_values=True))
+        query.update(
+            redirect_uri=_redirect_uri(link_type),
+            state=_encode_state(link_type),
         )
-        target = f"{STRIPE_APP_AUTHORIZE}/{_app_id()}/authorize?{query}"
+        target = urlunparse(authorize._replace(query=urlencode(query)))
     except StripeMarketplaceConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return RedirectResponse(target, status_code=302)
 
 
-@router.get("/callback")
+@router.get("/callback/{callback_link_type}")
 async def stripe_marketplace_callback(
+    callback_link_type: OAuthLinkType,
     code: Optional[str] = Query(default=None),
     state: Optional[str] = Query(default=None),
     error: Optional[str] = Query(default=None),
@@ -397,27 +636,47 @@ async def stripe_marketplace_callback(
     plain page instead of raising.
     """
     if error:
+        if state:
+            try:
+                state_body = _decode_state(state)
+                if state_body["link_type"] == callback_link_type:
+                    get_store().consume_oauth_state(
+                        nonce=state_body["nonce"],
+                        link_type=callback_link_type,
+                    )
+            except (StripeMarketplaceConfigurationError, ValueError, json.JSONDecodeError):
+                pass
         detail = html.escape(error_description or error)
         return _page(f"<p>Stripe install was not completed: {detail}</p>", status_code=200)
 
     if not code or len(code) < 4:
         raise HTTPException(status_code=400, detail="code is required")
 
-    if state:
-        try:
-            _decode_state(state)
-        except StripeMarketplaceConfigurationError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not state:
+        raise HTTPException(status_code=400, detail="state is required")
+    try:
+        state_body = _decode_state(state)
+    except StripeMarketplaceConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if state_body["link_type"] != callback_link_type:
+        raise HTTPException(status_code=400, detail="OAuth state did not match the callback mode")
+    if not get_store().consume_oauth_state(
+        nonce=state_body["nonce"],
+        link_type=callback_link_type,
+    ):
+        raise HTTPException(status_code=400, detail="OAuth state was unknown, expired, or already used")
 
     try:
-        token_body = await _exchange_oauth_code(code)
+        token_body = await _exchange_oauth_code(code, callback_link_type)
     except StripeMarketplaceConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     stripe_user_id = str(token_body["stripe_user_id"])
-    display_name, livemode = await _verified_account(str(token_body["access_token"]), stripe_user_id)
+    display_name = await _verified_account(str(token_body["access_token"]), stripe_user_id)
+    livemode = bool(token_body["livemode"])
 
     link, api_key = get_store().issue_browser_key(
         stripe_user_id=stripe_user_id,

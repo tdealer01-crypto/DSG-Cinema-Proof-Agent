@@ -206,6 +206,11 @@ jobs:
           ! grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
             stripe-app/src stripe-app/stripe-app.json
           jq -e '.id == "pics.dsg.governance" and .version == "2.7.1" and .distribution_type == "public" and .sandbox_install_compatible == true and .stripe_api_access_type == "oauth"' stripe-app/stripe-app.json >/dev/null
+          jq -e --arg base "$CINEMA_API_BASE" '.allowed_redirect_uris == [
+            ($base + "/marketplace/stripe/callback/live"),
+            ($base + "/marketplace/stripe/callback/test"),
+            ($base + "/marketplace/stripe/callback/sandbox")
+          ]' stripe-app/stripe-app.json >/dev/null
           jq -e --arg endpoint "$CINEMA_API_BASE/stripe/evaluate" '.ui_extension.content_security_policy["connect-src"] == [$endpoint]' stripe-app/stripe-app.json >/dev/null
           jq -e '.ui_extension.views == [{"viewport":"stripe.dashboard.payment.detail","component":"ChargeGate"}]' stripe-app/stripe-app.json >/dev/null
 

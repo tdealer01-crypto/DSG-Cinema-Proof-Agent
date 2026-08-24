@@ -19,7 +19,7 @@ channel are in [`SUBMIT_RUNBOOK.md`](SUBMIT_RUNBOOK.md).
 | 4 | Microsoft Marketplace | READY_FOR_EXTERNAL_SUBMIT | `marketplace/azure/offer.md` | Partner Center Marketplace enrollment and SaaS Contact-me offer submission |
 | 5 | AWS Marketplace | BLOCKED_EXTERNAL | `marketplace/aws/offer.md` | Seller onboarding plus AWS Marketplace SaaS billing/entitlement integration |
 | 6 | JetBrains Marketplace | SPEC_ONLY | `marketplace/jetbrains/offer.md` | Build/sign plugin ZIP, account/trader declaration, upload for manual review |
-| 7 | Direct API | LIVE | Production `/health`, `/verify/evaluate`, `/docs` reachable; `/billing/status` reports `stripe.link_state: LINKED_VERIFIED` with metering enforced | Add customer auth/metering before paid self-service |
+| 7 | Direct API | LIVE | Production `/health`, `/verify/evaluate`, `/docs` reachable; `/billing/status` reports `checkout_status: LINKED`, `stripe.link_state: LINKED_VERIFIED`, and metering enforced | No launch unblocker; continue post-deploy runtime monitoring |
 
 ## Do not mark a channel LIVE until
 

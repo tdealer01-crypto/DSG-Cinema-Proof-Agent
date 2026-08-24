@@ -123,7 +123,7 @@ The link is optional and fail-closed in both directions:
 
 - A `STRIPE_SECRET_KEY` by itself is only `CONFIGURED_UNVERIFIED` and cannot
   make `charges_enabled` true. The public status route verifies the configured
-  product, price, payment link, meter, and webhook endpoint against Stripe before it reports
+  product, price, meter, and webhook endpoint against Stripe before it reports
   `LINKED_VERIFIED`.
 - Missing or failed operational checks keep `checkout_status` at
   `NOT_VERIFIED_NOT_LINKED`; meter events remain `PENDING_UNLINKED` until the
@@ -251,12 +251,12 @@ many writers.
 
 **Not claimed:**
 
-- **No active checkout link.** `checkout_status` stays
+- **No Payment Link for the metered price.** `checkout_status` stays
   `NOT_VERIFIED_NOT_LINKED` until Stripe independently confirms the configured
-  product, price, meter, and webhook endpoint; the landing page continues to
-  say so. Stripe Payment Links do not support metered prices, so this catalog
-  has no self-serve Payment Link — checkout is a server-created Checkout
-  Session against the same product/price.
+  product, price, meter, and webhook endpoint. Current production has passed
+  those checks and reports `LINKED`. Stripe Payment Links do not support
+  usage-based prices, so checkout is a server-created Checkout Session against
+  the same product/price instead.
 - **Durable storage is arranged by the deployment, not by this repository.**
   The share is created on first deploy; until that deploy has run against the
   subscription, the stores are memory-only and enforcement stays refused.
@@ -277,9 +277,10 @@ Each step is independently verifiable, in order:
    `GET /billing/ledger/verify` returns `verified: true`.
 2. **Issue a first key.** `POST /billing/accounts` with the admin bearer.
    Store the returned `api_key`; it is not retrievable again.
-3. **Confirm metering without charging.** Call `/verify/evaluate` with the key
-   and check the `billing` block in the receipt and `GET /billing/usage`.
-   Nothing is charged: `checkout_status` is still `NOT_VERIFIED_NOT_LINKED`.
+3. **Confirm metering before upgrade.** Call `/verify/evaluate` with the free
+   key and check the `billing` block in the receipt and `GET /billing/usage`.
+   The free plan itself creates no charge even when production
+   `checkout_status` is `LINKED`.
 4. **Attach durable storage.** Mount an Azure Files volume (or move the store
    to Postgres) and point `DSG_REVENUE_LEDGER_STORE` and
    `DSG_REVENUE_ACCOUNT_STORE` at it. Until this is done, do not enable

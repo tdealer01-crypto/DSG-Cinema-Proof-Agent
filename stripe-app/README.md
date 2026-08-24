@@ -60,6 +60,11 @@ npm test
 Run `stripe apps upload` at least once before testing signed UI requests. The
 first upload creates the `absec_...` signing secret required by
 `fetchStripeSignature`; bind that secret to Cinema before the external test.
+The OAuth callbacks bind `live`, `test`, or `sandbox` into signed, single-use
+state and use the matching developer key. Configure the exact Dashboard-issued
+test and sandbox authorize URLs with `STRIPE_APP_OAUTH_TEST_SECRET_KEY` and
+`STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY` before testing; the backend intentionally
+refuses to substitute the live billing key.
 
 ## Marketplace identity
 

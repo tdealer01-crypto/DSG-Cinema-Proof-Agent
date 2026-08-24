@@ -1,5 +1,4 @@
 {
-  "$schema": "https://stripe.com/stripe-app.schema.json",
   "id": "pics.dsg.governance",
   "name": "DSG Governance Gate",
   "version": "2.7.1",
@@ -8,7 +7,9 @@
   "sandbox_install_compatible": true,
   "stripe_api_access_type": "oauth",
   "allowed_redirect_uris": [
-    "__CINEMA_API_BASE__/marketplace/stripe/callback"
+    "__CINEMA_API_BASE__/marketplace/stripe/callback/live",
+    "__CINEMA_API_BASE__/marketplace/stripe/callback/test",
+    "__CINEMA_API_BASE__/marketplace/stripe/callback/sandbox"
   ],
   "permissions": [
     {

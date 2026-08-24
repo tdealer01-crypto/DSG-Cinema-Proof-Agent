@@ -73,10 +73,11 @@ deterministic constraints with exact Z3 proof receipts.
 ### OAuth redirect — built
 
 The redirect URL used to be `https://dsg.pics/auth/stripe/callback`, which was
-broken two independent ways: `dsg.pics` resolves but serves no HTTPS (every
-request returned `HTTP 000` while the Azure landing returned `200` from the
-same network), and no Stripe callback existed among the 51 routes in production
-`/openapi.json`.
+broken two independent ways: the host remained unusable from the verification
+network (`HTTP 000` on 2026-08-23 and `502` on 2026-08-24 while the Azure
+landing returned `200`), and the Stripe callback was absent from the production
+OpenAPI document at the time. Production now exposes the Azure callback; do not
+restore the retired `dsg.pics` redirect unless it independently serves HTTPS.
 
 `revenue/stripe_marketplace.py` now serves the flow, mirroring the GitHub
 Marketplace bridge:
@@ -85,7 +86,7 @@ Marketplace bridge:
 |---|---|
 | `GET /marketplace/stripe/status` | Config readiness, same shape as the GitHub one |
 | `GET /marketplace/stripe/setup` | Starts the install, redirects to Stripe with signed state |
-| `GET /marketplace/stripe/callback` | The redirect URL Stripe tests |
+| `GET /marketplace/stripe/callback/{live,test,sandbox}` | Mode-specific redirect URLs Stripe tests |
 
 The callback exchanges the code at `POST /v1/oauth/token`, then reads the
 account back through `GET /v1/account` with the issued token before linking —
@@ -115,13 +116,33 @@ is registered. Until it is set, `/marketplace/stripe/status` reports
 2. Add it as repository variable `DSG_STRIPE_APP_OAUTH_CLIENT_ID`.
    (`DSG_STRIPE_APP_ID` defaults to `pics.dsg.governance`; set it only if the
    app id differs.)
-3. Re-run the Cinema production deploy so the Container App picks both up.
-4. Upload v2.7.1 once. Stripe creates the app signing secret only after upload.
-5. Store the `absec_...` value as `STRIPE_APP_SIGNING_SECRET` (or set
-   `DSG_KEY_VAULT_STRIPE_APP_SIGNING_NAME` to the Key Vault secret name), then
-   redeploy.
-6. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
-   `app_signing_secret` and every other check `PASS`.
+3. Upload v2.7.1 once. Stripe creates the app signing secret only after upload.
+4. Store the `absec_...` value as `STRIPE_APP_SIGNING_SECRET` (or set
+   `DSG_KEY_VAULT_STRIPE_APP_SIGNING_NAME` to the Key Vault secret name).
+5. Configure **External test**, then copy the managed-sandbox developer API key
+   used by the sandbox OAuth link
+   and store it as `STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY` (or set
+   `DSG_KEY_VAULT_STRIPE_APP_OAUTH_SANDBOX_NAME`). Store the separate test-mode
+   developer key as `STRIPE_APP_OAUTH_TEST_SECRET_KEY`; sandbox compatibility
+   requires both test-mode and general-sandbox flows to work.
+6. Copy the exact sandbox authorize link from Stripe's **External test** tab
+   into repository secret `STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL` (or use
+   `DSG_KEY_VAULT_STRIPE_APP_OAUTH_SANDBOX_URL_NAME`). Treat this invite-style
+   URL as a bearer capability rather than a public identifier. Store the
+   test-mode link in secret `STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL`; store the public link from
+   **Settings** in `DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL` before review.
+7. Re-run the Cinema production deploy so the Container App picks up all
+   identifiers and secrets.
+8. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
+   `app_signing_secret`, `oauth_live_secret_key`,
+   `oauth_test_secret_key`, `oauth_sandbox_secret_key`, both non-live authorize
+   URLs, all three mode-specific redirect URIs, and every other
+   required check `PASS`.
+9. Start External Test from `/marketplace/stripe/setup?link_type=sandbox` and
+   verify the authorize path is exactly `/oauth/v2/authorize` and its
+   `redirect_uri` ends in `/marketplace/stripe/callback/sandbox`; the obsolete
+   `/oauth/v2/{app_id}/authorize` shape and a shared cross-mode callback must
+   not be used.
 
 ### Marketing images — still blocked
 

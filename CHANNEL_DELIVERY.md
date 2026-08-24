@@ -135,9 +135,10 @@ A key adds metering and attribution; it is not a gate until
 
 **Not claimed:**
 
-- **No checkout.** Activation grants the free tier. `checkout_status` remains
-  `NOT_VERIFIED_NOT_LINKED` until Stripe is configured, and the landing page
-  still says so.
+- **Activation is not checkout.** Activation grants the free tier only. The
+  current production runtime separately reports `checkout_status: LINKED` and
+  creates authenticated Checkout Sessions for paid upgrades. It does not use a
+  Payment Link for the usage-based price.
 - **No durable storage.** Activation records live in the same non-durable store
   as the rest of the revenue system, so an activation can be lost on restart
   until a durable store is attached. Cross-replica idempotency is therefore not

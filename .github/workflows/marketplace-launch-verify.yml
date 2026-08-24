@@ -64,15 +64,17 @@ jobs:
         run: |
           jq -e '.product.receipt_version == "dsg-proof-receipt-1.0.0"' marketplace/launch-manifest.json >/dev/null
           jq -e '.product.policy_version == "dsg-verified-execution-1.0.0"' marketplace/launch-manifest.json >/dev/null
-          jq -e '.product.checkout_status == "NOT_VERIFIED_NOT_LINKED"' marketplace/launch-manifest.json >/dev/null
+          jq -e '.product.checkout_status == "LINKED"' marketplace/launch-manifest.json >/dev/null
+          jq -e '.revenue_automation.verified_live | .checkout_status == "LINKED" and .stripe_link_state == "LINKED_VERIFIED" and .charges_enabled == true and .metering_enforced == true and .enforcement_ready == true and (.enforcement_blockers | length == 0) and ([.operational_checks[]] | all(. == "PASS"))' marketplace/launch-manifest.json >/dev/null
           jq -e '[.channels[].channel] | length == 7' marketplace/launch-manifest.json >/dev/null
 
       - name: Validate the revenue automation claims
         run: |
           jq -e '.revenue_automation.system == "dsg-revenue-1.1.0"' marketplace/launch-manifest.json >/dev/null
           jq -e '.revenue_automation.billable_unit | test("VERIFIED_GLOBAL_OPTIMUM")' marketplace/launch-manifest.json >/dev/null
-          # The manifest must not claim a payment link the product does not have.
-          jq -e '.revenue_automation.not_claimed | index("an active Stripe checkout link")' marketplace/launch-manifest.json >/dev/null
+          # Usage-based DSG prices use Checkout Sessions. Payment Links are a
+          # different Stripe object and do not support usage-based prices.
+          jq -e '.revenue_automation.not_claimed | any(test("Payment Link.*usage-based"))' marketplace/launch-manifest.json >/dev/null
           jq -e '(.revenue_automation.supported // []) | length > 0' marketplace/launch-manifest.json >/dev/null
           # Each declared endpoint must exist in the Cinema backend.
           python - <<'PY'
