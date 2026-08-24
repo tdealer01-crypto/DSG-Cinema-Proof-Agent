@@ -19,8 +19,11 @@ type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 type StripeObjectType = 'charge' | 'payment_intent';
 
 const stripe = new Stripe(STRIPE_API_KEY, {
-  httpClient: createHttpClient(),
-  apiVersion: '2025-08-27.basil',
+  // The UI SDK client is the authenticated transport Stripe requires inside
+  // Dashboard extensions. Its runtime contract supports stripe-node's latest
+  // client even though SDK 9.2.1 narrows the HTTP verb type in its declaration.
+  httpClient: createHttpClient() as unknown as Stripe.HttpClient,
+  apiVersion: '2026-07-29.dahlia',
 });
 const REQUEST_TIMEOUT_MS = 20_000;
 
@@ -141,7 +144,7 @@ async function retrieveTransaction(
   timeoutMs: number,
 ) {
   if (objectType === 'charge') {
-    const charge = await stripe.charges.retrieve(objectId, { timeout: timeoutMs });
+    const charge = await stripe.charges.retrieve(objectId, {}, { timeout: timeoutMs });
     return {
       amountCents: charge.amount,
       currency: charge.currency,
