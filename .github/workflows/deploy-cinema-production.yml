@@ -9,6 +9,7 @@ on:
       - 'requirements.txt'
       - 'requirements-cinema.txt'
       - 'revenue/**'
+      - 'api_v1/**'
       - 'Dockerfile'
       - 'Dockerfile.cinema'
       - 'tests/**'
@@ -83,6 +84,8 @@ jobs:
       CONFIGURED_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL: ${{ vars.DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL }}
       # GitHub App integration for marketplace listing and API access.
       CONFIGURED_GITHUB_APP_PRIVATE_KEY: ${{ secrets.DSG_GITHUB_APP_PRIVATE_KEY }}
+      CONFIGURED_GITHUB_APP_CLIENT_ID: ${{ vars.DSG_GITHUB_APP_CLIENT_ID || vars.DSG_MARKETPLACE_OAUTH_CLIENT_ID || secrets.DSG_MARKETPLACE_OAUTH_CLIENT_ID }}
+      CONFIGURED_GITHUB_REPOSITORY: ${{ github.repository }}
       # Durable revenue storage. Enforcement stays refused until the ledger and
       # account registry survive a restart and have a single writer.
       REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
@@ -531,6 +534,12 @@ jobs:
             echo "GitHub App private key configured ✓"
           else
             echo "WARNING: GITHUB_APP_PRIVATE_KEY is not configured; marketplace API access will be unavailable."
+          fi
+          if [[ -n "$CONFIGURED_GITHUB_APP_CLIENT_ID" ]]; then
+            CINEMA_ENV_ARGS+=("GITHUB_APP_CLIENT_ID=$CONFIGURED_GITHUB_APP_CLIENT_ID")
+          fi
+          if [[ -n "$CONFIGURED_GITHUB_REPOSITORY" ]]; then
+            CINEMA_ENV_ARGS+=("DSG_GITHUB_REPOSITORY=$CONFIGURED_GITHUB_REPOSITORY")
           fi
 
           # Point the stores at the mounted share and attest only what this

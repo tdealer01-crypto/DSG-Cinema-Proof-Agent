@@ -72,6 +72,18 @@ async def control_contract() -> dict:
             ),
             "idempotency": "unique (tenant_id, idempotency_key); the same key must carry the same action_hash",
         },
+        "executors": {
+            "configure_stripe_app": {
+                "execute": "POST /api/v1/control/configure-stripe-app",
+                "action": "configure_stripe_app",
+                "target": "pics.dsg.governance",
+                "step_id": "stripe-production-setup",
+                "parameters": {},
+                "writes": "five GitHub production environment secrets and one repository variable",
+                "read_back": "GitHub secret metadata and exact repository-variable comparison",
+                "secret_values_exposed": False,
+            }
+        },
         "capabilities": {
             "resolver": "server-side-dsg-capability-broker",
             "known": known_capabilities(),

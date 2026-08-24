@@ -49,6 +49,8 @@ Useful endpoints:
 GET  /api/v1/control/contract       canonical decision semantics
 GET  /api/v1/control/capabilities   server-derived capability readiness, no secrets
 POST /api/v1/control/preflight      authorize one exact approved step
+POST /api/v1/control/configure-stripe-app
+                                    apply the fixed Stripe App production configuration
 ```
 
 ## Why the old verification shape was insufficient
@@ -91,6 +93,8 @@ POST /api/v1/control/preflight              ALLOW / WAITING_PERMISSION / BLOCK
 POST /api/v1/control/mutations              guarded mutation: ALLOW writes one
                                             tenant-bound evidence row and answers
                                             with the row read back from the database
+POST /api/v1/control/configure-stripe-app    exact GitHub executor for
+                                            pics.dsg.governance
 POST /api/v1/executions                     record observed reality for audit
 POST /api/v1/executions/{id}/evidence       submit artifacts; DSG hashes content itself
 POST /api/v1/executions/{id}/verify         recompute everything + exact Z3 proof
@@ -134,6 +138,16 @@ an echo of the request and not a value the process kept in memory.
 - `parameters` and `outputs` are stored as canonical JSON **text**, not JSONB. JSONB
   normalises numbers on the way back out, and a row whose payload reads back
   differently than it was written could not reproduce its own `evidence_hash`.
+
+`POST /api/v1/control/configure-stripe-app` is intentionally not a generic GitHub
+admin proxy. It constructs the approved action server-side with action
+`configure_stripe_app`, target `pics.dsg.governance`, step
+`stripe-production-setup`, and `{}` parameters. Only after the same Decision Core
+returns `ALLOW` does the GitHub App write the five named `production` environment
+secrets and `DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL`. Success is answered from
+GitHub secret metadata and an exact variable read-back comparison; no plaintext
+or encrypted secret is returned. Missing app configuration, repository install,
+`Environments: write`, or `Variables: write` remains `WAITING_PERMISSION`.
 
 Storage is PostgreSQL/Supabase when `DSG_REVENUE_DATABASE_URL` is set — the same
 variable that selects the PostgreSQL revenue stores, so `tenant_id` carries a real

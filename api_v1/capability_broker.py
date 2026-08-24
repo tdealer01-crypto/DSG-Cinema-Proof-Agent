@@ -29,6 +29,11 @@ _CAPABILITY_ENV: dict[str, tuple[str, ...]] = {
     "stripe_api": ("STRIPE_SECRET_KEY",),
     "stripe_webhook": ("STRIPE_WEBHOOK_SECRET",),
     "azure_oidc": ("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID"),
+    "github_actions_admin": (
+        "GITHUB_APP_CLIENT_ID",
+        "GITHUB_APP_PRIVATE_KEY",
+        "DSG_GITHUB_REPOSITORY",
+    ),
     "sentry": ("SENTRY_DSN",),
 }
 
