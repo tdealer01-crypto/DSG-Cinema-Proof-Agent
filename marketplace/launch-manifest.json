@@ -51,12 +51,21 @@
     },
     {
       "channel": "Stripe Apps Marketplace",
-      "status": "IN_REMEDIATION",
+      "status": "READY_FOR_EXTERNAL_UPLOAD",
       "app_id": "pics.dsg.governance",
       "target_version": "2.7.1",
+      "production_status": "ACTION_REQUIRED",
+      "readiness_endpoint": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/marketplace/stripe/status",
       "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
       "package": "stripe-app/",
-      "next": "merge the deployment-order fix and separate latest-SDK PR #109, rerun production for v2.7.1, recheck the npm registry, upload with Stripe CLI, bind the generated app signing secret and exact Dashboard OAuth links, run External Test, capture real Dashboard evidence, then submit review",
+      "submission_artifact": {
+        "name": "stripe-app-v2.7.1-submission",
+        "workflow_run": 32695738151,
+        "artifact_id": 9508761420,
+        "digest": "sha256:f3b1ffc3bc46b461a2248918f82d83ede6e60ab611d385f33a5f05f1d0373bc9",
+        "expires_at": "2026-09-23T06:04:11Z"
+      },
+      "next": "upload the production-bound v2.7.1 artifact with an authenticated Stripe CLI, bind the generated app signing secret and exact Dashboard OAuth values, rerun production until every readiness check passes, run External Test, capture real Dashboard evidence, then submit review",
       "commercial_role": "native Stripe distribution"
     },
     {

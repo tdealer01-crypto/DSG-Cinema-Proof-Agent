@@ -1,23 +1,25 @@
 # Marketplace Submission Runbook
 
 Marketplace status must be verified per artifact. PR #108 merged the Stripe App
-v2.7.1 application remediation, but its production workflow failed in the
-Cinema deploy step: the new callback environment values read `CINEMA_URL`
-before that shell variable was assigned. The production service therefore
-still exposes the previous OAuth contract. The deployment-order fix must land
-and production must be rerun before upload, External Test, evidence capture, or
-review submission. PR #109 is the separate latest-SDK upgrade; recheck the npm
-registry immediately before upload and merge that change as well.
+v2.7.1 remediation, PR #109 upgraded `stripe` to 22.5.0, and PR #110 fixed the
+confirmed Cinema deployment-order failure. Production deploy run #56 and Stripe
+package run #127 both passed from merge commit
+`ee2431b6076ad2200673213f6d6f73d055afadc0`.
 
-Production runtime probes were verified on 2026-08-24. They prove the Cinema
-backend is live; they do not prove that a Stripe App bundle passes review.
+Production runtime probes were refreshed at `2026-08-24T08:07:00Z`. They prove
+the repaired Cinema/OAuth contract and production-bound package are live; they
+do not prove that the package was uploaded, externally tested, reviewed,
+approved, or published by Stripe.
 
 | Probe | Result |
 |---|---|
 | `GET /health` | `200` — `{"status":"ready","backend":"ready"}` |
+| `GET /openapi.json` | `200` — exposes Stripe status, setup, mode-specific callback, and evaluate routes |
+| `GET /marketplace/stripe/status` | `200` — `ACTION_REQUIRED`; app ID, OAuth client ID, three callback URIs, live developer key, and billing secret pass. Three authorize URLs, test/sandbox developer keys, and app signing secret are missing. |
 | `GET /marketplace/github/status` | `200` — `READY`; durable_store, webhook_secret, oauth_client_id, oauth_client_secret all `PASS` |
 | `GET /billing/status` | `200` — `stripe.link_state: LINKED_VERIFIED`, `charges_enabled: true`, metering enforced, 0 blockers |
-| Ledger | 345 entries, hash-chained at the time of the probe |
+| Ledger | 359 entries with a non-empty public `head_hash` at the time of the probe |
+| Stripe package | Run #127 artifact `9508761420`, digest `sha256:f3b1ffc3bc46b461a2248918f82d83ede6e60ab611d385f33a5f05f1d0373bc9` |
 
 Live catalog: `verified_execution` $0.05/proof, `stripe_policy_decision`
 $0.10/proof. Plans: free (25 proofs), metered, team ($490/mo + 5,000 included
@@ -62,8 +64,10 @@ deterministic constraints with exact Z3 proof receipts.
 
 ## 2 — Stripe Apps Marketplace
 
-**Status:** v2.7.0 must not be submitted. The v2.7.1 application remediation is
-merged; production rollout repair and all Stripe-side review actions remain.
+**Status:** v2.7.0 must not be submitted. The v2.7.1 remediation, SDK upgrade,
+and production rollout repair are merged and deployed. CI has produced the
+production-bound archive. Stripe CLI upload and all Stripe-side configuration,
+External Test, evidence, and review actions remain.
 
 | Blocker found in PR #106 / v2.7.0 | v2.7.1 remediation |
 |---|---|
@@ -84,8 +88,8 @@ OpenAPI document at the time. Production now exposes the Azure callback; do not
 restore the retired `dsg.pics` redirect unless it independently serves HTTPS.
 
 The merged `revenue/stripe_marketplace.py` defines the replacement flow,
-mirroring the GitHub Marketplace bridge. Do not claim these routes are live
-until `/openapi.json` shows them after a successful production rerun:
+mirroring the GitHub Marketplace bridge. `/openapi.json` now shows these routes
+after successful production run #56:
 
 | Route | Purpose |
 |---|---|
@@ -112,25 +116,20 @@ branch is pushed.
 
 ### Required production configuration
 
-The endpoint needs the app's OAuth client ID, which Stripe issues when the app
-is registered. Until it is set, `/marketplace/stripe/status` reports
-`ACTION_REQUIRED`.
+Production already passes the app ID, OAuth client ID, all three callback URIs,
+the live developer key, and the billing secret-key checks. The remaining setup
+starts with the first app upload:
 
-1. In the Stripe Dashboard, open the app's OAuth settings and copy the **client
-   ID** (`ca_...`).
-2. Add it as repository variable `DSG_STRIPE_APP_OAUTH_CLIENT_ID`.
-   (`DSG_STRIPE_APP_ID` defaults to `pics.dsg.governance`; set it only if the
-   app id differs.)
-3. Upload v2.7.1 once. Stripe creates the app signing secret only after upload.
-4. Store the `absec_...` value as `STRIPE_APP_SIGNING_SECRET` (or set
+1. Upload v2.7.1 once. Stripe creates the app signing secret only after upload.
+2. Store the `absec_...` value as `STRIPE_APP_SIGNING_SECRET` (or set
    `DSG_KEY_VAULT_STRIPE_APP_SIGNING_NAME` to the Key Vault secret name).
-5. Configure **External test**, then copy the managed-sandbox developer API key
+3. Configure **External test**, then copy the managed-sandbox developer API key
    used by the sandbox OAuth link
    and store it as `STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY` (or set
    `DSG_KEY_VAULT_STRIPE_APP_OAUTH_SANDBOX_NAME`). Store the separate test-mode
    developer key as `STRIPE_APP_OAUTH_TEST_SECRET_KEY`; sandbox compatibility
    requires both test-mode and general-sandbox flows to work.
-6. Copy the exact sandbox authorize link from Stripe's **External test** tab
+4. Copy the exact sandbox authorize link from Stripe's **External test** tab
    into repository secret `STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL` (or use
    `DSG_KEY_VAULT_STRIPE_APP_OAUTH_SANDBOX_URL_NAME`). Treat this invite-style
    URL as a bearer capability rather than a public identifier. Store the
@@ -139,14 +138,14 @@ is registered. Until it is set, `/marketplace/stripe/status` reports
    `DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL` before review. The service has no
    generic live-link fallback: this check must remain missing until the real
    Settings URL is supplied.
-7. Re-run the Cinema production deploy so the Container App picks up all
+5. Re-run the Cinema production deploy so the Container App picks up all
    identifiers and secrets.
-8. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
+6. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
    `app_signing_secret`, `oauth_live_secret_key`,
    `oauth_test_secret_key`, `oauth_sandbox_secret_key`, both non-live authorize
    URLs, all three mode-specific redirect URIs, and every other
    required check `PASS`.
-9. Open `/marketplace/stripe/setup?link_type=sandbox`, read the onboarding
+7. Open `/marketplace/stripe/setup?link_type=sandbox`, read the onboarding
    instructions, and use **Continue to Stripe** for External Test. Verify the
    authorize path is exactly `/oauth/v2/authorize` and its `redirect_uri` ends
    in `/marketplace/stripe/callback/sandbox`; the obsolete
@@ -181,7 +180,7 @@ the screenshot placeholders. Only then open **DSG Governance Gate** and use
 **Submit for review**.
 
 Production billing already reports a verified Stripe catalog and metering. That
-does not remove the remaining app gates: v2.7.1 deploy, app signing secret,
+does not remove the remaining app gates: v2.7.1 upload, app signing secret,
 external test, real screenshots, listing verification, and Stripe review.
 
 ---
@@ -263,10 +262,11 @@ work before any submission step applies. See `marketplace/jetbrains/offer.md`.
 
 ## Recommended order
 
-Stripe first, but do not submit v2.7.0. Merge the deployment-order fix and the
-separate latest-SDK PR #109, recheck the npm registry, rerun production for the
-already-merged v2.7.1 code, upload once, bind the signing secret and exact
-Dashboard-issued links, confirm
+Stripe first, but do not submit v2.7.0. PR #109 and the deployment-order fix in
+PR #110 are already merged, production run #56 passed, and package run #127
+created the candidate archive. Recheck the npm registry immediately before
+upload, upload v2.7.1 once, bind the signing secret and exact Dashboard-issued
+links, confirm
 `/marketplace/stripe/status` reads `READY`, run External Test, and capture real
 screenshots and a recording before submission.
 

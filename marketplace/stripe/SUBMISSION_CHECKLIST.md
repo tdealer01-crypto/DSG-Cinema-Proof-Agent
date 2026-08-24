@@ -5,14 +5,14 @@ Do not submit until every required item is checked with current evidence.
 ## Build and production
 
 - [x] v2.7.1 application changes are merged to `main` by PR #108.
-- [ ] The deployment-order fix is merged and the failed PR #108 production
-      rollout is rerun successfully.
-- [ ] Re-run `npm view stripe version` immediately before upload and merge the
-      separate SDK upgrade in PR #109 (or independently pin the registry result
-      if it has changed). Do not submit from the older SDK on `main`.
-- [ ] Backend tests, UI build, manifest generation, and manifest validation pass in CI.
-- [ ] Production is deployed from the merged commit.
-- [ ] `GET /health` returns `200` and ready.
+- [x] PR #110 fixed the deployment order and production deploy run #56 passed.
+- [x] PR #109 upgraded `stripe` to 22.5.0. Registry recheck on 2026-08-24 still
+      returned `stripe` 22.5.0 and `@stripe/ui-extension-sdk` 9.2.1.
+- [x] Backend tests, UI build, manifest generation, and manifest validation passed in package run #127.
+- [x] Production is deployed from merge commit `ee2431b6076ad2200673213f6d6f73d055afadc0`.
+- [x] `GET /health` returns `200` and ready.
+- [x] CI artifact `stripe-app-v2.7.1-submission` exists as artifact `9508761420`
+      with recorded SHA-256 digest and a 2026-09-23 expiry.
 - [ ] `GET /marketplace/stripe/status` returns `READY` with every check `PASS`.
 - [ ] The production app has `STRIPE_APP_SIGNING_SECRET` bound from a real `absec_...` secret.
 - [ ] The managed-sandbox developer key is bound as `STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY`.
