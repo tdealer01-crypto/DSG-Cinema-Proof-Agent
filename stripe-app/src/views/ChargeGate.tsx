@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ExtensionContextValue } from '@stripe/ui-extension-sdk/context';
+import { createHttpClient, STRIPE_API_KEY } from '@stripe/ui-extension-sdk/http_client';
 import {
   Badge,
   Banner,
@@ -8,12 +9,19 @@ import {
   ContextView,
   Spinner,
 } from '@stripe/ui-extension-sdk/ui';
+import { fetchStripeSignature } from '@stripe/ui-extension-sdk/utils';
+import Stripe from 'stripe';
 
 import { CINEMA_API_BASE } from '../runtime';
 
 type Decision = 'ALLOW' | 'REVIEW' | 'BLOCK';
 type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
-type StripeObjectType = 'charge' | 'payment_intent' | 'payout' | 'refund';
+type StripeObjectType = 'charge' | 'payment_intent';
+
+const stripe = new Stripe(STRIPE_API_KEY, {
+  httpClient: createHttpClient(),
+});
+const REQUEST_TIMEOUT_MS = 20_000;
 
 interface Remediation {
   code: string;
@@ -53,11 +61,9 @@ const BANNER_TYPE = {
   BLOCK: 'critical',
 } as const;
 
-function inferObjectType(id: string): StripeObjectType | null {
-  if (id.startsWith('ch_')) return 'charge';
-  if (id.startsWith('pi_')) return 'payment_intent';
-  if (id.startsWith('po_')) return 'payout';
-  if (id.startsWith('re_')) return 'refund';
+function readObjectType(value: unknown, id: string): StripeObjectType | null {
+  if (value === 'charge' && id.startsWith('ch_')) return 'charge';
+  if (value === 'payment_intent' && id.startsWith('pi_')) return 'payment_intent';
   return null;
 }
 
@@ -93,50 +99,46 @@ function normalizeRiskLevel(value: unknown): RiskLevel | undefined {
   return undefined;
 }
 
-function readTransactionContext(extensionContext?: ExtensionContextValue | null) {
-  const ctx = extensionContext as any;
-  const objectContext = ctx?.environment?.objectContext ?? {};
-  const object = objectContext?.object ?? objectContext;
-
-  const objectId =
-    typeof objectContext?.id === 'string'
-      ? objectContext.id
-      : typeof object?.id === 'string'
-        ? object.id
-        : '';
-
-  const amountCandidates = [
-    object?.amount,
-    object?.amount_received,
-    object?.amount_captured,
-    object?.amount_paid,
-  ];
-  const amount = amountCandidates.find((value) => typeof value === 'number');
-
-  const riskValue =
-    object?.outcome?.risk_level ??
-    object?.risk_level ??
-    object?.payment_method_details?.risk_level;
-
+function readTransactionContext({ userContext, environment }: ExtensionContextValue) {
+  const objectId = environment?.objectContext?.id ?? '';
   return {
-    accountId: typeof ctx?.userContext?.account?.id === 'string' ? ctx.userContext.account.id : '',
+    accountId: userContext?.account?.id ?? '',
+    userId: userContext?.id ?? '',
     objectId,
-    objectType: inferObjectType(objectId),
-    amountCents: typeof amount === 'number' ? amount : undefined,
-    currency: typeof object?.currency === 'string' ? object.currency : undefined,
-    stripeStatus: typeof object?.status === 'string' ? object.status : undefined,
-    riskLevel: normalizeRiskLevel(riskValue),
+    objectType: readObjectType(environment?.objectContext?.object, objectId),
   };
 }
 
-export default function ChargeGate({
-  extensionContext,
-}: {
-  extensionContext?: ExtensionContextValue | null;
-}) {
+async function retrieveTransaction(objectType: StripeObjectType, objectId: string) {
+  if (objectType === 'charge') {
+    const charge = await stripe.charges.retrieve(objectId);
+    return {
+      amountCents: charge.amount,
+      currency: charge.currency,
+      stripeStatus: charge.status,
+      riskLevel: normalizeRiskLevel(charge.outcome?.risk_level),
+    };
+  }
+
+  const paymentIntent = await stripe.paymentIntents.retrieve(objectId, {
+    expand: ['latest_charge'],
+  });
+  const latestCharge =
+    paymentIntent.latest_charge && typeof paymentIntent.latest_charge !== 'string'
+      ? paymentIntent.latest_charge
+      : null;
+  return {
+    amountCents: paymentIntent.amount_received || paymentIntent.amount,
+    currency: paymentIntent.currency,
+    stripeStatus: paymentIntent.status,
+    riskLevel: normalizeRiskLevel(latestCharge?.outcome?.risk_level),
+  };
+}
+
+export default function ChargeGate(extensionContext: ExtensionContextValue) {
   const transaction = useMemo(
     () => readTransactionContext(extensionContext),
-    [extensionContext],
+    [extensionContext.environment, extensionContext.userContext],
   );
 
   const [result, setResult] = useState<VerificationResult | null>(null);
@@ -149,10 +151,16 @@ export default function ChargeGate({
     let cancelled = false;
 
     const verify = async () => {
-      if (!transaction.accountId || !transaction.objectId || !transaction.objectType) {
+      let requestTimeout: ReturnType<typeof setTimeout> | undefined;
+      if (
+        !transaction.accountId ||
+        !transaction.userId ||
+        !transaction.objectId ||
+        !transaction.objectType
+      ) {
         setResult(null);
         setRemediation(null);
-        setError('Open a supported Stripe payment, payout, or refund detail view.');
+        setError('Open a Stripe charge or PaymentIntent detail view.');
         setLoading(false);
         return;
       }
@@ -162,21 +170,37 @@ export default function ChargeGate({
       setRemediation(null);
 
       try {
+        const stripeObject = await retrieveTransaction(
+          transaction.objectType,
+          transaction.objectId,
+        );
+        const signedPayload: Record<string, string | number | boolean> = {
+          stripe_account_id: transaction.accountId,
+          object_type: transaction.objectType,
+          object_id: transaction.objectId,
+          amount_cents: stripeObject.amountCents,
+          currency: stripeObject.currency,
+          stripe_status: stripeObject.stripeStatus,
+        };
+        if (stripeObject.riskLevel) {
+          signedPayload.risk_level = stripeObject.riskLevel;
+        }
+
+        const controller = new AbortController();
+        requestTimeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
         const response = await fetch(`${CINEMA_API_BASE}/stripe/evaluate`, {
           method: 'POST',
           headers: {
             Accept: 'application/json',
             'Content-Type': 'application/json',
+            'Stripe-Signature': await fetchStripeSignature(signedPayload),
           },
           body: JSON.stringify({
-            stripe_account_id: transaction.accountId,
-            object_type: transaction.objectType,
-            object_id: transaction.objectId,
-            amount_cents: transaction.amountCents,
-            currency: transaction.currency,
-            stripe_status: transaction.stripeStatus,
-            risk_level: transaction.riskLevel,
+            ...signedPayload,
+            user_id: transaction.userId,
+            account_id: transaction.accountId,
           }),
+          signal: controller.signal,
         });
 
         if (!response.ok) {
@@ -207,9 +231,18 @@ export default function ChargeGate({
       } catch (err) {
         if (!cancelled) {
           setResult(null);
-          setError(err instanceof Error ? err.message : 'Verification unavailable');
+          setError(
+            err instanceof Error && err.name === 'AbortError'
+              ? 'Verification timed out. Retry after checking the Cinema service status.'
+              : err instanceof Error
+                ? err.message
+                : 'Verification unavailable',
+          );
         }
       } finally {
+        if (requestTimeout !== undefined) {
+          clearTimeout(requestTimeout);
+        }
         if (!cancelled) {
           setLoading(false);
         }
@@ -223,12 +256,9 @@ export default function ChargeGate({
     };
   }, [
     transaction.accountId,
+    transaction.userId,
     transaction.objectId,
     transaction.objectType,
-    transaction.amountCents,
-    transaction.currency,
-    transaction.stripeStatus,
-    transaction.riskLevel,
     retryKey,
   ]);
 

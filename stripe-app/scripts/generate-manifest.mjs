@@ -22,7 +22,7 @@ if (!template.includes('__CINEMA_API_BASE__')) {
 const manifest = template.replaceAll('__CINEMA_API_BASE__', backend);
 const parsed = JSON.parse(manifest);
 
-if (parsed.id !== 'pics.dsg.governance' || parsed.version !== '2.7.0') {
+if (parsed.id !== 'pics.dsg.governance' || parsed.version !== '2.7.1') {
   throw new Error('Unexpected Stripe app identity or version');
 }
 
@@ -32,7 +32,7 @@ if (manifest.includes('tdealer01-crypto-dsg-control-plane') || manifest.includes
 
 // Stripe fetches every redirect URL during review, so one pointing at a host
 // this build does not serve fails the submission rather than the build.
-const redirectUrls = parsed.oauth?.redirect_urls ?? [];
+const redirectUrls = parsed.allowed_redirect_uris ?? [];
 if (redirectUrls.length === 0) {
   throw new Error('Manifest declares no OAuth redirect URL');
 }
@@ -40,6 +40,17 @@ for (const url of redirectUrls) {
   if (!url.startsWith(`${backend}/`)) {
     throw new Error(`OAuth redirect URL is not served by this backend: ${url}`);
   }
+}
+
+const connectSources = parsed.ui_extension?.content_security_policy?.['connect-src'] ?? [];
+if (
+  connectSources.length !== 1 ||
+  connectSources[0] !== `${backend}/stripe/evaluate`
+) {
+  throw new Error('Manifest CSP must grant only the signed Stripe evaluation endpoint');
+}
+if (parsed.constants?.CINEMA_API_BASE !== backend) {
+  throw new Error('Manifest runtime constant does not match the backend');
 }
 
 await writeFile(manifestPath, `${JSON.stringify(parsed, null, 2)}\n`);

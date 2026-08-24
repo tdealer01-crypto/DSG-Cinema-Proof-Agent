@@ -98,14 +98,15 @@ def test_launch_manifest_matches_repository_artifacts():
     statuses = {item["channel"]: item["status"] for item in manifest["channels"]}
     assert statuses == {
         "GitHub Marketplace Action": "LIVE_V1",
-        "Stripe Apps Marketplace": "PACKAGE_V2_7_PREPARED",
+        "Stripe Apps Marketplace": "IN_REMEDIATION",
         "Microsoft Marketplace": "SUBMISSION_PACK_PREPARED",
         "AWS Marketplace": "BLOCKED_EXTERNAL",
         "JetBrains Marketplace": "SPEC_ONLY",
         "OpenAI Skills": "READY_FOR_EXTERNAL_SUBMIT",
         "Direct API": "LIVE",
     }
-    assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
+    assert manifest["product"]["checkout_status"] == "LINKED"
+    assert manifest["product"]["stripe_link_state"] == "LINKED_VERIFIED"
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
 
@@ -115,10 +116,10 @@ def test_launch_manifest_matches_repository_artifacts():
         for item in manifest["channels"]
     )
 
-    stripe_app = json.loads(
-        (ROOT / "stripe-app" / "stripe-app.template.json").read_text(encoding="utf-8")
+    stripe_listing = (ROOT / "marketplace" / "stripe" / "LISTING.md").read_text(
+        encoding="utf-8"
     )
-    assert stripe_app["websiteUrl"] == official_landing
+    assert f"**Website:** {official_landing}" in stripe_listing
     openai_listing = (
         ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md"
     ).read_text(encoding="utf-8")
@@ -154,7 +155,7 @@ def test_every_prepared_marketplace_uses_the_official_product_website():
         ROOT / "marketplace" / "aws" / "offer.md",
         ROOT / "marketplace" / "jetbrains" / "offer.md",
         ROOT / "marketplace" / "openai-plugin" / "submission" / "LISTING.md",
-        ROOT / "stripe-app" / "stripe-app.template.json",
+        ROOT / "marketplace" / "stripe" / "LISTING.md",
     ]
     for path in listing_files:
         assert official in path.read_text(encoding="utf-8"), path

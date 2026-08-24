@@ -1,16 +1,19 @@
 {
   "name": "@dsg/cinema-stripe-app",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "private": true,
   "description": "DSG Governance Gate Stripe App backed by Cinema + exact Z3 verification",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
-    "manifest:generate": "node scripts/generate-manifest.mjs"
+    "manifest:generate": "node scripts/generate-manifest.mjs",
+    "manifest:validate": "node scripts/validate-manifest.mjs",
+    "test": "npm run manifest:validate"
   },
   "dependencies": {
-    "@stripe/ui-extension-sdk": "^9.1.0",
-    "react": "^18.3.1"
+    "@stripe/ui-extension-sdk": "^9.2.1",
+    "react": "^18.3.1",
+    "stripe": "^18.5.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

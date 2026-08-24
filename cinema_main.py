@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 import api_v1
 from api_v1.verifier import decision_qubo
@@ -40,6 +40,8 @@ from marketplace_verification import (
     target_decision as verification_target_decision,
 )
 from revenue import api as billing
+from revenue.stripe_marketplace import get_store as get_stripe_marketplace_store
+from revenue.stripe_sync import SignatureError, verify_webhook_signature
 
 # Initialize logging and Sentry
 initialize_sentry()
@@ -64,6 +66,30 @@ app.add_middleware(
     allow_headers=["Content-Type", "Accept", "X-DSG-API-Key", "Authorization"],
 )
 
+
+@app.middleware("http")
+async def stripe_ui_cors(request: Request, call_next):
+    """Allow the signed Stripe iframe to call only its evaluation endpoint.
+
+    Stripe UI extensions have a sandboxed ``null`` origin. A route-scoped
+    wildcard is required for that iframe, while leaving every other Cinema
+    route on the narrower origin policy above.
+    """
+    if request.url.path != "/stripe/evaluate":
+        return await call_next(request)
+
+    if request.method == "OPTIONS":
+        response = Response(status_code=204)
+    else:
+        response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Accept, Content-Type, Stripe-Signature, X-DSG-API-Key"
+    )
+    response.headers["Access-Control-Max-Age"] = "600"
+    return response
+
 # Include routers
 app.include_router(billing.router)
 app.include_router(metrics_router)
@@ -84,6 +110,8 @@ class ConfigurationError(RuntimeError):
 
 class StripeVerifyRequest(BaseModel):
     stripe_account_id: str = Field(min_length=6, max_length=255)
+    user_id: str | None = Field(default=None, min_length=4, max_length=255)
+    account_id: str | None = Field(default=None, min_length=6, max_length=255)
     object_type: Literal["charge", "payment_intent", "payout", "refund"]
     object_id: str = Field(min_length=4, max_length=255)
     amount_cents: int | None = Field(default=None, ge=0, le=100_000_000_000)
@@ -300,6 +328,68 @@ def _stripe_context_hash(request: StripeVerifyRequest, risk_score: int) -> str:
     }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _stripe_app_authorization(
+    request: StripeVerifyRequest,
+    raw_body: bytes,
+    signature_header: str,
+):
+    """Authenticate a Stripe UI request and bind it to its installed account."""
+    try:
+        signing_secret = _required_secret("STRIPE_APP_SIGNING_SECRET")
+    except ConfigurationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "STRIPE_APP_SIGNING_SECRET_MISSING",
+                "message": str(exc),
+                "remediation": {
+                    "problem": "Stripe App requests cannot be authenticated",
+                    "next_step": "Upload the app, copy its absec_ signing secret, and bind STRIPE_APP_SIGNING_SECRET in Cinema.",
+                },
+            },
+        ) from exc
+
+    try:
+        verify_webhook_signature(raw_body, signature_header, signing_secret)
+    except SignatureError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "INVALID_STRIPE_APP_SIGNATURE",
+                "message": str(exc),
+            },
+        ) from exc
+
+    if not request.user_id or not request.account_id:
+        raise HTTPException(
+            status_code=400,
+            detail="signed Stripe App requests require user_id and account_id",
+        )
+    if request.account_id != request.stripe_account_id:
+        raise HTTPException(
+            status_code=403,
+            detail="signed Stripe account does not match stripe_account_id",
+        )
+
+    link = get_stripe_marketplace_store().link_for(request.account_id)
+    linked_account_id = link.get("account_id") if link else None
+    if not isinstance(linked_account_id, str) or not linked_account_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "STRIPE_APP_NOT_LINKED",
+                "message": "This Stripe account has not completed DSG onboarding",
+                "remediation": {
+                    "problem": "The Stripe install is not linked to a DSG entitlement",
+                    "next_step": "Complete the Stripe install from /marketplace/stripe/setup, then retry verification.",
+                    "self_service": True,
+                    "endpoint": "/marketplace/stripe/setup",
+                },
+            },
+        )
+    return billing.authorize_account(linked_account_id, STRIPE_DECISION_SKU)
 
 
 PROTOTYPE_PATH = Path(__file__).resolve().parent / "web" / "dsg-one-3d" / "index.html"
@@ -740,8 +830,9 @@ async def verify_evaluate(
 
 @app.post("/stripe/evaluate")
 async def stripe_evaluate(
-    request: StripeVerifyRequest,
+    http_request: Request,
     x_dsg_api_key: str | None = Header(default=None, alias="X-DSG-API-Key"),
+    stripe_signature: str | None = Header(default=None, alias="Stripe-Signature"),
 ) -> dict[str, Any]:
     """Verify a Stripe-context policy decision with an exact Z3 proof.
 
@@ -749,6 +840,18 @@ async def stripe_evaluate(
     backend derives a fixed-size decision QUBO itself, keeping public compute
     bounded and the Z3 credential server-side.
     """
+    raw_body = await http_request.body()
+    try:
+        payload = json.loads(raw_body)
+        request = StripeVerifyRequest.model_validate(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="request body must be valid JSON") from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_url=False),
+        ) from exc
+
     logger.info(
         "Stripe verification request received",
         extra={
@@ -759,7 +862,12 @@ async def stripe_evaluate(
         },
     )
 
-    authorization = billing.authorize_request(x_dsg_api_key, STRIPE_DECISION_SKU)
+    if stripe_signature:
+        authorization = _stripe_app_authorization(request, raw_body, stripe_signature)
+        billing_channel = "stripe_marketplace"
+    else:
+        authorization = billing.authorize_request(x_dsg_api_key, STRIPE_DECISION_SKU)
+        billing_channel = "stripe"
     if not request.stripe_account_id.startswith("acct_"):
         logger.warning(
             "Invalid Stripe account ID",
@@ -856,7 +964,7 @@ async def stripe_evaluate(
         authorization,
         sku=STRIPE_DECISION_SKU,
         receipt=receipt,
-        channel="stripe",
+        channel=billing_channel,
     )
     if billing_block is not None:
         receipt["billing"] = billing_block

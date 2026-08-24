@@ -193,10 +193,35 @@ class RevenueEngine:
         *,
         period: Optional[str] = None,
     ) -> Authorization:
+        account = self.accounts.authenticate(api_key or "")
+        return self._authorize_account(account, sku, period=period)
+
+    def authorize_account(
+        self,
+        account_id: str,
+        sku: str,
+        *,
+        period: Optional[str] = None,
+    ) -> Authorization:
+        """Authorize a previously authenticated marketplace account by id.
+
+        The caller must first authenticate the external install. This method
+        deliberately performs the same status, quota, and payment checks as an
+        API-key request; it is not an entitlement bypass.
+        """
+        account = self.accounts.get(account_id)
+        return self._authorize_account(account, sku, period=period)
+
+    def _authorize_account(
+        self,
+        account: Optional[Account],
+        sku: str,
+        *,
+        period: Optional[str] = None,
+    ) -> Authorization:
         sku_spec = get_sku(sku)
         current_period = period or billing_period()
 
-        account = self.accounts.authenticate(api_key or "")
         if account is None:
             return Authorization(
                 decision=UNKNOWN_KEY,

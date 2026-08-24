@@ -5,14 +5,24 @@ on:
     branches: [main]
     paths:
       - 'cinema_main.py'
+      - 'revenue/api.py'
+      - 'revenue/engine.py'
+      - 'revenue/stripe_marketplace.py'
+      - 'revenue/stripe_sync.py'
       - 'tests/test_cinema_main.py'
+      - 'tests/test_stripe_marketplace.py'
       - 'stripe-app/**'
       - '.github/workflows/stripe-app-v2-7.yml'
   push:
     branches: [main]
     paths:
       - 'cinema_main.py'
+      - 'revenue/api.py'
+      - 'revenue/engine.py'
+      - 'revenue/stripe_marketplace.py'
+      - 'revenue/stripe_sync.py'
       - 'tests/test_cinema_main.py'
+      - 'tests/test_stripe_marketplace.py'
       - 'stripe-app/**'
       - '.github/workflows/stripe-app-v2-7.yml'
   workflow_dispatch:
@@ -44,7 +54,7 @@ jobs:
         run: python -m py_compile cinema_main.py
 
       - name: Run Cinema and Stripe proof tests
-        run: python -m pytest -q tests/test_cinema_main.py
+        run: python -m pytest -q tests/test_cinema_main.py tests/test_stripe_marketplace.py
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -53,11 +63,17 @@ jobs:
 
       - name: Install Stripe App dependencies
         working-directory: stripe-app
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Typecheck Stripe-native UI
         working-directory: stripe-app
-        run: npm run typecheck
+        env:
+          CINEMA_API_BASE: https://cinema.example.test
+        run: |
+          npm run manifest:generate
+          npm run manifest:validate
+          npm run build
+          npm test
 
       - name: Reject retired Control Plane runtime URLs
         shell: bash
@@ -171,13 +187,15 @@ jobs:
 
       - name: Generate production manifest and runtime binding
         working-directory: stripe-app
-        run: node scripts/generate-manifest.mjs
+        run: npm run manifest:generate
 
       - name: Install and typecheck generated package
         working-directory: stripe-app
         run: |
-          npm install --no-audit --no-fund
-          npm run typecheck
+          npm ci --no-audit --no-fund
+          npm run manifest:validate
+          npm run build
+          npm test
 
       - name: Verify generated package truth boundary
         shell: bash
@@ -187,23 +205,24 @@ jobs:
           ! grep -R -n '__CINEMA_API_BASE__' stripe-app/stripe-app.json stripe-app/src/runtime.ts
           ! grep -R -n -E 'tdealer01-crypto-dsg-control-plane|dsg-stripe-app\.vercel\.app' \
             stripe-app/src stripe-app/stripe-app.json
-          jq -e '.id == "pics.dsg.governance" and .version == "2.7.0" and .distribution_type == "public" and .sandbox_install_compatible == true' stripe-app/stripe-app.json >/dev/null
-          jq -e --arg base "$CINEMA_API_BASE/" '.ui_extension.content_security_policy["connect-src"] == [$base]' stripe-app/stripe-app.json >/dev/null
+          jq -e '.id == "pics.dsg.governance" and .version == "2.7.1" and .distribution_type == "public" and .sandbox_install_compatible == true and .stripe_api_access_type == "oauth"' stripe-app/stripe-app.json >/dev/null
+          jq -e --arg endpoint "$CINEMA_API_BASE/stripe/evaluate" '.ui_extension.content_security_policy["connect-src"] == [$endpoint]' stripe-app/stripe-app.json >/dev/null
+          jq -e '.ui_extension.views == [{"viewport":"stripe.dashboard.payment.detail","component":"ChargeGate"}]' stripe-app/stripe-app.json >/dev/null
 
       - name: Build submission archive
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/stripe-app-v2.7.0
-          mkdir -p /tmp/stripe-app-v2.7.0
-          cp -R stripe-app/. /tmp/stripe-app-v2.7.0/
-          rm -rf /tmp/stripe-app-v2.7.0/node_modules
-          (cd /tmp && zip -qr stripe-app-v2.7.0.zip stripe-app-v2.7.0)
+          rm -rf /tmp/stripe-app-v2.7.1
+          mkdir -p /tmp/stripe-app-v2.7.1
+          cp -R stripe-app/. /tmp/stripe-app-v2.7.1/
+          rm -rf /tmp/stripe-app-v2.7.1/node_modules
+          (cd /tmp && zip -qr stripe-app-v2.7.1.zip stripe-app-v2.7.1)
 
       - name: Upload submission-ready artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stripe-app-v2.7.0-submission
-          path: /tmp/stripe-app-v2.7.0.zip
+          name: stripe-app-v2.7.1-submission
+          path: /tmp/stripe-app-v2.7.1.zip
           if-no-files-found: error
           retention-days: 30

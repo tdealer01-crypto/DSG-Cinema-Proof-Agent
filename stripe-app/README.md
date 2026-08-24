@@ -1,4 +1,4 @@
-# DSG Governance Gate — Stripe App v2.7.0
+# DSG Governance Gate — Stripe App v2.7.1
 
 This package is the existing Stripe Marketplace app identity (`pics.dsg.governance`) moved onto the current Cinema/Z3 backend.
 
@@ -11,6 +11,11 @@ The retired Control Plane is not in the runtime path.
 ## Safety model
 
 - The Stripe UI never receives `CINEMA_API_SECRET` or `DSG_BACKEND_API_KEY`.
+- The UI signs its bounded request with Stripe `fetchStripeSignature`; Cinema
+  verifies the raw body with `STRIPE_APP_SIGNING_SECRET` before resolving the
+  installed account's DSG entitlement.
+- The UI reads only the current charge or PaymentIntent through Stripe's
+  authenticated extension HTTP client.
 - `/stripe/evaluate` does not accept arbitrary QUBO input.
 - Cinema derives a fixed 3-variable decision QUBO: `[ALLOW, REVIEW, BLOCK]`.
 - A one-hot penalty enforces exactly one decision.
@@ -43,18 +48,24 @@ No retired Control Plane or Vercel API URL is allowed by the packaging gate.
 ## Local checks
 
 ```bash
-python -m pytest tests/test_cinema_main.py
+python -m pytest tests/test_cinema_main.py tests/test_stripe_marketplace.py
 cd stripe-app
-npm install --no-audit --no-fund
-npm run typecheck
+npm ci --no-audit --no-fund
 CINEMA_API_BASE=https://example.invalid npm run manifest:generate
+npm run manifest:validate
+npm run build
+npm test
 ```
+
+Run `stripe apps upload` at least once before testing signed UI requests. The
+first upload creates the `absec_...` signing secret required by
+`fetchStripeSignature`; bind that secret to Cinema before the external test.
 
 ## Marketplace identity
 
 - App ID: `pics.dsg.governance`
 - Name: `DSG Governance Gate`
-- Version: `2.7.0`
+- Version: `2.7.1`
 - Distribution: public
 - Sandbox compatible: true
 

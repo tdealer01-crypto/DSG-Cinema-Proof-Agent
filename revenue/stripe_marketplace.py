@@ -343,6 +343,11 @@ def stripe_marketplace_status() -> dict[str, Any]:
         "durable_store": "PASS" if store.durable else "MISSING",
         "app_id": "PASS" if (os.getenv("STRIPE_APP_ID") or "").strip() else "MISSING",
         "oauth_client_id": "PASS" if (os.getenv("STRIPE_APP_OAUTH_CLIENT_ID") or "").strip() else "MISSING",
+        "app_signing_secret": (
+            "PASS"
+            if len((os.getenv("STRIPE_APP_SIGNING_SECRET") or "").strip()) >= 32
+            else "MISSING"
+        ),
         "secret_key": "PASS" if len((os.getenv("STRIPE_SECRET_KEY") or "").strip()) >= 32 else "MISSING",
     }
     ready = all(value == "PASS" for value in checks.values())

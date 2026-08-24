@@ -96,6 +96,21 @@ def test_render_landing_origin_can_call_public_verification_api(monkeypatch):
     assert response.headers["access-control-allow-origin"] == origin
 
 
+def test_stripe_ui_null_origin_can_preflight_signed_endpoint(monkeypatch):
+    configure(monkeypatch)
+    response = client.options(
+        "/stripe/evaluate",
+        headers={
+            "Origin": "null",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,stripe-signature",
+        },
+    )
+    assert response.status_code == 204
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert "Stripe-Signature" in response.headers["access-control-allow-headers"]
+
+
 def test_solve_rejects_missing_token(monkeypatch):
     configure(monkeypatch)
     response = client.post("/solve", json={"problem_type": "qubo"})

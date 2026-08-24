@@ -53,8 +53,10 @@ jobs:
       CONFIGURED_SOLVER_SHARED_SECRET: ${{ secrets.DSG_SOLVER_SHARED_SECRET }}
       KEY_VAULT_STRIPE_SECRET_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_SECRET_NAME || 'stripe-secret-key' }}
       KEY_VAULT_STRIPE_WEBHOOK_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_WEBHOOK_NAME || 'stripe-webhook-secret' }}
+      KEY_VAULT_STRIPE_APP_SIGNING_NAME: ${{ vars.DSG_KEY_VAULT_STRIPE_APP_SIGNING_NAME }}
       CONFIGURED_STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       CONFIGURED_STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      CONFIGURED_STRIPE_APP_SIGNING_SECRET: ${{ secrets.STRIPE_APP_SIGNING_SECRET }}
       # Stripe catalog identity. These are object ids, not credentials, so they
       # belong in repository variables. Supplying one is only a claim: the app
       # verifies every id against Stripe before it will report that checkout
@@ -89,7 +91,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-cinema.txt pytest
           python -m py_compile cinema_main.py marketplace_verification.py revenue/*.py
-          python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py tests/test_revenue.py
+          python -m pytest -q tests/test_cinema_main.py tests/test_marketplace_surfaces.py tests/test_revenue.py tests/test_stripe_marketplace.py
 
       - name: Azure login with OIDC
         uses: azure/login@v2
@@ -351,6 +353,7 @@ jobs:
           # /billing/status keeps reporting NOT_VERIFIED_NOT_LINKED truthfully.
           STRIPE_SOURCE='none'
           STRIPE_WEBHOOK_SECRET_PROVISIONED='false'
+          STRIPE_APP_SIGNING_SECRET_PROVISIONED='false'
           if [[ -n "$KEY_VAULT_NAME" ]]; then
             VAULT_BASE="https://$KEY_VAULT_NAME.vault.azure.net/secrets"
             CINEMA_SECRET_ARGS+=(
@@ -375,6 +378,23 @@ jobs:
               STRIPE_SOURCE='repository_secret'
               STRIPE_WEBHOOK_SECRET_PROVISIONED='true'
             fi
+          fi
+
+          # The Stripe App UI signing secret is created by the first app upload,
+          # independently of the payment webhook secret above. Bind it only when
+          # a real source is configured so a missing Key Vault entry cannot make
+          # an otherwise healthy Cinema deployment fail during bootstrap.
+          if [[ -n "$KEY_VAULT_NAME" && -n "$KEY_VAULT_STRIPE_APP_SIGNING_NAME" ]]; then
+            VAULT_BASE="https://$KEY_VAULT_NAME.vault.azure.net/secrets"
+            CINEMA_SECRET_ARGS+=(
+              "stripe-app-signing-secret=keyvaultref:$VAULT_BASE/$KEY_VAULT_STRIPE_APP_SIGNING_NAME,identityref:$PULL_IDENTITY_ID"
+            )
+            CINEMA_ENV_ARGS+=(STRIPE_APP_SIGNING_SECRET=secretref:stripe-app-signing-secret)
+            STRIPE_APP_SIGNING_SECRET_PROVISIONED='true'
+          elif [[ -n "$CONFIGURED_STRIPE_APP_SIGNING_SECRET" ]]; then
+            CINEMA_SECRET_ARGS+=("stripe-app-signing-secret=$CONFIGURED_STRIPE_APP_SIGNING_SECRET")
+            CINEMA_ENV_ARGS+=(STRIPE_APP_SIGNING_SECRET=secretref:stripe-app-signing-secret)
+            STRIPE_APP_SIGNING_SECRET_PROVISIONED='true'
           fi
           # The catalog ids decide whether the credentials can reach money at
           # all: without a product and price the app has nothing to charge
@@ -411,6 +431,7 @@ jobs:
           echo "STRIPE_SOURCE=$STRIPE_SOURCE" >> "$GITHUB_ENV"
           echo "STRIPE_CATALOG_SCOPED=$STRIPE_CATALOG_SCOPED" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_SECRET_PROVISIONED=$STRIPE_WEBHOOK_SECRET_PROVISIONED" >> "$GITHUB_ENV"
+          echo "STRIPE_APP_SIGNING_SECRET_PROVISIONED=$STRIPE_APP_SIGNING_SECRET_PROVISIONED" >> "$GITHUB_ENV"
           echo "STRIPE_WEBHOOK_CONFIGURED=$STRIPE_WEBHOOK_CONFIGURED" >> "$GITHUB_ENV"
 
           # GitHub App private key for marketplace API access. Required for the
@@ -813,6 +834,14 @@ jobs:
           else
             # No signing secret: unsigned webhooks are refused, never trusted.
             test "$WEBHOOK_CODE" = '503'
+          fi
+
+          curl --fail-with-body --silent --show-error \
+            "$CINEMA_URL/marketplace/stripe/status" > /tmp/stripe-marketplace-status.json
+          if [[ "$STRIPE_APP_SIGNING_SECRET_PROVISIONED" == "true" ]]; then
+            jq -e '.checks.app_signing_secret == "PASS"' /tmp/stripe-marketplace-status.json >/dev/null
+          else
+            jq -e '.checks.app_signing_secret == "MISSING" and .status == "ACTION_REQUIRED"' /tmp/stripe-marketplace-status.json >/dev/null
           fi
 
           # A linked Stripe integration must demonstrate a complete operational

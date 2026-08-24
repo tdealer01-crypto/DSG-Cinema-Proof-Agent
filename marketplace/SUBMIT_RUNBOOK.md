@@ -1,18 +1,20 @@
 # Marketplace Submission Runbook
 
-Every artifact in this repository is validated and submit-ready. What remains
-on each channel is an authenticated action in a vendor dashboard that no API
-exposes — there is no marketplace in this list that can be submitted to
-programmatically. This runbook reduces each one to copy-paste plus clicks.
+Marketplace status must be verified per artifact. In particular, Stripe App
+v2.7.0 from PR #106 is **not** submit-ready: its manifest and UI/backend
+authentication contract fail current Stripe requirements. The v2.7.1
+remediation must be merged, deployed, uploaded, and externally tested before
+any review submission.
 
-Verified against production on 2026-08-23:
+Production runtime probes were verified on 2026-08-24. They prove the Cinema
+backend is live; they do not prove that a Stripe App bundle passes review.
 
 | Probe | Result |
 |---|---|
 | `GET /health` | `200` — `{"status":"ready","backend":"ready"}` |
 | `GET /marketplace/github/status` | `200` — `READY`; durable_store, webhook_secret, oauth_client_id, oauth_client_secret all `PASS` |
 | `GET /billing/status` | `200` — `stripe.link_state: LINKED_VERIFIED`, `charges_enabled: true`, metering enforced, 0 blockers |
-| Ledger | 335 entries, hash-chained |
+| Ledger | 345 entries, hash-chained at the time of the probe |
 
 Live catalog: `verified_execution` $0.05/proof, `stripe_policy_decision`
 $0.10/proof. Plans: free (25 proofs), metered, team ($490/mo + 5,000 included
@@ -57,15 +59,16 @@ deterministic constraints with exact Z3 proof receipts.
 
 ## 2 — Stripe Apps Marketplace
 
-**Status:** all five blockers fixed. One deployment step remains before upload.
+**Status:** v2.7.0 must not be submitted. v2.7.1 remediation is under test.
 
-| Blocker | Fix |
+| Blocker found in PR #106 / v2.7.0 | v2.7.1 remediation |
 |---|---|
-| Technical description | Rewritten for customers |
-| `payment.detail` view | Removed; `views` is now empty |
-| Missing marketing images | Three 1600×900 PNGs, repointed to a reachable host |
-| Manifest validity | `stripe-app.template.json` parses clean |
-| Missing OAuth | Callback built and served by Cinema |
+| Manifest has 11 schema errors | Remove listing-only fields; use `permission`/`purpose`, `stripe_api_access_type`, and `allowed_redirect_uris` |
+| Empty UI view list despite listing UI claims | Wire `stripe.dashboard.payment.detail` to `ChargeGate` |
+| UI expects full objects in `objectContext` | Read the object ID/type from context and retrieve the charge/PaymentIntent through Stripe's authenticated extension client |
+| UI calls Cinema without authentication | Use `fetchStripeSignature`; verify the raw request body and installed account server-side |
+| Production metering requires a DSG key the iframe cannot hold | Resolve the signed Stripe account to its linked DSG account and apply the same entitlement gate by account ID |
+| Three 1600×900 files contain placeholder bars/text | Capture real Dashboard screenshots only after the sandbox external test passes |
 
 ### OAuth redirect — built
 
@@ -91,15 +94,17 @@ denied install renders a plain page rather than erroring. Installing grants the
 free plan (25 proofs); paid plans still go through the existing checkout, so an
 install can never grant paid units on its own.
 
-The manifest now uses the `__CINEMA_API_BASE__` placeholder, so the URL is
+The v2.7.1 manifest uses the `__CINEMA_API_BASE__` placeholder, so the URL is
 substituted at build time and cannot drift from the deployed backend.
 `generate-manifest.mjs` fails the build if any redirect URL points outside the
 backend — the exact bug that would have caused a second rejection.
 
-Covered by 10 tests in `tests/test_stripe_marketplace.py`; the full suite is
-355 passing.
+The signed path adds tests for valid linked installs, forged signatures,
+account mismatch, unlinked accounts, missing signing-secret configuration, and
+the Stripe iframe CORS preflight. Record the final count only from CI after the
+branch is pushed.
 
-### ⚠️ Deployment step before upload
+### Required production configuration
 
 The endpoint needs the app's OAuth client ID, which Stripe issues when the app
 is registered. Until it is set, `/marketplace/stripe/status` reports
@@ -111,34 +116,41 @@ is registered. Until it is set, `/marketplace/stripe/status` reports
    (`DSG_STRIPE_APP_ID` defaults to `pics.dsg.governance`; set it only if the
    app id differs.)
 3. Re-run the Cinema production deploy so the Container App picks both up.
-4. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
-   all four checks `PASS`.
+4. Upload v2.7.1 once. Stripe creates the app signing secret only after upload.
+5. Store the `absec_...` value as `STRIPE_APP_SIGNING_SECRET` (or set
+   `DSG_KEY_VAULT_STRIPE_APP_SIGNING_NAME` to the Key Vault secret name), then
+   redeploy.
+6. Confirm `GET /marketplace/stripe/status` returns `"status": "READY"` with
+   `app_signing_secret` and every other check `PASS`.
 
-### Marketing images — fixed
+### Marketing images — still blocked
 
-They previously pointed at `https://dsg.pics/images/stripe-marketplace/*.png`,
-which failed for the same reason as the callback. Now repointed to
-`raw.githubusercontent.com`, verified `HTTP 200` with `content-type: image/png`
-and correct byte counts on all three. The files are valid 1600×900 8-bit RGB
-PNGs in `public/stripe-marketplace/`.
-
-> These URLs only resolve once this branch is merged to `main`. Merge before
-> uploading to Stripe.
+The three PNG files have the required pixel dimensions but are placeholder
+graphics, not screenshots showing the app inside the Stripe Dashboard. Do not
+upload them to the listing. After installing v2.7.1 in a sandbox, capture the
+actual payment-detail panel at 1600×900 or wider and replace the placeholders.
 
 ### Submit
 
 ```bash
 cd stripe-app
 stripe login
+CI=true npm ci --no-audit --no-fund
+CINEMA_API_BASE=https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io npm run manifest:generate
+npm run manifest:validate
+npm run build
+npm test
 stripe apps upload
 ```
 
-Then at https://dashboard.stripe.com/apps: open **DSG Governance Gate**, run an
-**External Test** install, and **Submit for review**.
+Upload happens before `fetchStripeSignature` testing. Bind the generated signing
+secret, redeploy, install in a sandbox, run the **External Test**, and replace
+the screenshot placeholders. Only then open **DSG Governance Gate** and use
+**Submit for review**.
 
-**Revenue on approval:** team plan $490/mo, metered $0.05/proof. Stripe billing
-already reports `stripe.link_state: LINKED_VERIFIED` with charges enabled, so
-Stripe's approval is the only gate left.
+Production billing already reports a verified Stripe catalog and metering. That
+does not remove the remaining app gates: v2.7.1 deploy, app signing secret,
+external test, real screenshots, listing verification, and Stripe review.
 
 ---
 
@@ -219,9 +231,9 @@ work before any submission step applies. See `marketplace/jetbrains/offer.md`.
 
 ## Recommended order
 
-Stripe first — it is the only channel where approval directly unlocks revenue
-that is already wired end to end. Set the OAuth client ID, redeploy, confirm
-`/marketplace/stripe/status` reads `READY`, then upload.
+Stripe first, but do not submit v2.7.0. Merge and deploy v2.7.1, upload once,
+bind the signing secret, confirm `/marketplace/stripe/status` reads `READY`, run
+the external test, and capture real screenshots before submission.
 
 GitHub v2 second: the patch is written and only needs the app install. OpenAI
 third — it is genuinely ready. Microsoft's enrollment can run in the background

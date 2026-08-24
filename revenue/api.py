@@ -147,6 +147,39 @@ def authorize_request(api_key: Optional[str], sku: str) -> Optional[Authorizatio
     return authorization
 
 
+def authorize_account(account_id: str, sku: str) -> Authorization:
+    """Authorize an account whose Stripe App request was already verified.
+
+    A signed Stripe request identifies an install without exposing a DSG API
+    key to the sandboxed UI. Storage readiness and every entitlement condition
+    remain identical to the API-key path.
+    """
+    engine = get_engine()
+    if engine.enforcement_requested and not engine.enforcement_ready:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": BILLING_STORAGE_NOT_READY,
+                "message": "paid enforcement was requested without safe durable storage",
+                "blockers": list(engine.enforcement_blockers),
+                "remediation": remediation_for(BILLING_STORAGE_NOT_READY).to_dict(),
+            },
+        )
+
+    authorization = engine.authorize_account(account_id, sku)
+    if not authorization.authorized:
+        raise HTTPException(
+            status_code=authorization.http_status,
+            detail={
+                "error": authorization.decision,
+                "message": authorization.detail,
+                "remediation": authorization.remediation.to_dict(),
+                "billing": authorization.summary(),
+            },
+        )
+    return authorization
+
+
 async def meter(
     authorization: Optional[Authorization],
     *,
