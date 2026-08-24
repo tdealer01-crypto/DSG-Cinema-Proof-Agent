@@ -221,7 +221,7 @@ DSG ONE is available on multiple platforms—pick what fits your workflow.
 |---|---|---|---|
 | **Direct API** | 🟢 Live | Custom integrations, enterprise deployments | [Activate free key](#running-your-first-verification) |
 | **GitHub Actions** | 🟢 Live (v1.1) | Gating CI/CD pipelines and deployments | [View on Marketplace](https://github.com/marketplace/actions/dsg-secure-deploy-gate) |
-| **Stripe** | 🟡 Ready | Payments, subscriptions, fraud decisions | [Coming Q3 2026](#) |
+| **Stripe** | 🟡 Upload ready | Payment-detail governance; Marketplace review not submitted | [Submission status](marketplace/SUBMISSION_QUEUE.md) |
 | **OpenAI** | 🟡 Ready | Skills, agent decision verification | [Coming Q3 2026](#) |
 | **AWS** | 🟡 In Progress | EC2, Lambda, SageMaker integrations | [Contact sales](mailto:sales@dsg.pics) |
 | **JetBrains** | 🟡 Planned | IDE plugins, security checks | [Contact sales](mailto:sales@dsg.pics) |

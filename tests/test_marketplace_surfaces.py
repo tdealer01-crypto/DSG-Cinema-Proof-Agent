@@ -62,7 +62,7 @@ def test_landing_exposes_every_supported_marketplace_status_truthfully():
     html = landing_html()
     expected = {
         "GitHub Marketplace": "LIVE V1.1.0",
-        "Stripe Apps": "V2.7.1 DEPLOY FIX",
+        "Stripe Apps": "V2.7.1 UPLOAD READY",
         "OpenAI Skills": "READY TO SUBMIT",
         "Microsoft Marketplace": "CONTACT-ME PACK READY",
         "AWS Marketplace": "BLOCKED EXTERNAL",
@@ -100,7 +100,7 @@ def test_launch_manifest_matches_repository_artifacts():
     statuses = {item["channel"]: item["status"] for item in manifest["channels"]}
     assert statuses == {
         "GitHub Marketplace Action": "LIVE_V1",
-        "Stripe Apps Marketplace": "IN_REMEDIATION",
+        "Stripe Apps Marketplace": "READY_FOR_EXTERNAL_UPLOAD",
         "Microsoft Marketplace": "SUBMISSION_PACK_PREPARED",
         "AWS Marketplace": "BLOCKED_EXTERNAL",
         "JetBrains Marketplace": "SPEC_ONLY",
@@ -114,6 +114,13 @@ def test_launch_manifest_matches_repository_artifacts():
     assert manifest["revenue_automation"]["verified_live"]["stripe_link_state"] == "LINKED_VERIFIED"
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
+
+    stripe_channel = next(
+        item for item in manifest["channels"] if item["channel"] == "Stripe Apps Marketplace"
+    )
+    assert stripe_channel["production_status"] == "ACTION_REQUIRED"
+    assert stripe_channel["submission_artifact"]["artifact_id"] == 9508761420
+    assert stripe_channel["submission_artifact"]["digest"].startswith("sha256:")
 
     official_landing = manifest["product"]["public_landing"]
     assert all(
@@ -134,6 +141,25 @@ def test_launch_manifest_matches_repository_artifacts():
         package = item.get("package") or item.get("v2_package")
         if package:
             assert (ROOT / package).exists(), package
+
+
+def test_production_probe_reports_stripe_marketplace_readiness():
+    workflow = (
+        ROOT / ".github" / "workflows" / "probe-cinema-azure.yml"
+    ).read_text(encoding="utf-8")
+    required = [
+        '"https://$HOST/marketplace/stripe/status"',
+        'STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL',
+        'STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL',
+        'STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL',
+        'STRIPE_APP_OAUTH_TEST_SECRET_KEY',
+        'STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY',
+        'STRIPE_APP_SIGNING_SECRET',
+        'stripe_marketplace: {',
+        'Current production marketplace/stripe/status is unavailable or malformed.',
+    ]
+    for value in required:
+        assert value in workflow
 
 
 def test_request_flows_warn_against_secrets_and_false_checkout():
