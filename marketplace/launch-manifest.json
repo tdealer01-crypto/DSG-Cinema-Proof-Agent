@@ -8,8 +8,7 @@
     "public_landing": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
     "receipt_version": "dsg-proof-receipt-1.0.0",
     "policy_version": "dsg-verified-execution-1.0.0",
-    "checkout_status": "LINKED",
-    "stripe_link_state": "LINKED_VERIFIED",
+    "checkout_status": "NOT_VERIFIED_NOT_LINKED",
     "privacy_policy_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PRIVACY.md",
     "third_party_processors_url": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/blob/main/marketplace/github/PROCESSORS.md",
     "support_contact": "t.dealer01@dsg.pics",
@@ -98,13 +97,13 @@
       "status": "LIVE",
       "public_url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs",
       "website_url": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
-      "next": "maintain the verified Stripe catalog, durable single-writer stores, and production enforcement checks",
+      "next": "attach durable storage and verified Stripe commerce before enabling paid enforcement",
       "commercial_role": "live verification integration and technical evaluation"
     }
   ],
   "revenue_automation": {
     "system": "dsg-revenue-1.1.0",
-    "status": "PRODUCTION_LINKED_VERIFIED_METERING_ENFORCED",
+    "status": "IMPLEMENTED_SAFE_RECORD_ONLY_CHARGES_NOT_VERIFIED",
     "billable_unit": "one Z3 VERIFIED_GLOBAL_OPTIMUM proof receipt",
     "status_endpoint": "/billing/status",
     "usage_endpoint": "/billing/usage",
@@ -121,13 +120,15 @@
       "scheduled reconciliation that fails when required evidence is UNAVAILABLE"
     ],
     "not_claimed": [
+      "an active Stripe checkout link",
       "durable multi-replica billing storage",
       "independently audited or settlement-reconciled revenue",
       "independent financial audit"
     ],
     "external_action_required": [
-      "upload Stripe App v2.7.1 and bind its generated app signing secret",
-      "complete the Stripe App External Test and Marketplace review"
+      "configure and verify the Stripe product, price, Payment Link, meter, webhook endpoint, API key, and webhook secret",
+      "attach durable stores and run one writer before enabling DSG_REVENUE_ENFORCE",
+      "set a stable DSG_REVENUE_ADMIN_SECRET for scheduled reconciliation"
     ]
   },
   "channel_delivery": {

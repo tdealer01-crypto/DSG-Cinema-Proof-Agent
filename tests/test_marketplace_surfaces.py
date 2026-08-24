@@ -105,8 +105,7 @@ def test_launch_manifest_matches_repository_artifacts():
         "OpenAI Skills": "READY_FOR_EXTERNAL_SUBMIT",
         "Direct API": "LIVE",
     }
-    assert manifest["product"]["checkout_status"] == "LINKED"
-    assert manifest["product"]["stripe_link_state"] == "LINKED_VERIFIED"
+    assert manifest["product"]["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
     assert manifest["product"]["public_landing"] == deployment["site_url"]
     assert deployment["status"] == "PASS"
 
