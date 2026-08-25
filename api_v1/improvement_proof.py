@@ -76,6 +76,7 @@ class ImprovementEnvelope(BaseModel):
 class ImprovementEnvelopeProof(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    proofId: str = Field(min_length=1)
     verified: bool
     verification: Literal["VERIFIED_ENVELOPE_BINDING", "BLOCKED"]
     proofHash: str
@@ -127,8 +128,10 @@ def verify_improvement_envelope(envelope: ImprovementEnvelope) -> ImprovementEnv
         failures.append("BUILD_NOT_PASSED")
 
     proof_hash = hashlib.sha256(_canonical_payload(envelope)).hexdigest()
+    proof_id = f"cinema-improvement-{proof_hash[:24]}"
     verified = not failures
     return ImprovementEnvelopeProof(
+        proofId=proof_id,
         verified=verified,
         verification="VERIFIED_ENVELOPE_BINDING" if verified else "BLOCKED",
         proofHash=proof_hash,
