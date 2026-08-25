@@ -218,14 +218,41 @@ $("firstProof").onclick = async () => {
 $("activate").onclick = async () => {
   if (busy) return;
   const displayName = $("displayName").value.trim();
+  const contactEmail = $("contactEmail").value.trim();
+  const marketingConsent = $("marketingConsent").checked;
   if (!displayName) return showError(new Error("Organization name required"));
+  if (marketingConsent && !contactEmail) return showError(new Error("Email is required only when marketing opt-in is selected"));
   busy = true; $("activate").disabled = true;
   try {
     const response = await fetch("/billing/activate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel: "dashboard", activation_id: crypto.randomUUID(), display_name: displayName }) });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.detail?.message || body.remediation?.next_step || `HTTP ${response.status}`);
     if (typeof body.api_key !== "string" || !body.api_key.startsWith("dsg_live_")) throw new Error("Activation did not return a valid one-time key");
-    $("issuedKey").textContent = body.api_key; $("newKey").hidden = false; $("displayName").value = ""; $("message").textContent = "Account activated. Copy the key before continuing.";
+
+    let marketingMessage = "";
+    if (contactEmail) {
+      try {
+        const identifyResponse = await fetch("/billing/marketing/identify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-DSG-API-Key": body.api_key },
+          body: JSON.stringify({ email: contactEmail, marketing_consent: marketingConsent, source: "dashboard" })
+        });
+        const identifyBody = await identifyResponse.json().catch(() => ({}));
+        if (!identifyResponse.ok) throw new Error(identifyBody.detail || `HTTP ${identifyResponse.status}`);
+        const state = identifyBody.marketing_sync?.sync_state;
+        if (marketingConsent && state && state !== "SYNCED") marketingMessage = ` Marketing sync: ${state}.`;
+      } catch (marketingError) {
+        // Marketing is downstream of activation and must never invalidate a real API key.
+        marketingMessage = " Marketing profile is pending sync; your DSG account is still active.";
+      }
+    }
+
+    $("issuedKey").textContent = body.api_key;
+    $("newKey").hidden = false;
+    $("displayName").value = "";
+    $("contactEmail").value = "";
+    $("marketingConsent").checked = false;
+    $("message").textContent = `Account activated. Copy the key before continuing.${marketingMessage}`;
   } catch (error) { showError(error); }
   finally { busy = false; $("activate").disabled = false; }
 };
@@ -236,6 +263,11 @@ $("upgrade").onclick = async () => {
   if (busy) return; busy = true; $("upgrade").disabled = true;
   try {
     const data = await api("/billing/checkout/session", { method: "POST", body: JSON.stringify({ plan: "metered", checkout_id: crypto.randomUUID() }) });
+    try {
+      await api("/billing/marketing/event", { method: "POST", body: JSON.stringify({ event: "checkout_started" }) });
+    } catch (_) {
+      // Checkout truth is independent of downstream marketing availability.
+    }
     const url = new URL(data.checkout_url);
     if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com" || url.username || url.password) throw new Error("Untrusted checkout URL");
     location.href = url.href;
