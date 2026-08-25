@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -110,7 +111,7 @@ def test_client_cannot_assert_payment_confirmed():
 
 
 def test_reconcile_does_not_promote_payment_linked_without_paid_invoice(monkeypatch):
-    key, account_id = activate()
+    _, account_id = activate()
     profile = marketing_api.get_store().upsert(
         account_id=account_id,
         email="trial@example.com",
@@ -177,8 +178,7 @@ def test_reconcile_promotes_only_after_scoped_paid_invoice_evidence(monkeypatch)
     assert calls == [(account_id, "payment_confirmed", "paid@example.com")]
 
 
-@pytest.mark.asyncio
-async def test_sync_writes_dsg_account_id_and_keeps_intent_tags_exclusive(monkeypatch):
+def test_sync_writes_dsg_account_id_and_keeps_intent_tags_exclusive(monkeypatch):
     account = Account(
         account_id="acct_dsg_corr_001",
         display_name="Correlation Test",
@@ -224,11 +224,13 @@ async def test_sync_writes_dsg_account_id_and_keeps_intent_tags_exclusive(monkey
         raise AssertionError(f"unexpected request: {method} {path}")
 
     monkeypatch.setattr("revenue.activecampaign_sync._request", fake_request)
-    result = await sync_account_event(
-        account,
-        profile,
-        event=EVENT_CHECKOUT_STARTED,
-        config=config,
+    result = asyncio.run(
+        sync_account_event(
+            account,
+            profile,
+            event=EVENT_CHECKOUT_STARTED,
+            config=config,
+        )
     )
     assert result["sync_state"] == "SYNCED"
     assert "dsg-intent-high" in result["tags_added"]
@@ -241,8 +243,7 @@ async def test_sync_writes_dsg_account_id_and_keeps_intent_tags_exclusive(monkey
     )
 
 
-@pytest.mark.asyncio
-async def test_no_consent_never_calls_activecampaign(monkeypatch):
+def test_no_consent_never_calls_activecampaign(monkeypatch):
     account = Account(account_id="acct_dsg_no_consent", display_name="No Consent")
     profile = MarketingProfile(
         account_id=account.account_id,
@@ -256,13 +257,15 @@ async def test_no_consent_never_calls_activecampaign(monkeypatch):
             raise AssertionError("ActiveCampaign network must not be opened without consent")
 
     monkeypatch.setattr("revenue.activecampaign_sync.httpx.AsyncClient", BombClient)
-    result = await sync_account_event(
-        account,
-        profile,
-        event=EVENT_LEAD,
-        config=ActiveCampaignConfig(
-            api_url="https://example.activehosted.com",
-            api_token="token",
-        ),
+    result = asyncio.run(
+        sync_account_event(
+            account,
+            profile,
+            event=EVENT_LEAD,
+            config=ActiveCampaignConfig(
+                api_url="https://example.activehosted.com",
+                api_token="token",
+            ),
+        )
     )
     assert result["sync_state"] == "SKIPPED_NO_CONSENT"
