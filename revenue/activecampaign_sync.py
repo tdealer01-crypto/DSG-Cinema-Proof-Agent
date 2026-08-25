@@ -4,7 +4,7 @@ This module is deliberately downstream of DSG/Stripe truth. It never grants
 entitlement and it never treats a marketing event as payment evidence.
 
 Production rules:
-- a contact is subscribed only when the DSG account has explicit marketing consent;
+- a contact is subscribed only when the marketing profile has explicit consent;
 - the DSG account id is copied into ActiveCampaign for deterministic correlation;
 - intent tags are kept mutually exclusive for events that establish intent;
 - payment/customer tags are emitted only by callers that already verified Stripe;
@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .accounts import Account
+from .marketing_profiles import MarketingProfile
 
 EVENT_LEAD = "lead"
 EVENT_DEMO_REQUESTED = "demo_requested"
@@ -278,29 +279,36 @@ async def _sync(
     config: ActiveCampaignConfig,
     *,
     account: Account,
+    profile: Optional[MarketingProfile],
     event: str,
     source: str,
 ) -> dict[str, Any]:
     if event not in SUPPORTED_EVENTS:
         raise ActiveCampaignSyncError(f"unsupported marketing event: {event}")
+    if profile is None:
+        return {
+            "sync_state": "SKIPPED_NO_PROFILE",
+            "event": event,
+            "detail": "the DSG account has no marketing profile",
+        }
     if not config.configured:
         return {
             "sync_state": "PENDING_CONFIGURATION",
             "event": event,
             "detail": "ACTIVECAMPAIGN_API_URL and ACTIVECAMPAIGN_API_TOKEN are required",
         }
-    if not account.marketing_consent:
+    if not profile.marketing_consent:
         return {
             "sync_state": "SKIPPED_NO_CONSENT",
             "event": event,
-            "detail": "the DSG account has not opted in to marketing email",
+            "detail": "the marketing profile has not opted in to marketing email",
         }
-    email = (account.contact_email or "").strip().lower()
+    email = (profile.email or "").strip().lower()
     if not email:
         return {
             "sync_state": "SKIPPED_NO_EMAIL",
             "event": event,
-            "detail": "the DSG account has no contact email",
+            "detail": "the marketing profile has no contact email",
         }
 
     required_tag_names = set(EVENT_TAGS[event]) | set(EVENT_REMOVE_TAGS[event])
@@ -398,6 +406,7 @@ async def _sync(
 
 async def sync_account_event(
     account: Account,
+    profile: Optional[MarketingProfile],
     *,
     event: str,
     source: Optional[str] = None,
@@ -409,8 +418,10 @@ async def sync_account_event(
         return await _sync(
             selected,
             account=account,
+            profile=profile,
             event=event,
-            source=(source or account.channel or "api").strip() or "api",
+            source=(source or (profile.source if profile else None) or account.channel or "api").strip()
+            or "api",
         )
     except ActiveCampaignSyncError as exc:
         return {
