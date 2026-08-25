@@ -11,12 +11,14 @@ import hashlib
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "dsg-agentic-improvement-v1"
 
 
 class EvidenceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal[
         "commit",
         "workflow_run",
@@ -38,12 +40,17 @@ class EvidenceRef(BaseModel):
 
 
 class MetricValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1)
     value: float
     direction: Literal["HIGHER_IS_BETTER", "LOWER_IS_BETTER"]
+    unit: str | None = None
 
 
 class ImprovementEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     schemaVersion: Literal["dsg-agentic-improvement-v1"]
     candidateId: str = Field(min_length=1)
     goalId: str = Field(min_length=1)
@@ -55,11 +62,20 @@ class ImprovementEnvelope(BaseModel):
     baselineMetric: MetricValue
     candidateMetric: MetricValue
     constraintsPassed: bool
+    planAligned: bool
+    testsPassed: bool
+    buildPassed: bool
     evidence: list[EvidenceRef]
     simulationHash: str | None = None
+    candidateAuthority: Literal["SIMULATION_ONLY"]
+    promotionAuthority: Literal["DSG_CONTROL_PLANE"]
+    selfPromotionAllowed: Literal[False]
+    requestedPromotion: Literal["PR", "DEPLOY"]
 
 
 class ImprovementEnvelopeProof(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     verified: bool
     verification: Literal["VERIFIED_ENVELOPE_BINDING", "BLOCKED"]
     proofHash: str
@@ -100,6 +116,15 @@ def verify_improvement_envelope(envelope: ImprovementEnvelope) -> ImprovementEnv
         failures.append("METRIC_NAME_MISMATCH")
     if envelope.baselineMetric.direction != envelope.candidateMetric.direction:
         failures.append("METRIC_DIRECTION_MISMATCH")
+
+    if not envelope.planAligned:
+        failures.append("PLAN_NOT_ALIGNED")
+    if not envelope.constraintsPassed:
+        failures.append("CONSTRAINTS_NOT_PASSED")
+    if not envelope.testsPassed:
+        failures.append("TESTS_NOT_PASSED")
+    if not envelope.buildPassed:
+        failures.append("BUILD_NOT_PASSED")
 
     proof_hash = hashlib.sha256(_canonical_payload(envelope)).hexdigest()
     verified = not failures
