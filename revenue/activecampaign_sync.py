@@ -63,7 +63,6 @@ EVENT_INTENT: dict[str, Optional[str]] = {
     EVENT_TRIAL_STARTED: INTENT_HIGH,
     EVENT_CHECKOUT_STARTED: INTENT_HIGH,
     EVENT_CHECKOUT_ABANDONED: None,
-    # Paid customers leave the sales-intent lifecycle.
     EVENT_PAYMENT_CONFIRMED: None,
 }
 
@@ -159,7 +158,7 @@ async def _request(
     *,
     json: Optional[dict[str, Any]] = None,
     params: Optional[dict[str, Any]] = None,
-    allowed_statuses: set[int] = {200, 201},
+    allowed_statuses: frozenset[int] = frozenset({200, 201}),
 ) -> dict[str, Any]:
     assert config.api_url is not None
     assert config.api_token is not None
@@ -256,6 +255,65 @@ async def _current_tag_relations(
     return relations
 
 
+async def _ensure_list_subscription(
+    client: httpx.AsyncClient,
+    config: ActiveCampaignConfig,
+    contact_id: int,
+) -> None:
+    """Subscribe once; repeated lifecycle events must not fail on duplicates."""
+    body = await _request(
+        client,
+        config,
+        "GET",
+        "/api/3/contactLists",
+        params={
+            "filters[contact]": contact_id,
+            "filters[list]": config.list_id,
+            "limit": 100,
+        },
+    )
+    exact = next(
+        (
+            item
+            for item in body.get("contactLists", [])
+            if isinstance(item, dict)
+            and str(item.get("contact")) == str(contact_id)
+            and str(item.get("list")) == str(config.list_id)
+        ),
+        None,
+    )
+    payload = {
+        "contactList": {
+            "list": str(config.list_id),
+            "contact": str(contact_id),
+            "status": 1,
+        }
+    }
+    if exact is None:
+        await _request(
+            client,
+            config,
+            "POST",
+            "/api/3/contactLists",
+            json=payload,
+        )
+        return
+    if str(exact.get("status")) == "1":
+        return
+    relation_id = exact.get("id")
+    if relation_id is None:
+        raise ActiveCampaignSyncError(
+            "existing ActiveCampaign list membership has no id"
+        )
+    await _request(
+        client,
+        config,
+        "PUT",
+        f"/api/3/contactLists/{relation_id}",
+        json=payload,
+    )
+
+
 def _field_values(
     config: ActiveCampaignConfig,
     account: Account,
@@ -337,19 +395,7 @@ async def _sync(
                 "ActiveCampaign contact sync returned no valid contact id"
             ) from exc
 
-        await _request(
-            client,
-            config,
-            "POST",
-            "/api/3/contactLists",
-            json={
-                "contactList": {
-                    "list": str(config.list_id),
-                    "contact": str(contact_id),
-                    "status": 1,
-                }
-            },
-        )
+        await _ensure_list_subscription(client, config, contact_id)
 
         tag_ids = await _resolve_tag_ids(client, config, required_tag_names)
         current = await _current_tag_relations(client, config, contact_id)
@@ -369,7 +415,7 @@ async def _sync(
                 config,
                 "DELETE",
                 f"/api/3/contactTags/{relation_id}",
-                allowed_statuses={200, 204},
+                allowed_statuses=frozenset({200, 204}),
             )
             current.pop(tag_id, None)
             removed.append(name)
