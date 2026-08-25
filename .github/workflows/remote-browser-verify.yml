@@ -6,10 +6,12 @@ on:
       - 'api_v1/remote_browser.py'
       - 'api_v1/remote_transport.py'
       - 'api_v1/remote_pairing.py'
+      - 'api_v1/remote_mcp.py'
       - 'api_v1/__init__.py'
       - 'web/customer-dashboard/**'
       - 'tests/test_remote_browser.py'
       - 'tests/test_remote_pairing.py'
+      - 'tests/test_remote_mcp.py'
       - 'tests/test_console_prototype.py'
       - '.github/workflows/remote-browser-verify.yml'
   push:
@@ -18,10 +20,12 @@ on:
       - 'api_v1/remote_browser.py'
       - 'api_v1/remote_transport.py'
       - 'api_v1/remote_pairing.py'
+      - 'api_v1/remote_mcp.py'
       - 'api_v1/__init__.py'
       - 'web/customer-dashboard/**'
       - 'tests/test_remote_browser.py'
       - 'tests/test_remote_pairing.py'
+      - 'tests/test_remote_mcp.py'
       - 'tests/test_console_prototype.py'
       - '.github/workflows/remote-browser-verify.yml'
   workflow_dispatch:
@@ -48,16 +52,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-cinema.txt pytest
 
-      - name: Compile remote transport and pairing
+      - name: Compile remote transport, pairing and MCP
         run: |
           python -m py_compile \
             api_v1/remote_browser.py \
             api_v1/remote_transport.py \
             api_v1/remote_pairing.py \
+            api_v1/remote_mcp.py \
             api_v1/__init__.py
 
-      - name: Verify shared browser and chat-driven pairing behavior
-        run: python -m pytest -q tests/test_remote_browser.py tests/test_remote_pairing.py tests/test_console_prototype.py
+      - name: Verify shared browser, chat pairing and MCP action behavior
+        run: python -m pytest -q tests/test_remote_browser.py tests/test_remote_pairing.py tests/test_remote_mcp.py tests/test_console_prototype.py
 
       - name: Verify verification-v1 contract remains separate
         run: python -m pytest -q tests/test_api_contract.py

@@ -28,6 +28,10 @@ def install(app) -> None:
     # Pairing is the user-facing chat-driven authority switch: the dashboard
     # only enables/disables Remote, while the agent supplies plan/step/endpoint.
     importlib.import_module(f"{__name__}.remote_pairing").install(app)
+    # ChatGPT/MCP-compatible action transport. This is intentionally mounted at
+    # /mcp rather than under /api/v1 so adding remote execution tools cannot
+    # drift the independent verification OpenAPI contract.
+    importlib.import_module(f"{__name__}.remote_mcp").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
     importlib.import_module("revenue.stripe_marketplace").install(app)
