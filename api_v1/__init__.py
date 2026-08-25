@@ -25,6 +25,9 @@ def install(app) -> None:
     # transport deliberately lives outside /api/v1 so the independent
     # verification contract remains a separate, exact integration surface.
     importlib.import_module(f"{__name__}.remote_transport").install(app)
+    # Pairing is the user-facing chat-driven authority switch: the dashboard
+    # only enables/disables Remote, while the agent supplies plan/step/endpoint.
+    importlib.import_module(f"{__name__}.remote_pairing").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
     importlib.import_module("revenue.stripe_marketplace").install(app)
