@@ -3,8 +3,6 @@ let key = "";
 let busy = false;
 let generation = 0;
 let controller = new AbortController();
-let remoteToken = "";
-let remoteSessionId = "";
 let remoteBusy = false;
 
 async function api(path, options = {}) {
@@ -67,37 +65,34 @@ $("closeProofDetail").onclick = () => {
   for (const id of ["detailProofHash", "detailContextHash", "detailEntryHash", "detailAmount"]) $(id).textContent = "";
 };
 
-function renderRemoteOff(reason = "No remote session.") {
-  remoteToken = "";
-  remoteSessionId = "";
-  $("remoteState").textContent = "REMOTE OFF";
-  $("remoteState").className = "remote-state";
-  $("remoteOn").disabled = false;
-  $("remoteOff").disabled = true;
-  $("remoteSend").disabled = true;
-  $("remoteSession").textContent = reason;
-}
-
-function renderRemoteOn(body) {
-  remoteToken = body.session_token;
-  remoteSessionId = body.session_id;
-  $("remoteState").textContent = "REMOTE ON";
-  $("remoteState").className = "remote-state on";
-  $("remoteOn").disabled = true;
-  $("remoteOff").disabled = false;
-  $("remoteSend").disabled = false;
-  $("remoteSession").textContent = `Session ${body.session_id} · plan ${body.plan_id} · step ${body.step_id} · endpoint hidden`;
-}
-
 function remoteMessage(text, isError = false) {
   $("remoteMessage").textContent = text || "";
   $("remoteMessage").className = isError ? "status error" : "status";
 }
 
-function requiredRemote(id, label) {
-  const value = $(id).value.trim();
-  if (!value) throw new Error(`${label} required`);
-  return value;
+function renderRemoteStatus(body = {}) {
+  const enabled = body.remote_enabled === true;
+  const connection = body.agent_connection || (enabled ? "waiting" : "off");
+  $("remoteState").textContent = enabled ? "REMOTE ON" : "REMOTE OFF";
+  $("remoteState").className = enabled ? "remote-state on" : "remote-state";
+  $("remoteOn").disabled = !key || enabled || remoteBusy;
+  $("remoteOff").disabled = !key || !enabled || remoteBusy;
+  $("remoteAgentState").textContent = connection === "connected" ? "Connected" : connection === "waiting" ? "Waiting for agent" : "Off";
+  $("remoteSession").textContent = enabled
+    ? (connection === "connected" ? "Agent is connected to the approved execution. You can keep using the browser at the same time." : "Remote is ready. Continue in the agent chat; Cinema is waiting for the agent to connect.")
+    : "Remote is off. The user's browser remains under user control.";
+  const evidence = body.latest_evidence;
+  $("remoteEvidence").textContent = evidence ? JSON.stringify(evidence, null, 2) : "No remote action evidence yet.";
+}
+
+async function refreshRemoteStatus() {
+  if (!key || remoteBusy) return;
+  try {
+    const body = await api("/remote-browser/status");
+    renderRemoteStatus(body);
+  } catch (error) {
+    remoteMessage(`Remote status: ${error.message}`, true);
+  }
 }
 
 function reset() {
@@ -124,8 +119,7 @@ function reset() {
   $("connect").disabled = false;
   $("activate").disabled = false;
   $("upgrade").disabled = $("portal").disabled = $("firstProof").disabled = true;
-  renderRemoteOff("Dashboard disconnected; no agent remote authority is available from this page.");
-  $("remoteEvidence").textContent = "No action evidence yet.";
+  renderRemoteStatus({ remote_enabled: false, agent_connection: "off" });
   remoteMessage("");
 }
 
@@ -147,8 +141,12 @@ function showError(error) {
 async function loadWithCurrentKey(expectedGeneration = generation) {
   if (!key) throw new Error("API key required");
   $("message").textContent = "Loading…";
-  const [onboarding, usage, history, subscription] = await Promise.all([
-    api("/onboarding/status"), api("/billing/usage"), api("/billing/usage/history?limit=10"), api("/billing/subscription")
+  const [onboarding, usage, history, subscription, remote] = await Promise.all([
+    api("/onboarding/status"),
+    api("/billing/usage"),
+    api("/billing/usage/history?limit=10"),
+    api("/billing/subscription"),
+    api("/remote-browser/status")
   ]);
   if (expectedGeneration !== generation || !key) return;
   $("apiKey").value = "";
@@ -180,6 +178,7 @@ async function loadWithCurrentKey(expectedGeneration = generation) {
   $("portal").disabled = !subscription.can_manage_in_portal;
   $("message").textContent = usage.upgrade?.recommended ? `Upgrade recommended: ${usage.upgrade.reason}` : "Account ready";
   $("message").className = "status";
+  renderRemoteStatus(remote);
 }
 
 async function load() {
@@ -255,52 +254,38 @@ $("portal").onclick = async () => {
   finally { busy = false; }
 };
 
-$("remoteContract").onclick = async () => {
-  if (remoteBusy) return; remoteBusy = true; remoteMessage("Checking production remote contract…");
-  try {
-    const response = await fetch("/remote-browser/contract", { headers: { Accept: "application/json" } });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
-    $("remoteEvidence").textContent = JSON.stringify(body, null, 2);
-    remoteMessage(`${body.protocol} · ${body.concurrency}`);
-  } catch (error) { remoteMessage(error.message, true); }
-  finally { remoteBusy = false; }
-};
-
 $("remoteOn").onclick = async () => {
-  if (remoteBusy) return; remoteBusy = true; remoteMessage("Opening plan-bound remote session…");
+  if (remoteBusy || !key) return;
+  remoteBusy = true;
+  remoteMessage("Enabling Remote…");
   try {
-    if (!key) throw new Error("Connect a DSG API key first");
-    const payload = { plan_id: requiredRemote("remotePlanId", "Approved plan ID"), agent_identity: requiredRemote("remoteAgentId", "Agent identity"), step_id: requiredRemote("remoteStepId", "Approved step ID"), remote_endpoint: requiredRemote("remoteEndpoint", "Remote endpoint"), ttl_seconds: 900 };
-    const body = await api("/remote-browser/sessions", { method: "POST", body: JSON.stringify(payload) });
-    if (body.remote_enabled !== true || typeof body.session_token !== "string") throw new Error("Remote session was not enabled");
-    renderRemoteOn(body);
-    $("remoteEvidence").textContent = JSON.stringify({ decision: body.decision, plan_hash: body.plan_hash, session_id: body.session_id, remote_enabled: body.remote_enabled, endpoint_exposed: body.endpoint_exposed }, null, 2);
-    $("remoteEndpoint").value = "";
-    remoteMessage("Remote connected. User and agent input channels remain independent.");
-  } catch (error) { renderRemoteOff(); remoteMessage(error.message, true); }
-  finally { remoteBusy = false; }
-};
-
-$("remoteSend").onclick = async () => {
-  if (remoteBusy || !remoteToken) return; remoteBusy = true; $("remoteSend").disabled = true; remoteMessage("Sending action…");
-  try {
-    let parameters = {}; const raw = $("remoteActionParameters").value.trim();
-    if (raw) { parameters = JSON.parse(raw); if (!parameters || Array.isArray(parameters) || typeof parameters !== "object") throw new Error("Action parameters must be a JSON object"); }
-    const body = await api("/remote-browser/actions", { method: "POST", body: JSON.stringify({ session_token: remoteToken, action: { kind: $("remoteActionKind").value, parameters } }) });
-    $("remoteEvidence").textContent = JSON.stringify({ session_id: body.session_id, action: body.action, status: body.status, evidence_hash: body.evidence_hash, remote_response: body.remote_response }, null, 2);
-    remoteMessage(`Action recorded · evidence ${String(body.evidence_hash || "").slice(0, 16)}…`);
-  } catch (error) { if (/expired|revoked|410/i.test(error.message)) renderRemoteOff("Remote session is no longer active."); remoteMessage(error.message, true); }
-  finally { remoteBusy = false; $("remoteSend").disabled = !remoteToken; }
+    const body = await api("/remote-browser/enable", { method: "POST" });
+    renderRemoteStatus(body);
+    remoteMessage("Remote ON. Continue in your agent chat; you do not need to enter plan IDs, step IDs, agent names or endpoints here.");
+  } catch (error) {
+    remoteMessage(error.message, true);
+  } finally {
+    remoteBusy = false;
+    await refreshRemoteStatus();
+  }
 };
 
 $("remoteOff").onclick = async () => {
-  if (remoteBusy || !remoteToken) return; remoteBusy = true; const token = remoteToken; const session = remoteSessionId; remoteMessage("Revoking agent remote authority…");
+  if (remoteBusy || !key) return;
+  remoteBusy = true;
+  remoteMessage("Revoking agent remote authority…");
   try {
-    const body = await api("/remote-browser/disconnect", { method: "POST", body: JSON.stringify({ session_token: token }) });
-    renderRemoteOff(`Remote disabled for ${session || body.session_id || "session"}. User browser remains live.`);
-    $("remoteEvidence").textContent = JSON.stringify(body, null, 2);
-    remoteMessage("Remote OFF. Only agent remote authority was revoked.");
-  } catch (error) { remoteMessage(error.message, true); }
-  finally { remoteBusy = false; }
+    const body = await api("/remote-browser/disable", { method: "POST" });
+    renderRemoteStatus(body);
+    remoteMessage("Remote OFF. Agent remote authority was revoked; your browser session stays live.");
+  } catch (error) {
+    remoteMessage(error.message, true);
+  } finally {
+    remoteBusy = false;
+    await refreshRemoteStatus();
+  }
 };
+
+setInterval(() => {
+  if (key && !document.hidden) refreshRemoteStatus();
+}, 4000);
