@@ -28,7 +28,6 @@ def page() -> str:
 
 @pytest.fixture(scope="module")
 def markup(page: str) -> str:
-    """The static DOM only — everything before the behaviour script."""
     return page.split("<script>")[0]
 
 
@@ -48,8 +47,17 @@ def test_customer_dashboard_is_served_from_the_api_origin():
     assert 'id="disconnect"' in response.text
     assert 'id="remoteOn"' in response.text
     assert 'id="remoteOff"' in response.text
-    assert 'id="remoteEndpoint"' in response.text
     assert 'id="remoteEvidence"' in response.text
+    for forbidden in (
+        'id="remotePlanId"',
+        'id="remoteAgentId"',
+        'id="remoteStepId"',
+        'id="remoteEndpoint"',
+        'id="remoteActionKind"',
+        'id="remoteActionParameters"',
+        'id="remoteSend"',
+    ):
+        assert forbidden not in response.text
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     script = client.get("/dashboard-assets/dashboard.js")
@@ -61,31 +69,29 @@ def test_customer_dashboard_is_served_from_the_api_origin():
         "/billing/activate",
         "/billing/checkout/session",
         "/billing/portal/session",
-        "/remote-browser/contract",
+        "/remote-browser/status",
+        "/remote-browser/enable",
+        "/remote-browser/disable",
+    ):
+        assert endpoint in script.text
+    for developer_endpoint in (
         "/remote-browser/sessions",
         "/remote-browser/actions",
         "/remote-browser/disconnect",
     ):
-        assert endpoint in script.text
+        assert developer_endpoint not in script.text
 
 
-def test_remote_dashboard_preserves_shared_browser_semantics():
+def test_remote_dashboard_is_chat_driven_and_preserves_shared_browser_semantics():
     response = client.get("/dashboard")
     script = client.get("/dashboard-assets/dashboard.js")
-    assert "User and agent controls stay independent" in response.text
-    assert "User browser remains live" in script.text
-    assert "Only agent remote authority was revoked" in script.text
+    assert "สั่งงานกับ Agent ในแชทตามปกติ" in response.text
+    assert "Plan, step, agent and endpoint are supplied by the agent" in response.text
+    assert "your browser session stays live" in script.text
     assert "takeover" not in response.text.lower()
     assert "resume agent" not in response.text.lower()
-
-
-def test_remote_dashboard_keeps_session_token_in_memory_only():
-    script = client.get("/dashboard-assets/dashboard.js").text
-    assert 'let remoteToken = ""' in script
-    assert "localStorage" not in script
-    assert "sessionStorage" not in script
-    assert "endpoint hidden" in script
-    assert '$("remoteEndpoint").value = ""' in script
+    assert "localStorage" not in script.text
+    assert "sessionStorage" not in script.text
 
 
 def test_static_markup_shows_no_verification_state(markup: str):
