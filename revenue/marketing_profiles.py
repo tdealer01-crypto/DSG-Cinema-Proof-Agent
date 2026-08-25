@@ -127,6 +127,10 @@ class MarketingProfileStore:
         with self._critical_section():
             return self._profiles.get(account_id)
 
+    def all(self) -> list[MarketingProfile]:
+        with self._critical_section():
+            return list(self._profiles.values())
+
     def upsert(
         self,
         *,
