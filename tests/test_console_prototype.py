@@ -46,6 +46,10 @@ def test_customer_dashboard_is_served_from_the_api_origin():
     assert "DSG ONE Customer" in response.text
     assert "Activate free account" in response.text
     assert 'id="disconnect"' in response.text
+    assert 'id="remoteOn"' in response.text
+    assert 'id="remoteOff"' in response.text
+    assert 'id="remoteEndpoint"' in response.text
+    assert 'id="remoteEvidence"' in response.text
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     script = client.get("/dashboard-assets/dashboard.js")
@@ -57,8 +61,31 @@ def test_customer_dashboard_is_served_from_the_api_origin():
         "/billing/activate",
         "/billing/checkout/session",
         "/billing/portal/session",
+        "/remote-browser/contract",
+        "/remote-browser/sessions",
+        "/remote-browser/actions",
+        "/remote-browser/disconnect",
     ):
         assert endpoint in script.text
+
+
+def test_remote_dashboard_preserves_shared_browser_semantics():
+    response = client.get("/dashboard")
+    script = client.get("/dashboard-assets/dashboard.js")
+    assert "User and agent controls stay independent" in response.text
+    assert "User browser remains live" in script.text
+    assert "Only agent remote authority was revoked" in script.text
+    assert "takeover" not in response.text.lower()
+    assert "resume agent" not in response.text.lower()
+
+
+def test_remote_dashboard_keeps_session_token_in_memory_only():
+    script = client.get("/dashboard-assets/dashboard.js").text
+    assert 'let remoteToken = ""' in script
+    assert "localStorage" not in script
+    assert "sessionStorage" not in script
+    assert "endpoint hidden" in script
+    assert '$("remoteEndpoint").value = ""' in script
 
 
 def test_static_markup_shows_no_verification_state(markup: str):
@@ -73,8 +100,6 @@ def test_no_fabricated_hashes_or_amounts(page: str):
 
 
 def test_every_displayed_verdict_is_read_from_a_response(page: str):
-    # Each PASS/decision string in the behaviour script is the true branch of a
-    # field the API computed, never an unconditional assignment.
     for guard in (
         'alignment.plan_aligned ? "PASS"',
         'constraints.constraints_pass ? "PASS"',
@@ -102,7 +127,6 @@ def test_console_drives_the_documented_flow(page: str):
 
 
 def test_console_never_submits_a_verdict(page: str):
-    """The request bodies the console builds carry raw material only."""
     for verdict in ("plan_aligned:", "constraints_pass:", "replay_match:", "evidence_complete:", "verified:"):
         assert verdict not in page, f"the console assembles {verdict} into a request"
 
