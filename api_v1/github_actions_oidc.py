@@ -3,8 +3,8 @@
 The verifier authenticates the workflow identity without requiring Cinema or the
 Control Plane to hold a PAT for the private repository. It validates the GitHub
 OIDC signature and pins issuer, audience, repository id/name, visibility, ref,
-and workflow path. Caller-provided ``sub`` is never used as the sole trust
-boundary because GitHub can use immutable subject formats.
+workflow path, and governed trigger class. Caller-provided ``sub`` is never used
+as the sole trust boundary because GitHub can use immutable subject formats.
 """
 
 from __future__ import annotations
@@ -38,10 +38,8 @@ class GitHubOidcTrustPolicy:
     repository_id: str = "1263153975"
     repository_visibility: str = "private"
     workflow_path: str = ".github/workflows/governed-self-evolution.yml"
-    allowed_refs: tuple[str, ...] = (
-        "refs/heads/master",
-        "refs/heads/feat/governed-candidate-envelope",
-    )
+    allowed_refs: tuple[str, ...] = ("refs/heads/master",)
+    allowed_events: tuple[str, ...] = ("schedule", "workflow_dispatch")
     issuer: str = GITHUB_OIDC_ISSUER
     clock_skew_seconds: int = 60
     max_token_age_seconds: int = 900
@@ -179,6 +177,10 @@ def verify_github_actions_oidc(
         if value is None or not str(value).strip():
             raise OidcVerificationError(f"OIDC_{name.upper()}_MISSING")
 
+    event_name = str(claims["event_name"])
+    if event_name not in policy.allowed_events:
+        raise OidcVerificationError("OIDC_EVENT_NOT_ALLOWED")
+
     actor = claims.get("actor")
     return GitHubActionsIdentity(
         repository=policy.repository,
@@ -189,7 +191,7 @@ def verify_github_actions_oidc(
         workflowRef=expected_workflow_ref,
         runId=str(claims["run_id"]),
         runAttempt=str(claims["run_attempt"]),
-        eventName=str(claims["event_name"]),
+        eventName=event_name,
         actor=str(actor) if actor is not None else None,
     )
 
