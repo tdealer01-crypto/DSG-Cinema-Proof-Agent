@@ -98,6 +98,52 @@ No setup required. No credit card. No waiting.
 
 The Azure web console is the official public endpoint and source of truth for deployment status.
 
+## Production Verification — August 25, 2026
+
+The current `main` production deployment is **verified green** for commit `55a29148049574f9e147fa59965865256c28eba7` (PR #120).
+
+GitHub Actions run **Deploy Cinema + Z3 Production #63** completed successfully and verified the production path before recording evidence. The run passed:
+
+- ✅ Cinema and marketplace contract verification before deployment
+- ✅ Azure OIDC login and production identity/secret resolution
+- ✅ Durable revenue storage check
+- ✅ Immutable production image build
+- ✅ Z3 production deployment
+- ✅ Direct production Z3 proof verification
+- ✅ Cinema production deployment
+- ✅ Cinema → Z3 production E2E verification and replay
+- ✅ Cinema readiness with enforcement configuration
+- ✅ Marketplace adapters and Azure browser CORS verification
+- ✅ Revenue state truthfulness check
+- ✅ Non-secret production evidence generation and artifact upload
+
+**Production evidence artifact:** `cinema-production-evidence-55a29148049574f9e147fa59965865256c28eba7`  
+**Artifact ID:** `9558136839`  
+**Artifact digest:** `sha256:c172905639a8afe8c86e0d7c51fe443e7abf2ed70a08aa495606563855448a32`
+
+### ChatGPT-Compatible MCP + Remote Browser
+
+Cinema now exposes two separate MCP surfaces with different responsibilities:
+
+| Surface | Endpoint | Purpose |
+|---|---|---|
+| **DSG Verification MCP** | `POST /api/v1/mcp` | Plans, approval, preflight, alignment, constraints, execution records, evidence, Z3 verification, proof readback |
+| **Cinema Remote Browser MCP** | `POST /mcp` | Plan-bound shared-browser execution for ChatGPT-compatible MCP clients |
+
+The Remote Browser MCP exposes:
+
+- `remote_contract`
+- `remote_status`
+- `remote_agent_connect`
+- `remote_action`
+- `remote_disconnect`
+
+Remote execution authority is bound to an **approved Cinema plan step**. Once the connection is accepted, ordinary actions inside that approved authority do not require a per-click approval cycle. Passwords, OTPs, CAPTCHA responses, passkeys, API keys, and other identity secrets remain direct-user-input only and are rejected from agent tool payloads.
+
+The dedicated **Verify Remote Browser Transport** workflow passed for PR #118 before the feature was merged to `main`, and PR #120 subsequently deployed the current `main` revision to production.
+
+> **Truth boundary:** this verifies the production deployment pipeline, Z3/Cinema verification path, MCP transport tests, and recorded production evidence. It does not claim that every possible external SaaS mutation has been exercised in production. Native upstream ActiveCampaign MCP proxy/client support is not currently claimed by this README.
+
 ## How It Works: The Complete Verification Flow
 
 ### The Three Decision Paths
@@ -220,6 +266,7 @@ DSG ONE is available on multiple platforms—pick what fits your workflow.
 | Platform | Status | Use It For | Next Step |
 |---|---|---|---|
 | **Direct API** | 🟢 Live | Custom integrations, enterprise deployments | [Activate free key](#running-your-first-verification) |
+| **MCP / Agent Clients** | 🟢 Live | Verification MCP plus plan-bound Remote Browser actions | Use `/api/v1/mcp` or `/mcp` from a compatible client |
 | **GitHub Actions** | 🟢 Live (v1.1) | Gating CI/CD pipelines and deployments | [View on Marketplace](https://github.com/marketplace/actions/dsg-secure-deploy-gate) |
 | **Stripe** | 🟡 Upload ready | Payment-detail governance; Marketplace review not submitted | [Submission status](marketplace/SUBMISSION_QUEUE.md) |
 | **OpenAI** | 🟡 Ready | Skills, agent decision verification | [Coming Q3 2026](#) |
@@ -270,6 +317,9 @@ curl -H "X-DSG-API-Key: $API_KEY" \
 | **Z3 Prover** | `z3_main.py` | Theorem prover backend (authenticated, fail-closed) |
 | **Billing** | `revenue/` | Accounts, API keys, quotas, Stripe webhooks, usage ledger |
 | **Web UI** | `landing/`, `azure-landing/` | Interactive 3D proof explorer |
+| **Verification MCP** | `api_v1/mcp.py` | JSON-RPC MCP transport for the governed verification flow |
+| **Remote Browser MCP** | `api_v1/remote_mcp.py` | ChatGPT-compatible plan-bound remote browser tools |
+| **Remote Browser Runtime** | `api_v1/remote_browser.py` | Approved-plan session binding, remote actions, evidence and revocation |
 
 ### Integration & Deployment
 
@@ -431,25 +481,30 @@ SENTRY_TRACES_SAMPLE_RATE=0.1        # Sample 10% of transactions
 
 ## System Status — Current Build
 
-✅ **All systems operational.** Last verification: Aug 23, 2026 16:03 UTC
+✅ **Latest verified production deployment passed.** Last deployment verification: Aug 25, 2026 09:57 UTC (`Deploy Cinema + Z3 Production #63`, commit `55a2914`).
 
 | Component | Status | Coverage |
 |---|---|---|
 | **API Contract & Tests** | ✅ PASS | Core v1 endpoints, error handling, edge cases |
-| **Revenue & Billing** | ✅ PASS | Activation, quotas, Stripe webhooks, ledger reconciliation |
-| **Cinema E2E** | ✅ PASS | Live verification on Azure, proof generation, receipt download |
-| **Guarded Mutation Execution** | ✅ PASS | 21/21 checks; idempotency, tenant isolation, digest verification |
+| **Revenue & Billing** | ✅ PASS | Activation, quotas, Stripe webhooks, ledger/revenue truth checks |
+| **Cinema E2E** | ✅ PASS | Production Cinema → Z3 verification and deterministic replay |
+| **Z3 Production Proof** | ✅ PASS | Direct production Z3 proof verified during deployment |
+| **Guarded Mutation Execution** | ✅ PASS | Idempotency, tenant isolation, digest verification |
+| **Remote Browser MCP** | ✅ PASS | MCP tool listing, plan-bound connect/action/disconnect, secret-input rejection |
 | **Stripe Integration** | ✅ PASS | Metered pricing, webhook signing, test/live modes |
-| **Marketplace Packages** | ✅ PASS | GitHub Action, Stripe App, OpenAI, AWS validation |
+| **Marketplace Packages** | ✅ PASS | Marketplace adapter verification in production deployment workflow |
 | **Production Logging** | ✅ PASS | JSON logging, request tracking, metrics endpoints |
-| **Error Tracking** | ✅ PASS | Sentry integration, 27/27 tests passing, PII filtering |
-| **Deployment Pipeline** | ✅ PASS | Automated CI, smoke tests, reconciliation jobs |
+| **Error Tracking** | ✅ PASS | Sentry integration and credential filtering |
+| **Deployment Pipeline** | ✅ PASS | Immutable images, Z3 + Cinema deploy, readiness, E2E, evidence artifact |
 
 ### Recent Improvements
 
-- **Guarded Mutation Execution (Aug 23):** Deterministic, replay-safe state changes with database-enforced idempotency and tenant isolation. Deployed and live-tested against production database. ✨
-- **TLS Enforcement:** Connection pooler compatibility while maintaining encryption guarantees
-- **Prepared Statement Optimization:** Works with Supabase transaction pooler without connection state pollution
+- **Production deployment evidence (Aug 25):** Run #63 deployed commit `55a2914`, verified direct Z3 proof, Cinema → Z3 E2E/replay, marketplace adapters, revenue state, and uploaded a non-secret production evidence artifact.
+- **Remote Browser MCP (Aug 25):** ChatGPT-compatible `/mcp` endpoint exposes plan-bound remote browser tools while keeping identity secrets as direct-user-input only.
+- **Dashboard production trigger (Aug 25):** Dashboard changes on `main` dispatch the canonical Cinema + Z3 production workflow.
+- **Guarded Mutation Execution (Aug 23):** Deterministic, replay-safe state changes with database-enforced idempotency and tenant isolation.
+- **TLS Enforcement:** Connection pooler compatibility while maintaining encryption guarantees.
+- **Prepared Statement Optimization:** Works with Supabase transaction pooler without connection state pollution.
 
 ## Deployment & Operations
 
@@ -457,7 +512,9 @@ SENTRY_TRACES_SAMPLE_RATE=0.1        # Sample 10% of transactions
 
 | Workflow | Trigger | What It Does | Status |
 |---|---|---|---|
-| `deploy-cinema-production.yml` | Merge to `main` | Deploy Cinema API, run smoke tests (API, CORS, Marketplace, Stripe, revenue) | ✅ Automated |
+| `deploy-cinema-production.yml` | Merge/dispatch on `main` | Build immutable images, deploy Z3 + Cinema, run production proof/E2E/readiness/marketplace/revenue checks, upload evidence | ✅ Verified |
+| `deploy-dashboard-production-trigger.yml` | Dashboard change on `main` | Dispatch canonical Cinema + Z3 production workflow | ✅ Verified |
+| `remote-browser-verify.yml` | Remote Browser/MCP changes | Compile and test remote transport, pairing, MCP and console regressions | ✅ Verified |
 | `deploy-azure-3d-landing.yml` | Merge to `main` | Publish web console to Azure, update public deployment receipt | ✅ Automated |
 | `revenue-autopilot.yml` | Daily @ 00:00 UTC | Reconcile usage ledger, verify Stripe webhooks, detect mismatches | ✅ Automated |
 | `api-v1-verify.yml` | Every commit | API contract tests, error handling, regression suite | ✅ Automated |
@@ -465,6 +522,9 @@ SENTRY_TRACES_SAMPLE_RATE=0.1        # Sample 10% of transactions
 
 ### Safety Guardrails
 
+- **Plan authority:** Approved plan work is executable; missing capability is a provisioning/permission state rather than automatic revocation of the approved plan.
+- **Out-of-plan work:** Blocked by the DSG decision boundary.
+- **Identity secrets:** Passwords, OTPs, CAPTCHA responses, passkeys, API keys and equivalent identity material are direct-user-input only for Remote Browser sessions.
 - **Paid Enforcement:** Off by default. Only enables when all prerequisites (storage, ledger, Stripe linking) are verified.
 - **Free Plan:** Always available. Unaffected by billing state.
 - **Fail-Closed:** Proof verification never silently downgrades to unsafe mode. It fails loudly or succeeds cryptographically.
@@ -502,6 +562,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed guidelines.
 |---|---|
 | Try it instantly | Visit [**dsgoneverifiedweb.z1.web.core.windows.net**](https://dsgoneverifiedweb.z1.web.core.windows.net/) and run a live scenario |
 | Build an integration | [Activate a free API key](https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/activate) and follow the [quickstart](#get-started-in-60-seconds) |
+| Connect an MCP-capable agent | Use the production `/api/v1/mcp` verification surface or the `/mcp` Remote Browser surface |
 | Deploy to my GitHub workflow | Add the [GitHub Action](https://github.com/marketplace/actions/dsg-secure-deploy-gate) to your CI/CD |
 | Integrate with Stripe | Contact [sales@dsg.pics](mailto:sales@dsg.pics) for early access |
 | Deploy on-premise | See [`DEPLOYMENT.md`](DEPLOYMENT.md) for self-hosted options |
@@ -529,6 +590,6 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed guidelines.
 
 ---
 
-**Last updated:** August 23, 2026 • [View latest changes](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/commits/main)
+**Last updated:** August 25, 2026 • [View latest changes](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/commits/main)
 
-**Verification status:** ✅ All systems operational • 🟢 Production ready
+**Verification status:** ✅ Latest production deployment verified • 🟢 Cinema + Z3 production active
