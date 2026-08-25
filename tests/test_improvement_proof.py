@@ -41,6 +41,8 @@ def test_verifies_structural_binding_deterministically():
     assert first.verified is True
     assert first.verification == "VERIFIED_ENVELOPE_BINDING"
     assert first.proofHash == second.proofHash
+    assert first.proofId == second.proofId
+    assert first.proofId == f"cinema-improvement-{first.proofHash[:24]}"
     assert first.boundCandidateCommit == "b" * 40
 
 
