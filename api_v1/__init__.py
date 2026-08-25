@@ -33,6 +33,7 @@ def install(app) -> None:
     # drift the independent verification OpenAPI contract.
     importlib.import_module(f"{__name__}.remote_mcp").install(app)
     importlib.import_module("revenue.checkout").install(app)
+    importlib.import_module("revenue.marketing_api").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
     importlib.import_module("revenue.stripe_marketplace").install(app)
 
