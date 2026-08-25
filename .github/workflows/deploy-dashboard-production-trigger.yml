@@ -1,0 +1,30 @@
+name: Trigger Cinema Production for Dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/customer-dashboard/**'
+      - '.github/workflows/deploy-dashboard-production-trigger.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: cinema-dashboard-production-trigger
+  cancel-in-progress: false
+
+jobs:
+  dispatch-production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical Cinema production workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh workflow run deploy-cinema-production.yml --repo "$REPO" --ref main
+          echo "Dispatched Deploy Cinema + Z3 Production for dashboard commit $GITHUB_SHA"
