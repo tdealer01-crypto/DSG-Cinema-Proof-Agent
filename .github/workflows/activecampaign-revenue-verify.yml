@@ -1,0 +1,114 @@
+name: Verify ActiveCampaign Revenue
+
+on:
+  pull_request:
+    paths:
+      - 'revenue/activecampaign_sync.py'
+      - 'revenue/marketing_profiles.py'
+      - 'revenue/marketing_api.py'
+      - 'api_v1/__init__.py'
+      - 'web/customer-dashboard/**'
+      - 'tests/test_activecampaign_revenue.py'
+      - '.github/workflows/activecampaign-revenue-*.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'revenue/activecampaign_sync.py'
+      - 'revenue/marketing_profiles.py'
+      - 'revenue/marketing_api.py'
+      - 'api_v1/__init__.py'
+      - 'web/customer-dashboard/**'
+      - 'tests/test_activecampaign_revenue.py'
+      - '.github/workflows/activecampaign-revenue-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: activecampaign-revenue-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir -r requirements.txt pytest pyyaml
+
+      - name: Compile ActiveCampaign revenue modules
+        run: |
+          python -m py_compile \
+            revenue/activecampaign_sync.py \
+            revenue/marketing_profiles.py \
+            revenue/marketing_api.py \
+            api_v1/__init__.py \
+            cinema_main.py
+
+      - name: Run consent and payment truth tests
+        run: python -m pytest -q tests/test_activecampaign_revenue.py
+
+      - name: Validate workflow contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import yaml
+
+          for path in (
+              '.github/workflows/activecampaign-revenue-verify.yml',
+              '.github/workflows/activecampaign-revenue-reconcile.yml',
+          ):
+              with open(path, encoding='utf-8') as handle:
+                  body = yaml.safe_load(handle)
+              assert body.get('jobs'), f'{path} has no jobs'
+
+          with open('.github/workflows/activecampaign-revenue-reconcile.yml', encoding='utf-8') as handle:
+              workflow = yaml.safe_load(handle)
+          steps = workflow['jobs']['reconcile']['steps']
+          shell = '\n'.join(str(step.get('run', '')) for step in steps)
+          assert 'ACTIVECAMPAIGN_API_TOKEN' in shell
+          assert 'secretref:activecampaign-api-token' in shell
+          assert 'DSG_MARKETING_PROFILE_STORE=/revenue/marketing-profiles.json' in shell
+          assert '/billing/marketing/reconcile' in shell
+          assert 'signed Stripe invoice evidence only' in shell
+          print('workflow contracts verified')
+          PY
+
+      - name: Assert payment truth cannot come from the client
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'EVENT_PAYMENT_CONFIRMED' revenue/marketing_api.py
+          grep -q 'stripe_paid_invoice_ids' revenue/marketing_api.py
+          python - <<'PY'
+          from revenue.marketing_api import LifecycleEventRequest
+
+          allowed = LifecycleEventRequest.model_fields['event'].annotation
+          text = str(allowed)
+          assert 'payment_confirmed' not in text, text
+          print('client payment assertion is excluded')
+          PY
+
+      - name: Assert no ActiveCampaign credential is committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -rInE 'Api-Token:[[:space:]]+[A-Za-z0-9_-]{16,}' \
+            revenue tests web .github/workflows; then
+            echo 'Concrete ActiveCampaign token found in source.' >&2
+            exit 1
+          fi
+          grep -q 'ACTIVECAMPAIGN_API_TOKEN' revenue/activecampaign_sync.py
+          grep -q 'secrets.ACTIVECAMPAIGN_API_TOKEN' .github/workflows/activecampaign-revenue-reconcile.yml
