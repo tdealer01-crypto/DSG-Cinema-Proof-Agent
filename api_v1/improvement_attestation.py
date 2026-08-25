@@ -98,6 +98,8 @@ def verify_raw_improvement_evidence(
 
     if identity.repository != envelope.targetRepository:
         failures.append("OIDC_TARGET_REPOSITORY_MISMATCH")
+    if identity.sha != envelope.baselineCommit:
+        failures.append("OIDC_BASELINE_COMMIT_MISMATCH")
 
     commit_refs = [item for item in envelope.evidence if item.kind == "commit"]
     expected_commit_uri = f"git://{envelope.targetRepository}@{envelope.candidateCommit}"
