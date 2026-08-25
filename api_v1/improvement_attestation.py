@@ -1,6 +1,7 @@
 """Raw-evidence verification for governed agentic improvement candidates.
 
-This is the stage after structural envelope binding. A successful result means
+This is a trusted machine-to-machine attestation surface, deliberately separate
+from the public ``/api/v1`` verification contract. A successful result means
 Cinema independently verified GitHub Actions identity plus the exact raw bytes
 for metric, test, and build evidence against SHA-256 digests in the candidate
 envelope. It still does not authorize promotion; the DSG Control Plane does.
@@ -30,7 +31,7 @@ from .improvement_proof import ImprovementEnvelope, verify_improvement_envelope
 MAX_RAW_ARTIFACT_BYTES = 2 * 1024 * 1024
 RAW_KINDS = ("metric", "test_output", "build_output")
 
-router = APIRouter(prefix="/api/v1/improvement", tags=["agentic-improvement-proof"])
+router = APIRouter(prefix="/agentic/improvement", tags=["agentic-improvement-proof"])
 
 
 class RawEvidenceArtifact(BaseModel):
