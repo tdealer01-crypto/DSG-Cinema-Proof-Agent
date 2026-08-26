@@ -54,6 +54,12 @@ _ALLOWED: dict[RevenueState, frozenset[RevenueState]] = {
     RevenueState.EXPANSION: frozenset(),
 }
 
+_STRIPE_STATUS_BY_SOURCE: dict[str, str] = {
+    "stripe_checkout_session": "paid",
+    "stripe_payment_intent": "succeeded",
+    "stripe_paid_invoice": "paid",
+}
+
 
 @dataclass(frozen=True)
 class PaymentProof:
@@ -66,19 +72,14 @@ class PaymentProof:
     evidence_ref: str
 
     def is_authoritative_for(self, account_id: str) -> bool:
-        allowed_sources = {
-            "stripe_checkout_session",
-            "stripe_payment_intent",
-            "stripe_paid_invoice",
-        }
-        allowed_statuses = {"paid", "succeeded"}
+        expected_status = _STRIPE_STATUS_BY_SOURCE.get(self.source)
         return (
             self.account_id == account_id
-            and self.source in allowed_sources
+            and expected_status is not None
             and bool(self.source_id.strip())
             and self.livemode is True
             and self.verified is True
-            and self.status in allowed_statuses
+            and self.status == expected_status
             and bool(self.evidence_ref.strip())
         )
 
