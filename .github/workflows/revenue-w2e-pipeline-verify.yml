@@ -65,8 +65,14 @@ jobs:
       - name: Compile governed revenue surface
         run: |
           python -m py_compile \
-            revenue/revenue_pipeline.py \
+            revenue/revenue_events.py \
+            revenue/signals.py \
+            revenue/lifecycle.py \
+            revenue/lifecycle_store.py \
+            revenue/intent.py \
+            revenue/activecampaign_projection.py \
             revenue/activecampaign_projection_sync.py \
+            revenue/revenue_pipeline.py \
             revenue/marketing_api.py \
             revenue/checkout.py \
             revenue/api.py \
