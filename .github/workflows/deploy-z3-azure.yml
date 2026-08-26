@@ -22,6 +22,13 @@ on:
           - staging
           - production
 
+# All runs targeting the same shared environment must serialize. This preserves
+# deployment verification while preventing parallel PRs from concurrently
+# mutating dsg-z3-verifier-staging. Production dispatches use a separate group.
+concurrency:
+  group: z3-verifier-${{ github.event_name == 'pull_request' && 'staging' || (github.event_name == 'workflow_dispatch' && inputs.environment || 'production') }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   id-token: write
