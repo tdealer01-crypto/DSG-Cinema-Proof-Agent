@@ -1,0 +1,62 @@
+name: Browserbase CI Session Cleanup
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/browserbase-ci-session-cleanup.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-ci-sessions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    env:
+      BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+    steps:
+      - name: Release only positively identified CI sessions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${BROWSERBASE_API_KEY:-}" ]]; then
+            echo 'BROWSERBASE_API_KEY is missing.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$BROWSERBASE_API_KEY"
+
+          tmp="$RUNNER_TEMP/browserbase-running.json"
+          code=$(curl --silent --show-error --output "$tmp" --write-out '%{http_code}' \
+            --get 'https://api.browserbase.com/v1/sessions' \
+            --data-urlencode 'status=RUNNING' \
+            --header "X-BB-API-Key: $BROWSERBASE_API_KEY")
+          [[ "$code" == "200" ]]
+
+          total=$(jq 'length' "$tmp")
+          eligible=$(jq '[.[] | select((.userMetadata.cinema_session_id // "") | (startswith("smoke-") or startswith("stripe-provider-")))] | length' "$tmp")
+          echo "browserbase_running_sessions=$total"
+          echo "eligible_ci_sessions=$eligible"
+
+          released=0
+          while IFS=$'\t' read -r session_id cinema_session_id; do
+            [[ -n "$session_id" ]] || continue
+            # Never print raw Browserbase or Cinema session IDs; log only a hash prefix.
+            fingerprint=$(printf '%s' "$session_id" | sha256sum | cut -c1-16)
+            release_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              --request POST "https://api.browserbase.com/v1/sessions/$session_id" \
+              --header 'Content-Type: application/json' \
+              --header "X-BB-API-Key: $BROWSERBASE_API_KEY" \
+              --data '{"status":"REQUEST_RELEASE"}')
+            if [[ "$release_code" != "200" ]]; then
+              echo "release_failed session_sha256_prefix=$fingerprint http=$release_code" >&2
+              exit 1
+            fi
+            echo "released_ci_session session_sha256_prefix=$fingerprint"
+            released=$((released + 1))
+          done < <(jq -r '.[] | select((.userMetadata.cinema_session_id // "") | (startswith("smoke-") or startswith("stripe-provider-"))) | [.id, .userMetadata.cinema_session_id] | @tsv' "$tmp")
+
+          echo "released_ci_sessions=$released"
+          rm -f "$tmp"
