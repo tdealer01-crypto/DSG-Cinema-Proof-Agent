@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -204,3 +205,122 @@ def test_mcp_rejects_identity_input_without_dropping_remote_connection(client: T
 
     status = _tool(client, "remote_status")
     assert status["structuredContent"]["agent_connection"] == "connected"
+
+
+def test_required_ci_proves_browserbase_session_is_recorded_and_plan_domain_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("DSG_REMOTE_ACTION_KEY", "p" * 64)
+    monkeypatch.setenv("DSG_REMOTE_ACTION_STORE", str(tmp_path / "remote-store"))
+    monkeypatch.setenv("BROWSERBASE_API_KEY", "bb_server_only_test")
+    calls: list[tuple[str, str, dict | None]] = []
+
+    async def fake_bb(method: str, path: str, *, payload=None):
+        calls.append((method, path, payload))
+        if (method, path) == ("POST", "/sessions"):
+            return {"id": "bb_required_ci"}
+        if (method, path) == ("GET", "/sessions/bb_required_ci/debug"):
+            return {
+                "debuggerFullscreenUrl": "https://browserbase.example/live/required-ci",
+                "pages": [],
+            }
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(browserbase_executor, "_bb_request", fake_bb)
+    result = asyncio.run(
+        browserbase_executor.ensure_browser_session(
+            "rbs_required_ci",
+            plan_hash="b" * 64,
+            browser_policy={
+                "enforced": True,
+                "allowed_origins": [
+                    "https://dashboard.stripe.com",
+                    "https://marketplace.stripe.com",
+                ],
+            },
+        )
+    )
+
+    assert result["browserbase_session_id"] == "bb_required_ci"
+    assert result["live_view_url"].startswith("https://")
+    create_payload = calls[0][2]
+    assert create_payload is not None
+    settings = create_payload["browserSettings"]
+    assert settings["recordSession"] is True
+    assert settings["logSession"] is True
+    assert settings["allowedDomains"] == [
+        "dashboard.stripe.com",
+        "marketplace.stripe.com",
+    ]
+
+
+def test_required_ci_proves_executor_capability_cannot_be_rebound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("DSG_REMOTE_ACTION_KEY", "q" * 64)
+    monkeypatch.setenv("DSG_REMOTE_ACTION_STORE", str(tmp_path / "remote-store"))
+    capability = browserbase_executor.allocate_capability(
+        plan_id="plan-stripe",
+        step_id="publish",
+        agent_identity="chatgpt",
+        ttl_seconds=600,
+    )
+    browserbase_executor.finalize_capability(
+        capability,
+        session_id="rbs_exact",
+        plan_hash="f" * 64,
+        browser_policy={
+            "enforced": True,
+            "allowed_origins": ["https://dashboard.stripe.com"],
+        },
+    )
+
+    async def fake_ensure(cinema_session_id: str, *, plan_hash: str, browser_policy: dict):
+        return {
+            "provider": "browserbase",
+            "browserbase_session_id": "bb_exact",
+            "live_view_url": "https://browserbase.example/live/exact",
+            "connected": True,
+            "pages": [],
+        }
+
+    async def fake_perform(cinema_session_id: str, payload: dict):
+        return 200, {"ok": True, "kind": payload["action"]["kind"]}
+
+    monkeypatch.setattr(browserbase_executor, "ensure_browser_session", fake_ensure)
+    monkeypatch.setattr(browserbase_executor, "_perform_action", fake_perform)
+
+    app = FastAPI()
+    app.include_router(browserbase_executor.router)
+    executor = TestClient(app)
+    envelope = {
+        "version": "dsg.remote-action.v1",
+        "session_id": "rbs_exact",
+        "context": {
+            "plan_id": "plan-stripe",
+            "plan_hash": "f" * 64,
+            "agent_identity": "chatgpt",
+            "step_id": "publish",
+            "actor": "AGENT_VERIFIER",
+            "browser_policy": {
+                "enforced": True,
+                "allowed_origins": ["https://dashboard.stripe.com"],
+                "enforce_current_origin": True,
+            },
+        },
+        "action": {
+            "kind": "browser.extract",
+            "controller": "agent_verifier",
+            "parameters": {},
+        },
+    }
+    allowed = executor.post(f"/remote-browser/browserbase/action/{capability}", json=envelope)
+    assert allowed.status_code == 200, allowed.text
+
+    rebound = {
+        **envelope,
+        "context": {**envelope["context"], "plan_hash": "0" * 64},
+    }
+    blocked = executor.post(f"/remote-browser/browserbase/action/{capability}", json=rebound)
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"]["error"] == "MANAGED_BROWSER_BINDING_MISMATCH"
