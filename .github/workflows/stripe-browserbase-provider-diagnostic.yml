@@ -1,0 +1,96 @@
+name: Stripe Browserbase Provider Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/stripe-browserbase-provider-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  stripe-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: production
+    env:
+      BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install browser runtime
+        run: |
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -r requirements-cinema.txt >/dev/null
+      - name: Diagnose Stripe navigation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "DSG_REMOTE_ACTION_STORE=$RUNNER_TEMP/stripe-provider-diag" >> "$GITHUB_ENV"
+          python - <<'PY'
+          import asyncio, hashlib, os
+          from urllib.parse import urlsplit
+          from fastapi import HTTPException
+          from api_v1 import browserbase_executor as bb
+
+          async def main():
+              sid = f"stripe-provider-{os.environ['GITHUB_RUN_ID']}"
+              policy = {
+                  "enforced": True,
+                  "allowed_origins": [
+                      "https://dashboard.stripe.com",
+                      "https://marketplace.stripe.com",
+                  ],
+                  "enforce_current_origin": True,
+              }
+              try:
+                  shared = await bb.ensure_browser_session(
+                      sid,
+                      plan_hash=hashlib.sha256(b"stripe-provider-diag").hexdigest(),
+                      browser_policy=policy,
+                  )
+                  print("session_create=PASS")
+                  print("live_view_present=" + str(bool(shared.get("live_view_url"))).lower())
+                  try:
+                      status, nav = await bb._perform_action(
+                          sid,
+                          {"context":{"browser_policy":policy},"action":{"kind":"browser.navigate","controller":"agent_executor","parameters":{"url":"https://dashboard.stripe.com/apps"}}},
+                      )
+                      print(f"navigate_status={status}")
+                      final_url = str(nav.get("url") or "")
+                      print("final_host=" + (urlsplit(final_url).hostname or "NONE"))
+                      status, extracted = await bb._perform_action(
+                          sid,
+                          {"context":{"browser_policy":policy},"action":{"kind":"browser.extract","controller":"agent_verifier","parameters":{}}},
+                      )
+                      print(f"extract_status={status}")
+                      print("title_present=" + str(bool(extracted.get("title"))).lower())
+                      print("controls=" + str(len(extracted.get("controls") or [])))
+                  except HTTPException as exc:
+                      detail = exc.detail
+                      if isinstance(detail, dict):
+                          print("http_exception_status=" + str(exc.status_code))
+                          print("http_exception_error=" + str(detail.get("error") or "NONE"))
+                          print("http_exception_message=" + str(detail.get("message") or "NONE"))
+                      else:
+                          print("http_exception_status=" + str(exc.status_code))
+                          print("http_exception_message=" + str(detail))
+                      raise
+                  except Exception as exc:
+                      print("provider_exception_type=" + type(exc).__name__)
+                      message = str(exc).replace("\n", " ")[:500]
+                      print("provider_exception_message=" + message)
+                      raise
+              finally:
+                  browser = bb._CONNECTIONS.pop(sid, None)
+                  if browser is not None:
+                      try: await browser.close()
+                      except Exception: pass
+                  if bb._PLAYWRIGHT is not None:
+                      try: await bb._PLAYWRIGHT.stop()
+                      except Exception: pass
+                      bb._PLAYWRIGHT = None
+
+          asyncio.run(main())
+          PY
