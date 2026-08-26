@@ -1,5 +1,5 @@
 (() => {
-  let lastUrl = "";
+  let lastEmbedUrl = "";
   let timer = null;
 
   function panel() {
@@ -35,7 +35,7 @@
     host.hidden = true;
     if (frame && frame.src) frame.removeAttribute("src");
     if (hint) hint.textContent = message;
-    lastUrl = "";
+    lastEmbedUrl = "";
   }
 
   async function refreshLiveView() {
@@ -44,22 +44,24 @@
       return;
     }
     try {
-      const body = await api("/remote-browser/browserbase/live-view");
+      const body = await api("/remote-browser/browserbase/live-frame");
       const host = panel();
       if (!host) return;
       const frame = document.getElementById("sharedBrowserFrame");
       const hint = document.getElementById("sharedBrowserHint");
-      const liveUrl = typeof body.live_view_url === "string" ? body.live_view_url : "";
-      if (!body.connected || !liveUrl) {
+      const embedUrl = typeof body.embed_url === "string" ? body.embed_url : "";
+      if (!body.connected || !embedUrl) {
         clearLiveView("Remote is armed, but the agent has not provisioned the shared Browserbase session yet.");
         return;
       }
-      if (!liveUrl.startsWith("https://")) throw new Error("Live View returned a non-HTTPS URL");
+      if (!embedUrl.startsWith("/remote-browser/browserbase/embed/")) {
+        throw new Error("Cinema returned an invalid shared-browser viewer URL");
+      }
       host.hidden = false;
       if (hint) hint.textContent = "You and the agent are viewing and controlling this same browser session.";
-      if (frame && liveUrl !== lastUrl) {
-        frame.src = liveUrl;
-        lastUrl = liveUrl;
+      if (frame && embedUrl !== lastEmbedUrl) {
+        frame.src = embedUrl;
+        lastEmbedUrl = embedUrl;
       }
     } catch (error) {
       const host = panel();
