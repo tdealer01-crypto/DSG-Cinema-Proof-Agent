@@ -13,6 +13,7 @@ on:
       - 'tests/test_remote_pairing.py'
       - 'tests/test_remote_mcp.py'
       - 'tests/test_stripe_marketplace_shared_browser.py'
+      - 'tests/test_stripe_marketplace_adaptive_form.py'
       - 'tests/test_console_prototype.py'
       - '.github/workflows/remote-browser-verify.yml'
   push:
@@ -28,6 +29,7 @@ on:
       - 'tests/test_remote_pairing.py'
       - 'tests/test_remote_mcp.py'
       - 'tests/test_stripe_marketplace_shared_browser.py'
+      - 'tests/test_stripe_marketplace_adaptive_form.py'
       - 'tests/test_console_prototype.py'
       - '.github/workflows/remote-browser-verify.yml'
   workflow_dispatch:
@@ -62,15 +64,17 @@ jobs:
             api_v1/remote_pairing.py \
             api_v1/remote_mcp.py \
             api_v1/__init__.py \
-            tests/test_stripe_marketplace_shared_browser.py
+            tests/test_stripe_marketplace_shared_browser.py \
+            tests/test_stripe_marketplace_adaptive_form.py
 
-      - name: Verify shared browser, chat pairing, MCP and Stripe Marketplace use case
+      - name: Verify shared browser, adaptive Stripe wizard, chat pairing and MCP
         run: |
           python -m pytest -q \
             tests/test_remote_browser.py \
             tests/test_remote_pairing.py \
             tests/test_remote_mcp.py \
             tests/test_stripe_marketplace_shared_browser.py \
+            tests/test_stripe_marketplace_adaptive_form.py \
             tests/test_console_prototype.py
 
       - name: Verify verification-v1 contract remains separate
