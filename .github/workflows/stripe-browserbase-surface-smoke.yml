@@ -1,0 +1,137 @@
+name: Stripe Browserbase Surface Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/stripe-browserbase-surface-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stripe-browserbase-surface-smoke
+  cancel-in-progress: false
+
+jobs:
+  stripe-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: production
+    env:
+      CINEMA_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+    steps:
+      - name: Verify Stripe surface through governed shared browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/stripe-browserbase-surface"
+          mkdir -p "$work"
+          api_key=""
+          session_token=""
+          cleanup() {
+            if [[ -n "$api_key" ]]; then
+              curl -sS -o /dev/null -X POST "$CINEMA_BASE_URL/remote-browser/disable" -H "X-DSG-API-Key: $api_key" || true
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+
+          activation_id="stripe-surface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          http=$(curl -sS -o "$work/activate.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/billing/activate" \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg id "$activation_id" '{channel:"stripe_surface_smoke",activation_id:$id,display_name:"Stripe Browserbase Surface Smoke"}')")
+          [[ "$http" == "200" || "$http" == "201" ]]
+          api_key=$(jq -r '.api_key // empty' "$work/activate.json")
+          [[ -n "$api_key" ]]
+          echo "::add-mask::$api_key"
+
+          cat > "$work/plan.json" <<'JSON'
+          {
+            "title":"Inspect Stripe Marketplace publishing surface",
+            "agent_identity":"github-actions-stripe-surface",
+            "channel":"stripe",
+            "steps":[{
+              "step_id":"stripe-marketplace",
+              "action":"browser_workflow",
+              "target":"dashboard.stripe.com",
+              "parameters":{"browser_allowed_origins":"https://dashboard.stripe.com,https://marketplace.stripe.com"},
+              "requires_evidence":true
+            }]
+          }
+          JSON
+          http=$(curl -sS -o "$work/plan.json.out" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/api/v1/plans" \
+            -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' --data-binary @"$work/plan.json")
+          [[ "$http" == "201" ]]
+          plan_id=$(jq -r '.plan_id // empty' "$work/plan.json.out")
+          plan_hash=$(jq -r '.plan_hash // empty' "$work/plan.json.out")
+          [[ -n "$plan_id" && ${#plan_hash} -eq 64 ]]
+          http=$(curl -sS -o "$work/approved.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/api/v1/plans/$plan_id/approve" \
+            -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg h "$plan_hash" '{approver:"production-smoke",plan_hash:$h}')")
+          [[ "$http" == "200" ]]
+          jq -e '.status == "APPROVED"' "$work/approved.json" >/dev/null
+
+          http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
+          [[ "$http" == "200" ]]
+
+          rpc() {
+            local body="$1" output="$2"
+            curl -sS -o "$output" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/mcp" \
+              -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' --data "$body"
+          }
+
+          http=$(rpc "$(jq -nc --arg p "$plan_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"remote_agent_connect",arguments:{plan_id:$p,agent_identity:"github-actions-stripe-surface",step_id:"stripe-marketplace",ttl_seconds:600}}}')" "$work/connect.json")
+          [[ "$http" == "200" ]]
+          jq -e '.result.isError == false' "$work/connect.json" >/dev/null
+          session_token=$(jq -r '.result.structuredContent.session_token // empty' "$work/connect.json")
+          [[ -n "$session_token" ]]
+          echo "::add-mask::$session_token"
+
+          http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.navigate",controller:"agent_executor",parameters:{url:"https://dashboard.stripe.com/apps"}}}}}')" "$work/nav.json")
+          [[ "$http" == "200" ]]
+          if ! jq -e '.result.isError == false' "$work/nav.json" >/dev/null; then
+            echo "navigate_tool_status=$(jq -r '.result.structuredContent.status_code // "UNKNOWN"' "$work/nav.json")"
+            echo "navigate_tool_error=$(jq -r '.result.structuredContent.error // "UNKNOWN"' "$work/nav.json")"
+            exit 1
+          fi
+
+          http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.extract",controller:"agent_verifier",parameters:{}}}}}')" "$work/extract.json")
+          [[ "$http" == "200" ]]
+          jq -e '.result.isError == false' "$work/extract.json" >/dev/null
+          final_url=$(jq -r '.result.structuredContent.response.url // empty' "$work/extract.json")
+          title=$(jq -r '.result.structuredContent.response.title // empty' "$work/extract.json")
+          controls=$(jq -r '.result.structuredContent.response.controls | length' "$work/extract.json")
+          final_host=$(printf '%s' "$final_url" | sed -E 's#^https?://([^/]+).*$#\1#')
+          [[ -n "$final_url" && -n "$title" ]]
+          if [[ "$final_host" != "dashboard.stripe.com" && "$final_host" != "marketplace.stripe.com" ]]; then
+            echo "unexpected_final_host=$final_host" >&2
+            exit 1
+          fi
+          if (( controls < 1 )); then
+            echo 'Stripe surface rendered no interactive controls; browser network allowlist is too narrow.' >&2
+            exit 1
+          fi
+
+          http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:4,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.screenshot",controller:"agent_verifier",parameters:{full_page:true}}}}}')" "$work/shot.json")
+          [[ "$http" == "200" ]]
+          jq -e '.result.isError == false' "$work/shot.json" >/dev/null
+          screenshot_sha=$(jq -r '.result.structuredContent.response.screenshot_sha256 // empty' "$work/shot.json")
+          evidence_hash=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/shot.json")
+          [[ ${#screenshot_sha} -eq 64 && ${#evidence_hash} -eq 64 ]]
+
+          rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"remote_disconnect",arguments:{session_token:$t}}}')" "$work/disconnect.json" >/dev/null
+
+          jq -n --arg commit "$GITHUB_SHA" --arg plan_hash "$plan_hash" --arg final_host "$final_host" --arg title "$title" --argjson controls "$controls" --arg screenshot_sha "$screenshot_sha" --arg evidence_hash "$evidence_hash" \
+            '{status:"PASS",provider:"browserbase",surface:"stripe_marketplace",commit:$commit,plan_hash:$plan_hash,final_host:$final_host,title:$title,interactive_controls:$controls,screenshot_sha256:$screenshot_sha,evidence_hash:$evidence_hash}' \
+            > stripe-browserbase-surface-evidence.json
+          echo "stripe_surface=PASS host=$final_host controls=$controls"
+
+      - name: Upload non-secret Stripe surface evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripe-browserbase-surface-${{ github.sha }}
+          path: stripe-browserbase-surface-evidence.json
+          if-no-files-found: error
+          retention-days: 30
