@@ -16,6 +16,11 @@ OTP values, API keys, passkeys, or other identity secrets through Cinema.
 Delegated identity actions carry only an opaque secret/OTP reference which the
 trusted remote executor resolves outside the model/MCP/evidence path.
 
+Browser navigation is also plan-scoped. Approved steps may declare
+``browser_allowed_origins``. Cinema blocks out-of-scope navigation itself and
+passes the same allowlist to the trusted executor so it can verify the actual
+current page origin before every mutating action.
+
 Hard boundaries remain:
 - the approved plan/agent/step binding must be valid;
 - the remote endpoint must be public HTTPS (no localhost/private-network SSRF);
@@ -92,10 +97,7 @@ _DELEGATED_IDENTITY_ACTIONS = {
     "identity.otp.submit",
     "identity.confirmation.click",
 }
-_VERIFIER_ACTIONS = {
-    "browser.extract",
-    "browser.screenshot",
-}
+_VERIFIER_ACTIONS = {"browser.extract", "browser.screenshot"}
 _SENSITIVE_KEYS = {
     "password",
     "passcode",
@@ -114,6 +116,7 @@ _ALLOWED_REFERENCE_SCHEMES = {"vault", "secret", "credential", "otp"}
 _DELEGATION_SHARED_KEY = "user_controller_shared"
 _DELEGATION_OPERATIONS_KEY = "user_controller_operations"
 _DELEGATION_ORIGINS_KEY = "user_controller_origins"
+_BROWSER_ORIGINS_KEY = "browser_allowed_origins"
 
 _HARD_INVARIANT = re.compile(
     r"(?:bypass|disable|evade|circumvent)\s+(?:security|authorization|permission|audit|governance)"
@@ -185,11 +188,7 @@ def _ensure_store() -> Path:
 
 
 def _token_secret() -> bytes:
-    raw = (
-        os.getenv("DSG_REMOTE_ACTION_KEY")
-        or os.getenv("CINEMA_API_SECRET")
-        or ""
-    ).strip()
+    raw = (os.getenv("DSG_REMOTE_ACTION_KEY") or os.getenv("CINEMA_API_SECRET") or "").strip()
     if len(raw) < 32:
         raise HTTPException(
             status_code=503,
@@ -216,7 +215,9 @@ def _b64decode(value: str) -> bytes:
 def _seal(payload: dict[str, Any]) -> str:
     nonce = os.urandom(12)
     plaintext = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ciphertext = AESGCM(_token_secret()).encrypt(nonce, plaintext, REMOTE_PROTOCOL_VERSION.encode("ascii"))
+    ciphertext = AESGCM(_token_secret()).encrypt(
+        nonce, plaintext, REMOTE_PROTOCOL_VERSION.encode("ascii")
+    )
     return _b64encode(nonce + ciphertext)
 
 
@@ -227,9 +228,7 @@ def _open(token: str) -> dict[str, Any]:
     nonce, ciphertext = raw[:12], raw[12:]
     try:
         plaintext = AESGCM(_token_secret()).decrypt(
-            nonce,
-            ciphertext,
-            REMOTE_PROTOCOL_VERSION.encode("ascii"),
+            nonce, ciphertext, REMOTE_PROTOCOL_VERSION.encode("ascii")
         )
         payload = json.loads(plaintext)
     except Exception as exc:
@@ -249,7 +248,10 @@ def _public_https_endpoint(value: str) -> str:
     if parsed.scheme.lower() != "https" or not parsed.hostname:
         raise HTTPException(status_code=400, detail="remote endpoint must be public HTTPS")
     if parsed.username or parsed.password:
-        raise HTTPException(status_code=400, detail="userinfo credentials are not allowed in remote endpoint URLs")
+        raise HTTPException(
+            status_code=400,
+            detail="userinfo credentials are not allowed in remote endpoint URLs",
+        )
     host = parsed.hostname.rstrip(".").lower()
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
         raise HTTPException(status_code=400, detail="private/local remote endpoints are not allowed")
@@ -269,7 +271,10 @@ def _public_https_endpoint(value: str) -> str:
             except ValueError:
                 continue
         if not addresses:
-            raise HTTPException(status_code=400, detail="remote endpoint hostname did not resolve to an IP address")
+            raise HTTPException(
+                status_code=400,
+                detail="remote endpoint hostname did not resolve to an IP address",
+            )
 
     for address in addresses:
         if (
@@ -280,7 +285,10 @@ def _public_https_endpoint(value: str) -> str:
             or address.is_reserved
             or address.is_unspecified
         ):
-            raise HTTPException(status_code=400, detail="remote endpoint resolves to a non-public address")
+            raise HTTPException(
+                status_code=400,
+                detail="remote endpoint resolves to a non-public address",
+            )
 
     return urlunsplit((parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, ""))
 
@@ -289,17 +297,30 @@ def _normalize_origin(value: str) -> str:
     try:
         parsed = urlsplit(value.strip())
     except ValueError as exc:
-        raise ValueError("invalid delegated origin") from exc
+        raise ValueError("invalid origin") from exc
     if parsed.scheme.lower() != "https" or not parsed.hostname:
-        raise ValueError("delegated identity origins must be HTTPS")
+        raise ValueError("origins must be HTTPS")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("delegated identity origins cannot contain credentials, query strings, or fragments")
+        raise ValueError("origins cannot contain credentials, query strings, or fragments")
     if parsed.path not in {"", "/"}:
-        raise ValueError("delegated identity origins must not contain a path")
+        raise ValueError("origins must not contain a path")
     host = parsed.hostname.rstrip(".").lower()
     port = parsed.port
     netloc = host if port in {None, 443} else f"{host}:{port}"
     return f"https://{netloc}"
+
+
+def _origin_from_url(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("browser navigation must target http(s)")
+    host = parsed.hostname.rstrip(".").lower()
+    port = parsed.port
+    default = (parsed.scheme.lower() == "https" and port in {None, 443}) or (
+        parsed.scheme.lower() == "http" and port in {None, 80}
+    )
+    netloc = host if default else f"{host}:{port}"
+    return f"{parsed.scheme.lower()}://{netloc}"
 
 
 def _plan_step(plan_document: Any, step_id: str) -> Any:
@@ -307,6 +328,25 @@ def _plan_step(plan_document: Any, step_id: str) -> Any:
         if step.step_id == step_id:
             return step
     raise HTTPException(status_code=409, detail="step_id is not present in the approved plan")
+
+
+def _split_origins(raw: str, *, label: str) -> list[str]:
+    try:
+        origins = [_normalize_origin(item) for item in raw.split(",") if item.strip()]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "INVALID_APPROVED_BROWSER_POLICY", "message": f"{label}: {exc}"},
+        ) from exc
+    if not origins:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "INVALID_APPROVED_BROWSER_POLICY",
+                "message": f"{label}: at least one HTTPS origin is required",
+            },
+        )
+    return sorted(set(origins))
 
 
 def _delegation_policy(step: Any) -> dict[str, Any]:
@@ -364,6 +404,24 @@ def _delegation_policy(step: Any) -> dict[str, Any]:
     }
 
 
+def _browser_policy(step: Any) -> dict[str, Any]:
+    parameters = dict(step.parameters or {})
+    raw = parameters.get(_BROWSER_ORIGINS_KEY)
+    if isinstance(raw, str) and raw.strip():
+        origins = _split_origins(raw, label=_BROWSER_ORIGINS_KEY)
+        return {"enforced": True, "allowed_origins": origins}
+
+    target = str(getattr(step, "target", "") or "").strip()
+    inferred: list[str] = []
+    if target:
+        candidate = target if "://" in target else f"https://{target}"
+        try:
+            inferred = [_normalize_origin(candidate)]
+        except ValueError:
+            inferred = []
+    return {"enforced": bool(inferred), "allowed_origins": inferred}
+
+
 def _authorize_session(request: RemoteSessionCreate) -> tuple[dict[str, Any], Any]:
     record = service.get_plan_record(request.plan_id)
     document = service.plan_document(record)
@@ -404,8 +462,7 @@ def _is_revoked(session_id: str) -> bool:
 
 
 def _revoke(session_id: str) -> None:
-    path = _revoked_path(session_id)
-    path.write_text(utc_now(), encoding="utf-8")
+    _revoked_path(session_id).write_text(utc_now(), encoding="utf-8")
 
 
 def _direct_user_input(action: RemoteAction) -> bool:
@@ -424,22 +481,38 @@ def _hard_invariant_violation(action: RemoteAction) -> bool:
     return bool(_HARD_INVARIANT.search(" ".join(material)))
 
 
-def _validate_navigation(action: RemoteAction) -> None:
+def _validate_navigation(action: RemoteAction, session: dict[str, Any]) -> None:
     if action.kind != "browser.navigate":
         return
     raw = action.parameters.get("url")
     if not isinstance(raw, str):
         raise HTTPException(status_code=400, detail="browser.navigate requires parameters.url")
-    parsed = urlsplit(raw)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-        raise HTTPException(status_code=400, detail="browser navigation must target http(s)")
+    try:
+        origin = _origin_from_url(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    policy = session.get("browser_policy") or {}
+    if policy.get("enforced") and origin not in set(policy.get("allowed_origins") or []):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "BROWSER_ORIGIN_BLOCKED",
+                "message": "The requested navigation origin is outside the approved plan.",
+                "requested_origin": origin,
+                "allowed_origins": policy.get("allowed_origins") or [],
+            },
+        )
 
 
 def _opaque_reference(value: Any, *, label: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 512:
         raise HTTPException(
             status_code=400,
-            detail={"error": "INVALID_IDENTITY_REFERENCE", "message": f"{label} must be an opaque secret reference."},
+            detail={
+                "error": "INVALID_IDENTITY_REFERENCE",
+                "message": f"{label} must be an opaque secret reference.",
+            },
         )
     parsed = urlsplit(value)
     if parsed.scheme.lower() not in _ALLOWED_REFERENCE_SCHEMES or not parsed.netloc:
@@ -515,7 +588,10 @@ def _authorize_controller(action: RemoteAction, session: dict[str, Any]) -> str:
     if not isinstance(raw_origin, str):
         raise HTTPException(
             status_code=400,
-            detail={"error": "IDENTITY_ORIGIN_REQUIRED", "message": "Delegated identity actions require parameters.origin."},
+            detail={
+                "error": "IDENTITY_ORIGIN_REQUIRED",
+                "message": "Delegated identity actions require parameters.origin.",
+            },
         )
     try:
         origin = _normalize_origin(raw_origin)
@@ -537,7 +613,10 @@ def _authorize_controller(action: RemoteAction, session: dict[str, Any]) -> str:
     if not isinstance(target, str) or not target.strip() or len(target) > 1024:
         raise HTTPException(
             status_code=400,
-            detail={"error": "IDENTITY_TARGET_REQUIRED", "message": "Delegated identity actions require a target."},
+            detail={
+                "error": "IDENTITY_TARGET_REQUIRED",
+                "message": "Delegated identity actions require a target.",
+            },
         )
 
     if action.kind == "identity.secret.inject":
@@ -588,7 +667,10 @@ async def _relay(endpoint: str, payload: dict[str, Any]) -> tuple[int, str | dic
                 async for chunk in response.aiter_bytes():
                     total += len(chunk)
                     if total > MAX_RESPONSE_BYTES:
-                        raise HTTPException(status_code=502, detail="remote endpoint response exceeded 1 MiB")
+                        raise HTTPException(
+                            status_code=502,
+                            detail="remote endpoint response exceeded 1 MiB",
+                        )
                     chunks.append(chunk)
                 raw = b"".join(chunks)
                 response_sha256 = hashlib.sha256(raw).hexdigest()
@@ -620,7 +702,7 @@ async def contract() -> dict[str, Any]:
         ],
         "concurrency": (
             "the user, agent executor, and read-only agent verifier share one live browser session; "
-            "the remote executor is responsible for serializing only colliding low-level input"
+            "the remote executor serializes only colliding low-level input"
         ),
         "remote_off": "revokes only agent remote authority; the user's browser session remains live",
         "identity_input": (
@@ -631,12 +713,19 @@ async def contract() -> dict[str, Any]:
         "delegation": {
             "plan_parameters": {
                 _DELEGATION_SHARED_KEY: True,
-                _DELEGATION_OPERATIONS_KEY: "identity.secret.inject,identity.otp.submit,identity.confirmation.click",
+                _DELEGATION_OPERATIONS_KEY: (
+                    "identity.secret.inject,identity.otp.submit,identity.confirmation.click"
+                ),
                 _DELEGATION_ORIGINS_KEY: "https://example.com",
             },
             "expires_with_session": True,
             "revocable_with_remote_off": True,
             "captcha_and_passkey": "direct-user-only",
+        },
+        "browser_scope": {
+            "plan_parameter": _BROWSER_ORIGINS_KEY,
+            "navigation_enforced_by_cinema": True,
+            "current_origin_enforced_by_executor": True,
         },
         "evidence": (
             "each relayed action records actor/controller and a canonical evidence hash; "
@@ -655,6 +744,7 @@ async def create_session(
     endpoint = _public_https_endpoint(request.remote_endpoint)
     decision, step = _authorize_session(request)
     delegation = _delegation_policy(step)
+    browser_policy = _browser_policy(step)
     now = int(time.time())
     session_id = f"rbs_{uuid.uuid4().hex}"
     payload = {
@@ -668,6 +758,7 @@ async def create_session(
         "step_target": step.target,
         "endpoint": endpoint,
         "user_controller_delegation": delegation,
+        "browser_policy": browser_policy,
         "iat": now,
         "exp": now + request.ttl_seconds,
     }
@@ -687,6 +778,7 @@ async def create_session(
         "endpoint_exposed": False,
         "controllers": ["user", "agent_executor", "agent_verifier"],
         "user_controller_delegation": delegation,
+        "browser_policy": browser_policy,
     }
 
 
@@ -719,7 +811,8 @@ async def execute_action(
                 "message": "Cinema refused an explicit authorization/security/audit integrity violation.",
             },
         )
-    _validate_navigation(request.action)
+
+    _validate_navigation(request.action, session)
     actor = _authorize_controller(request.action, session)
 
     event_id = f"evt_{uuid.uuid4().hex}"
@@ -735,6 +828,7 @@ async def execute_action(
         "actor": actor,
         "controller": request.action.controller,
         "action": _evidence_action(request.action),
+        "browser_policy": session.get("browser_policy") or {},
         "recorded_at": utc_now(),
     }
     _write_event(event_path, intent)
@@ -748,12 +842,18 @@ async def execute_action(
             "agent_identity": session["agent_identity"],
             "step_id": session["step_id"],
             "actor": actor,
+            "browser_policy": {
+                **(session.get("browser_policy") or {}),
+                "enforce_current_origin": True,
+            },
         },
         "action": request.action.model_dump(mode="json"),
     }
 
     try:
-        status_code, response_body, response_sha256 = await _relay(str(session["endpoint"]), relay_payload)
+        status_code, response_body, response_sha256 = await _relay(
+            str(session["endpoint"]), relay_payload
+        )
     except HTTPException as exc:
         failed = {
             **intent,
@@ -806,7 +906,10 @@ async def disconnect(
         "session_id": session_id,
         "remote_enabled": False,
         "browser_session_terminated": False,
-        "message": "Agent remote authority and any delegated user-controller authority were revoked; the user's browser session remains live.",
+        "message": (
+            "Agent remote authority and any delegated user-controller authority were revoked; "
+            "the user's browser session remains live."
+        ),
     }
 
 
