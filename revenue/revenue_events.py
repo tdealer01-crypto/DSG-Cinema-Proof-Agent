@@ -7,14 +7,17 @@ copied into the revenue evidence store.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from hashlib import sha256
+import fcntl
 import json
 import os
 from pathlib import Path
 from threading import RLock
+import tempfile
 from typing import Any, Mapping
 
 
@@ -84,8 +87,9 @@ class RevenueEvent:
 class RevenueEventStore:
     """Idempotent event store keyed by ``(source, source_event_id)``.
 
-    ``path=None`` keeps the store in memory. With a path, changes are persisted
-    using write+fsync+atomic replace to avoid partially-written evidence files.
+    ``path=None`` keeps the store in memory. With a path, every read-modify-write
+    section is serialized across threads and processes, reloads the authoritative
+    snapshot, and persists using fsync + atomic replace.
     """
 
     def __init__(self, path: str | os.PathLike[str] | None = None):
@@ -97,7 +101,7 @@ class RevenueEventStore:
 
     def _load(self) -> None:
         assert self._path is not None
-        raw = json.loads(self._path.read_text(encoding="utf-8"))
+        raw = json.loads(self._path.read_text(encoding="utf-8") or "[]")
         if not isinstance(raw, list):
             raise RevenueEventError("revenue event store must contain a JSON array")
         loaded: dict[tuple[str, str], RevenueEvent] = {}
@@ -122,6 +126,38 @@ class RevenueEventStore:
             loaded[key] = event
         self._events = loaded
 
+    def _reload_if_changed(self) -> None:
+        """Reload authoritative state after acquiring the process lock."""
+
+        if self._path is None or not self._path.exists():
+            return
+        self._load()
+
+    @contextmanager
+    def _file_lock(self):
+        """Cross-process sidecar lock safe across atomic data-file replacement."""
+
+        if self._path is None:
+            yield
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self._path.with_suffix(self._path.suffix + ".lock")
+        with open(lock_path, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def _critical_section(self):
+        """Serialize threads/processes and refresh before any authoritative read."""
+
+        with self._lock:
+            with self._file_lock():
+                self._reload_if_changed()
+                yield
+
     def _persist(self) -> None:
         if self._path is None:
             return
@@ -131,12 +167,28 @@ class RevenueEventStore:
             for _, event in sorted(self._events.items(), key=lambda pair: pair[0])
         ]
         payload = json.dumps(rows, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, self._path)
+        fd, temporary_name = tempfile.mkstemp(
+            dir=self._path.parent,
+            prefix=f".{self._path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        try:
+            directory_fd = os.open(self._path.parent, os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except AttributeError:
+            pass
 
     def record(
         self,
@@ -157,7 +209,7 @@ class RevenueEventStore:
 
         payload_hash = canonical_payload_hash(payload)
         key = (source, source_event_id)
-        with self._lock:
+        with self._critical_section():
             existing = self._events.get(key)
             if existing is not None:
                 if (
@@ -191,7 +243,7 @@ class RevenueEventStore:
             return event
 
     def get(self, *, source: str, source_event_id: str) -> RevenueEvent | None:
-        with self._lock:
+        with self._critical_section():
             return self._events.get((source, source_event_id))
 
     def mark_processed(
@@ -232,7 +284,7 @@ class RevenueEventStore:
         failure_reason: str | None,
     ) -> RevenueEvent:
         key = (source, source_event_id)
-        with self._lock:
+        with self._critical_section():
             event = self._events.get(key)
             if event is None:
                 raise EventNotFoundError(f"unknown revenue event: {key!r}")
@@ -256,5 +308,5 @@ class RevenueEventStore:
             return updated
 
     def list_events(self) -> list[RevenueEvent]:
-        with self._lock:
+        with self._critical_section():
             return [self._events[key] for key in sorted(self._events)]
