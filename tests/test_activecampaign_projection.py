@@ -6,7 +6,7 @@ from revenue.activecampaign_projection import (
     ActiveCampaignProjectionError,
     project_activecampaign,
 )
-from revenue.intent import evaluate_intent
+from revenue.intent import INTENT_TAGS, evaluate_intent
 from revenue.lifecycle import RevenueState
 
 
@@ -23,7 +23,8 @@ def test_pre_customer_projection_has_exactly_one_deterministic_intent_tag():
     }
     assert intent_tags == {intent.selected_tag}
     assert "dsg-demo-requested" in projection.desired_tags
-    assert {"dsg-intent-low", "dsg-intent-medium"}.issubset(projection.remove_tags)
+    assert set(INTENT_TAGS.values()) - {intent.selected_tag} <= set(projection.remove_tags)
+    assert intent.selected_tag not in projection.remove_tags
     assert projection.messaging.allowed is True
 
 
