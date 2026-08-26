@@ -24,6 +24,7 @@ jobs:
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
       CINEMA_APP: dsg-cinema-production
+      CINEMA_PUBLIC_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
       AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
@@ -60,7 +61,7 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Bind Browserbase credential to Cinema
+      - name: Bind Browserbase credential and public origin to Cinema
         shell: bash
         run: |
           set -euo pipefail
@@ -81,7 +82,9 @@ jobs:
           az containerapp update \
             --resource-group "$RESOURCE_GROUP" \
             --name "$CINEMA_APP" \
-            --set-env-vars BROWSERBASE_API_KEY=secretref:browserbase-api-key \
+            --set-env-vars \
+              BROWSERBASE_API_KEY=secretref:browserbase-api-key \
+              DSG_PUBLIC_BASE_URL="$CINEMA_PUBLIC_BASE_URL" \
             --output none
 
       - name: Verify Browserbase binding without reading secret value
@@ -94,4 +97,12 @@ jobs:
             --query "properties.template.containers[0].env[?name=='BROWSERBASE_API_KEY'].secretRef | [0]" \
             --output tsv)
           test "$BINDING" = "browserbase-api-key"
-          echo 'BROWSERBASE_API_KEY is bound to Cinema production via secretRef.'
+
+          PUBLIC_ORIGIN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query "properties.template.containers[0].env[?name=='DSG_PUBLIC_BASE_URL'].value | [0]" \
+            --output tsv)
+          test "$PUBLIC_ORIGIN" = "$CINEMA_PUBLIC_BASE_URL"
+
+          echo 'BROWSERBASE_API_KEY is bound via secretRef and DSG_PUBLIC_BASE_URL matches Cinema production.'
