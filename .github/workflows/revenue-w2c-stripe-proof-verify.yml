@@ -1,0 +1,25 @@
+name: Verify Revenue W2-C Stripe Proof
+
+on:
+  pull_request:
+    paths:
+      - 'revenue/stripe_payment_proof.py'
+      - 'tests/test_stripe_payment_proof.py'
+      - '.github/workflows/revenue-w2c-stripe-proof-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pytest httpx
+      - run: python -m py_compile revenue/stripe_payment_proof.py
+      - run: python -m pytest -q tests/test_stripe_payment_proof.py
