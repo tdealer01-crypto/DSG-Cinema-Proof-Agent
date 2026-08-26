@@ -40,6 +40,19 @@ jobs:
           fi
           echo "::add-mask::$CONFIGURED_BROWSERBASE_API_KEY"
 
+      - name: Verify Browserbase credential before production mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --request GET 'https://api.browserbase.com/v1/projects' \
+            --header "X-BB-API-Key: $CONFIGURED_BROWSERBASE_API_KEY")
+          if [[ "$code" != "200" ]]; then
+            echo "Browserbase credential preflight failed with HTTP ${code}; refusing Azure mutation." >&2
+            exit 1
+          fi
+          echo 'Browserbase credential preflight passed.'
+
       - name: Azure login with OIDC
         uses: azure/login@v2
         with:
