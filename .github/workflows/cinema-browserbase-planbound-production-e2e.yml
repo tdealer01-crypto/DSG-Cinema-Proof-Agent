@@ -30,6 +30,16 @@ jobs:
           work="$RUNNER_TEMP/cinema-browserbase-e2e"
           mkdir -p "$work"
 
+          phase() { echo "PHASE=$1"; }
+          require_http() {
+            local label="$1" actual="$2" expected="$3"
+            echo "${label}_http=${actual}"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "${label} failed: expected HTTP ${expected}, got ${actual}" >&2
+              exit 1
+            fi
+          }
+
           api_key=""
           session_token=""
           cleanup() {
@@ -42,14 +52,20 @@ jobs:
           }
           trap cleanup EXIT
 
+          phase activation
           activation_id="browserbase-prod-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           code=$(curl --silent --show-error --output "$work/activation.json" --write-out '%{http_code}' \
             --request POST "$CINEMA_BASE_URL/billing/activate" \
             --header 'Content-Type: application/json' \
             --data "$(jq -nc --arg id "$activation_id" '{channel:"browserbase_e2e",activation_id:$id,display_name:"Cinema Browserbase Production E2E"}')")
-          [[ "$code" == "200" || "$code" == "201" ]]
+          echo "activation_http=${code}"
+          if [[ "$code" != "200" && "$code" != "201" ]]; then
+            echo 'Activation HTTP status was not successful.' >&2
+            exit 1
+          fi
           api_key=$(jq -r '.api_key // empty' "$work/activation.json")
           if [[ -z "$api_key" ]]; then
+            echo "activation_decision=$(jq -r '.decision // "UNKNOWN"' "$work/activation.json")"
             echo 'Self-activation did not return its one-time API key.' >&2
             exit 1
           fi
@@ -57,6 +73,7 @@ jobs:
           account_id=$(jq -r '.account.account_id // empty' "$work/activation.json")
           rm -f "$work/activation.json"
           [[ -n "$account_id" ]]
+          echo 'activation_result=PASS'
 
           cat > "$work/plan.json" <<'JSON'
           {
@@ -78,29 +95,42 @@ jobs:
           }
           JSON
 
+          phase create_plan
           code=$(curl --silent --show-error --output "$work/plan-created.json" --write-out '%{http_code}' \
             --request POST "$CINEMA_BASE_URL/api/v1/plans" \
             --header "X-DSG-API-Key: $api_key" \
             --header 'Content-Type: application/json' \
             --data-binary @"$work/plan.json")
-          [[ "$code" == "201" ]]
+          require_http create_plan "$code" 201
           plan_id=$(jq -r '.plan_id // empty' "$work/plan-created.json")
           plan_hash=$(jq -r '.plan_hash // empty' "$work/plan-created.json")
-          [[ -n "$plan_id" && ${#plan_hash} -eq 64 ]]
+          if [[ -z "$plan_id" || ${#plan_hash} -ne 64 ]]; then
+            echo 'create_plan response did not contain plan_id and plan_hash.' >&2
+            exit 1
+          fi
+          echo 'create_plan_result=PASS'
 
+          phase approve_plan
           code=$(curl --silent --show-error --output "$work/plan-approved.json" --write-out '%{http_code}' \
             --request POST "$CINEMA_BASE_URL/api/v1/plans/$plan_id/approve" \
             --header "X-DSG-API-Key: $api_key" \
             --header 'Content-Type: application/json' \
             --data "$(jq -nc --arg h "$plan_hash" '{approver:"production-e2e",plan_hash:$h,approval_note:"Automated harmless Browserbase production E2E"}')")
-          [[ "$code" == "200" ]]
-          [[ "$(jq -r '.status // empty' "$work/plan-approved.json")" == "APPROVED" ]]
+          require_http approve_plan "$code" 200
+          plan_status=$(jq -r '.status // empty' "$work/plan-approved.json")
+          echo "approved_plan_status=${plan_status}"
+          [[ "$plan_status" == "APPROVED" ]]
+          echo 'approve_plan_result=PASS'
 
+          phase remote_enable
           code=$(curl --silent --show-error --output "$work/remote-enabled.json" --write-out '%{http_code}' \
             --request POST "$CINEMA_BASE_URL/remote-browser/enable" \
             --header "X-DSG-API-Key: $api_key")
-          [[ "$code" == "200" ]]
-          [[ "$(jq -r '.remote_enabled' "$work/remote-enabled.json")" == "true" ]]
+          require_http remote_enable "$code" 200
+          remote_enabled=$(jq -r '.remote_enabled // false' "$work/remote-enabled.json")
+          echo "remote_enabled=${remote_enabled}"
+          [[ "$remote_enabled" == "true" ]]
+          echo 'remote_enable_result=PASS'
 
           rpc() {
             local body="$1"
@@ -112,8 +142,15 @@ jobs:
               --data "$body"
           }
 
+          phase remote_agent_connect
           rpc "$(jq -nc --arg p "$plan_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"remote_agent_connect",arguments:{plan_id:$p,agent_identity:"github-actions-live-e2e",step_id:"example-domain",ttl_seconds:600}}}')" "$work/connect.json"
-          [[ "$(jq -r '.result.isError // true' "$work/connect.json")" == "false" ]]
+          connect_is_error=$(jq -r '.result.isError // true' "$work/connect.json")
+          echo "remote_agent_connect_is_error=${connect_is_error}"
+          if [[ "$connect_is_error" != "false" ]]; then
+            echo "remote_agent_connect_status=$(jq -r '.result.structuredContent.status_code // 0' "$work/connect.json")"
+            echo "remote_agent_connect_error=$(jq -r '.result.structuredContent.error // "UNKNOWN"' "$work/connect.json")"
+            exit 1
+          fi
           session_token=$(jq -r '.result.structuredContent.session_token // empty' "$work/connect.json")
           cinema_session_id=$(jq -r '.result.structuredContent.session_id // empty' "$work/connect.json")
           browserbase_session_id=$(jq -r '.result.structuredContent.shared_browser.browserbase_session_id // empty' "$work/connect.json")
@@ -123,32 +160,56 @@ jobs:
           echo "::add-mask::$session_token"
           echo "::add-mask::$live_view_url"
           rm -f "$work/connect.json"
+          echo 'remote_agent_connect_result=PASS'
 
+          phase navigate
           rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.navigate",controller:"agent_executor",parameters:{url:"https://example.com"}}}}}')" "$work/action.json"
-          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
+          action_is_error=$(jq -r '.result.isError // true' "$work/action.json")
+          echo "navigate_is_error=${action_is_error}"
+          [[ "$action_is_error" == "false" ]]
           navigate_evidence=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
           [[ ${#navigate_evidence} -eq 64 ]]
+          echo 'navigate_result=PASS'
 
+          phase extract
           rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.extract",controller:"agent_verifier",parameters:{}}}}}')" "$work/action.json"
-          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
-          title=$(jq -r '.result.structuredContent.title // empty' "$work/action.json")
+          action_is_error=$(jq -r '.result.isError // true' "$work/action.json")
+          echo "extract_is_error=${action_is_error}"
+          [[ "$action_is_error" == "false" ]]
+          title=$(jq -r '.result.structuredContent.response.title // .result.structuredContent.title // empty' "$work/action.json")
+          echo "extract_title=${title}"
           [[ "$title" == "Example Domain" ]]
           extract_evidence=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
           [[ ${#extract_evidence} -eq 64 ]]
+          echo 'extract_result=PASS'
 
+          phase screenshot
           rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:4,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.screenshot",controller:"agent_verifier",parameters:{full_page:true}}}}}')" "$work/action.json"
-          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
+          action_is_error=$(jq -r '.result.isError // true' "$work/action.json")
+          echo "screenshot_is_error=${action_is_error}"
+          [[ "$action_is_error" == "false" ]]
           screenshot_evidence=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
           screenshot_sha=$(jq -r '.result.structuredContent.response.screenshot_sha256 // .result.structuredContent.screenshot_sha256 // empty' "$work/action.json")
           [[ ${#screenshot_evidence} -eq 64 ]]
+          echo "screenshot_sha_present=$([[ ${#screenshot_sha} -eq 64 ]] && echo true || echo false)"
+          echo 'screenshot_result=PASS'
 
+          phase out_of_plan_block
           rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.navigate",controller:"agent_executor",parameters:{url:"https://example.org"}}}}}')" "$work/block.json"
-          [[ "$(jq -r '.result.isError // false' "$work/block.json")" == "true" ]]
+          block_is_error=$(jq -r '.result.isError // false' "$work/block.json")
           block_status=$(jq -r '.result.structuredContent.status_code // 0' "$work/block.json")
+          echo "out_of_plan_is_error=${block_is_error}"
+          echo "out_of_plan_status=${block_status}"
+          [[ "$block_is_error" == "true" ]]
           [[ "$block_status" == "403" ]]
+          echo 'out_of_plan_block_result=PASS'
 
+          phase disconnect
           rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:6,method:"tools/call",params:{name:"remote_disconnect",arguments:{session_token:$t}}}')" "$work/action.json"
-          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
+          disconnect_is_error=$(jq -r '.result.isError // true' "$work/action.json")
+          echo "disconnect_is_error=${disconnect_is_error}"
+          [[ "$disconnect_is_error" == "false" ]]
+          echo 'disconnect_result=PASS'
 
           jq -n \
             --arg commit "$GITHUB_SHA" \
