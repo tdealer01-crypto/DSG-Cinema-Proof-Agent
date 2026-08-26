@@ -105,3 +105,23 @@ jobs:
               raise SystemExit('checkout must not grant payment entitlement')
           print('PASS: W2-E keeps paid-invoice authority and checkout non-entitled')
           PY
+
+      - name: Assert revenue tests cannot trigger Z3 staging deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/deploy-z3-azure.yml').read_text(encoding='utf-8')
+          if "- 'tests/**'" in workflow:
+              raise SystemExit('broad tests/** trigger would reintroduce shared Z3 staging contention')
+          required = (
+              "- 'tests/test_z3_main.py'",
+              "- 'tests/test_deploy_z3_azure_rest.py'",
+          )
+          missing = [item for item in required if item not in workflow]
+          if missing:
+              raise SystemExit(f'Z3-specific path triggers are missing: {missing}')
+          print('PASS: Z3 staging deploy is scoped to Z3-affecting tests')
+          PY
