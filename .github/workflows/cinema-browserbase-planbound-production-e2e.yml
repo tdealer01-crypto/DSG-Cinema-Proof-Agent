@@ -1,0 +1,175 @@
+name: Cinema Browserbase Plan-Bound Production E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cinema-browserbase-planbound-production-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cinema-browserbase-planbound-production-e2e
+  cancel-in-progress: false
+
+jobs:
+  governed-live-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      CINEMA_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+
+    steps:
+      - name: Run governed Cinema to Browserbase production E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/cinema-browserbase-e2e"
+          mkdir -p "$work"
+
+          api_key=""
+          session_token=""
+          cleanup() {
+            if [[ -n "$api_key" ]]; then
+              curl --silent --show-error --output /dev/null \
+                --request POST "$CINEMA_BASE_URL/remote-browser/disable" \
+                --header "X-DSG-API-Key: $api_key" || true
+            fi
+            rm -f "$work/activation.json" "$work/connect.json" "$work/action.json" "$work/block.json"
+          }
+          trap cleanup EXIT
+
+          activation_id="browserbase-prod-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          code=$(curl --silent --show-error --output "$work/activation.json" --write-out '%{http_code}' \
+            --request POST "$CINEMA_BASE_URL/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data "$(jq -nc --arg id "$activation_id" '{channel:"browserbase_e2e",activation_id:$id,display_name:"Cinema Browserbase Production E2E"}')")
+          [[ "$code" == "200" || "$code" == "201" ]]
+          api_key=$(jq -r '.api_key // empty' "$work/activation.json")
+          if [[ -z "$api_key" ]]; then
+            echo 'Self-activation did not return its one-time API key.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$api_key"
+          account_id=$(jq -r '.account.account_id // empty' "$work/activation.json")
+          rm -f "$work/activation.json"
+          [[ -n "$account_id" ]]
+
+          cat > "$work/plan.json" <<'JSON'
+          {
+            "title": "Governed Browserbase production E2E",
+            "agent_identity": "github-actions-live-e2e",
+            "channel": "mcp",
+            "steps": [
+              {
+                "step_id": "example-domain",
+                "action": "browser_workflow",
+                "target": "example.com",
+                "parameters": {
+                  "browser_allowed_origins": "https://example.com"
+                },
+                "requires_evidence": true,
+                "description": "Navigate, inspect, and capture evidence only on the approved example.com origin."
+              }
+            ]
+          }
+          JSON
+
+          code=$(curl --silent --show-error --output "$work/plan-created.json" --write-out '%{http_code}' \
+            --request POST "$CINEMA_BASE_URL/api/v1/plans" \
+            --header "X-DSG-API-Key: $api_key" \
+            --header 'Content-Type: application/json' \
+            --data-binary @"$work/plan.json")
+          [[ "$code" == "201" ]]
+          plan_id=$(jq -r '.plan_id // empty' "$work/plan-created.json")
+          plan_hash=$(jq -r '.plan_hash // empty' "$work/plan-created.json")
+          [[ -n "$plan_id" && ${#plan_hash} -eq 64 ]]
+
+          code=$(curl --silent --show-error --output "$work/plan-approved.json" --write-out '%{http_code}' \
+            --request POST "$CINEMA_BASE_URL/api/v1/plans/$plan_id/approve" \
+            --header "X-DSG-API-Key: $api_key" \
+            --header 'Content-Type: application/json' \
+            --data "$(jq -nc --arg h "$plan_hash" '{approver:"production-e2e",plan_hash:$h,approval_note:"Automated harmless Browserbase production E2E"}')")
+          [[ "$code" == "200" ]]
+          [[ "$(jq -r '.status // empty' "$work/plan-approved.json")" == "APPROVED" ]]
+
+          code=$(curl --silent --show-error --output "$work/remote-enabled.json" --write-out '%{http_code}' \
+            --request POST "$CINEMA_BASE_URL/remote-browser/enable" \
+            --header "X-DSG-API-Key: $api_key")
+          [[ "$code" == "200" ]]
+          [[ "$(jq -r '.remote_enabled' "$work/remote-enabled.json")" == "true" ]]
+
+          rpc() {
+            local body="$1"
+            local output="$2"
+            curl --silent --show-error --output "$output" \
+              --request POST "$CINEMA_BASE_URL/mcp" \
+              --header "Authorization: Bearer $api_key" \
+              --header 'Content-Type: application/json' \
+              --data "$body"
+          }
+
+          rpc "$(jq -nc --arg p "$plan_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"remote_agent_connect",arguments:{plan_id:$p,agent_identity:"github-actions-live-e2e",step_id:"example-domain",ttl_seconds:600}}}')" "$work/connect.json"
+          [[ "$(jq -r '.result.isError // true' "$work/connect.json")" == "false" ]]
+          session_token=$(jq -r '.result.structuredContent.session_token // empty' "$work/connect.json")
+          cinema_session_id=$(jq -r '.result.structuredContent.session_id // empty' "$work/connect.json")
+          browserbase_session_id=$(jq -r '.result.structuredContent.shared_browser.browserbase_session_id // empty' "$work/connect.json")
+          live_view_url=$(jq -r '.result.structuredContent.shared_browser.live_view_url // empty' "$work/connect.json")
+          [[ -n "$session_token" && -n "$cinema_session_id" && -n "$browserbase_session_id" ]]
+          [[ "$live_view_url" == https://* ]]
+          echo "::add-mask::$session_token"
+          echo "::add-mask::$live_view_url"
+          rm -f "$work/connect.json"
+
+          rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.navigate",controller:"agent_executor",parameters:{url:"https://example.com"}}}}}')" "$work/action.json"
+          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
+          navigate_evidence=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
+          [[ ${#navigate_evidence} -eq 64 ]]
+
+          rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.extract",controller:"agent_verifier",parameters:{}}}}}')" "$work/action.json"
+          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
+          title=$(jq -r '.result.structuredContent.title // empty' "$work/action.json")
+          [[ "$title" == "Example Domain" ]]
+          extract_evidence=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
+          [[ ${#extract_evidence} -eq 64 ]]
+
+          rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:4,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.screenshot",controller:"agent_verifier",parameters:{full_page:true}}}}}')" "$work/action.json"
+          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
+          screenshot_evidence=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
+          screenshot_sha=$(jq -r '.result.structuredContent.response.screenshot_sha256 // .result.structuredContent.screenshot_sha256 // empty' "$work/action.json")
+          [[ ${#screenshot_evidence} -eq 64 ]]
+
+          rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.navigate",controller:"agent_executor",parameters:{url:"https://example.org"}}}}}')" "$work/block.json"
+          [[ "$(jq -r '.result.isError // false' "$work/block.json")" == "true" ]]
+          block_status=$(jq -r '.result.structuredContent.status_code // 0' "$work/block.json")
+          [[ "$block_status" == "403" ]]
+
+          rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:6,method:"tools/call",params:{name:"remote_disconnect",arguments:{session_token:$t}}}')" "$work/action.json"
+          [[ "$(jq -r '.result.isError // true' "$work/action.json")" == "false" ]]
+
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg plan_hash "$plan_hash" \
+            --arg account_hash "$(printf '%s' "$account_id" | sha256sum | cut -d' ' -f1)" \
+            --arg cinema_session_hash "$(printf '%s' "$cinema_session_id" | sha256sum | cut -d' ' -f1)" \
+            --arg browserbase_session_hash "$(printf '%s' "$browserbase_session_id" | sha256sum | cut -d' ' -f1)" \
+            --arg navigate_evidence "$navigate_evidence" \
+            --arg extract_evidence "$extract_evidence" \
+            --arg screenshot_evidence "$screenshot_evidence" \
+            --arg screenshot_sha "$screenshot_sha" \
+            --arg title "$title" \
+            '{status:"PASS",commit:$commit,provider:"browserbase",governed_path:["self_activate","create_plan","approve_plan","remote_on","remote_agent_connect","navigate","extract","screenshot","out_of_plan_block","disconnect"],plan_hash:$plan_hash,account_sha256:$account_hash,cinema_session_sha256:$cinema_session_hash,browserbase_session_sha256:$browserbase_session_hash,live_view_present:true,title:$title,navigate_evidence_hash:$navigate_evidence,extract_evidence_hash:$extract_evidence,screenshot_evidence_hash:$screenshot_evidence,screenshot_sha256:$screenshot_sha,out_of_plan_http_status:403}' \
+            > cinema-browserbase-planbound-e2e-evidence.json
+
+          echo 'Cinema Browserbase plan-bound production E2E: PASS'
+
+      - name: Upload non-secret governed E2E evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-browserbase-planbound-e2e-${{ github.sha }}
+          path: cinema-browserbase-planbound-e2e-evidence.json
+          if-no-files-found: error
+          retention-days: 30
