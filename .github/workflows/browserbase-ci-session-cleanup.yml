@@ -17,6 +17,12 @@ jobs:
     environment: production
     env:
       BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+      # Exact canonical plan hashes for automated workflows only. These hashes
+      # include the CI-specific title and agent identity; no user plan hash is
+      # eligible for cleanup.
+      TEST_PLAN_HASH_GOVERNED_E2E: d135acb8f83a5b478d0edcae47b87563d1d1003453dc949fa7443e3f8ebc6b1a
+      TEST_PLAN_HASH_CONNECT_DIAGNOSTIC: 4d377d75d59a92c8099afca3c7b3c3dac8c4b395c8666f20f76a109eff9e8d5d
+      TEST_PLAN_HASH_STRIPE_SURFACE: f696a439916db1b2ea6337657a300adc32a8d6a3e1b31f826f485cd258b8a5d1
     steps:
       - name: Release only positively identified CI sessions
         shell: bash
@@ -36,14 +42,18 @@ jobs:
           [[ "$code" == "200" ]]
 
           total=$(jq 'length' "$tmp")
-          eligible=$(jq '[.[] | select((.userMetadata.cinema_session_id // "") | (startswith("smoke-") or startswith("stripe-provider-")))] | length' "$tmp")
+          eligible=$(jq \
+            --arg h1 "$TEST_PLAN_HASH_GOVERNED_E2E" \
+            --arg h2 "$TEST_PLAN_HASH_CONNECT_DIAGNOSTIC" \
+            --arg h3 "$TEST_PLAN_HASH_STRIPE_SURFACE" \
+            '[.[] | select(((.userMetadata.cinema_session_id // "") | startswith("smoke-")) or ((.userMetadata.cinema_session_id // "") | startswith("stripe-provider-")) or ((.userMetadata.plan_hash // "") == $h1) or ((.userMetadata.plan_hash // "") == $h2) or ((.userMetadata.plan_hash // "") == $h3))] | length' \
+            "$tmp")
           echo "browserbase_running_sessions=$total"
           echo "eligible_ci_sessions=$eligible"
 
           released=0
-          while IFS=$'\t' read -r session_id cinema_session_id; do
+          while IFS= read -r session_id; do
             [[ -n "$session_id" ]] || continue
-            # Never print raw Browserbase or Cinema session IDs; log only a hash prefix.
             fingerprint=$(printf '%s' "$session_id" | sha256sum | cut -c1-16)
             release_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
               --request POST "https://api.browserbase.com/v1/sessions/$session_id" \
@@ -56,7 +66,12 @@ jobs:
             fi
             echo "released_ci_session session_sha256_prefix=$fingerprint"
             released=$((released + 1))
-          done < <(jq -r '.[] | select((.userMetadata.cinema_session_id // "") | (startswith("smoke-") or startswith("stripe-provider-"))) | [.id, .userMetadata.cinema_session_id] | @tsv' "$tmp")
+          done < <(jq -r \
+            --arg h1 "$TEST_PLAN_HASH_GOVERNED_E2E" \
+            --arg h2 "$TEST_PLAN_HASH_CONNECT_DIAGNOSTIC" \
+            --arg h3 "$TEST_PLAN_HASH_STRIPE_SURFACE" \
+            '.[] | select(((.userMetadata.cinema_session_id // "") | startswith("smoke-")) or ((.userMetadata.cinema_session_id // "") | startswith("stripe-provider-")) or ((.userMetadata.plan_hash // "") == $h1) or ((.userMetadata.plan_hash // "") == $h2) or ((.userMetadata.plan_hash // "") == $h3)) | .id' \
+            "$tmp")
 
           echo "released_ci_sessions=$released"
           rm -f "$tmp"
