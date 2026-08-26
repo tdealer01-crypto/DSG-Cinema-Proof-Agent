@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "DSG_REMOTE_ACTION_STORE=$RUNNER_TEMP/stripe-provider-diag" >> "$GITHUB_ENV"
+          export DSG_REMOTE_ACTION_STORE="$RUNNER_TEMP/stripe-provider-diag"
           python - <<'PY'
           import asyncio, hashlib, os
           from urllib.parse import urlsplit
