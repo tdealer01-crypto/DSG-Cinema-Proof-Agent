@@ -25,7 +25,12 @@ def _event():
         "id": "evt_paid_1",
         "type": "invoice.paid",
         "livemode": True,
-        "data": {"object": {"id": "in_paid_1"}},
+        "data": {
+            "object": {
+                "id": "in_paid_1",
+                "customer": "cus_dsg_1",
+            }
+        },
     }
 
 
@@ -34,6 +39,7 @@ def _account():
         account_id="acct_dsg_1",
         display_name="DSG Account",
         payment_linked=True,
+        stripe_customer_id="cus_dsg_1",
         stripe_paid_invoice_ids=["in_paid_1"],
         stripe_processed_event_ids=["evt_paid_1"],
     )
@@ -93,12 +99,27 @@ def test_only_invoice_paid_can_create_payment_proof():
         _proof(event=event)
 
 
-def test_application_must_be_successful_and_bound_to_same_event_and_account():
+def test_application_must_be_applied_or_exact_authoritative_duplicate():
     app = _application()
     app["applied"] = False
-    with pytest.raises(StripePaymentProofError, match="not applied"):
+    with pytest.raises(StripePaymentProofError, match="neither applied nor"):
         _proof(application=app)
 
+    duplicate = {
+        "applied": False,
+        "reason": "duplicate",
+        "type": "invoice.paid",
+        "event_id": "evt_paid_1",
+    }
+    proof = _proof(application=duplicate)
+    assert proof.source_id == "in_paid_1"
+
+    duplicate_invoice = dict(duplicate, reason="duplicate_invoice")
+    with pytest.raises(StripePaymentProofError, match="neither applied nor"):
+        _proof(application=duplicate_invoice)
+
+
+def test_application_must_be_bound_to_same_event_and_account():
     app = _application()
     app["event_id"] = "evt_other"
     with pytest.raises(StripePaymentProofError, match="different event"):
@@ -108,6 +129,13 @@ def test_application_must_be_successful_and_bound_to_same_event_and_account():
     app["account_id"] = "acct_other"
     with pytest.raises(StripePaymentProofError, match="different account"):
         _proof(application=app)
+
+
+def test_invoice_customer_must_match_account_binding():
+    event = copy.deepcopy(_event())
+    event["data"]["object"]["customer"] = "cus_other"
+    with pytest.raises(StripePaymentProofError, match="customer"):
+        _proof(event=event)
 
 
 def test_payment_linked_alone_is_never_sufficient():
@@ -122,6 +150,15 @@ def test_event_must_already_be_recorded_by_stripe_application():
     account.stripe_processed_event_ids = []
     with pytest.raises(StripePaymentProofError, match="event is not recorded"):
         _proof(account=account)
+
+    duplicate = {
+        "applied": False,
+        "reason": "duplicate",
+        "type": "invoice.paid",
+        "event_id": "evt_paid_1",
+    }
+    with pytest.raises(StripePaymentProofError, match="event is not recorded"):
+        _proof(account=account, application=duplicate)
 
 
 def test_invoice_id_and_evidence_ref_are_required():
