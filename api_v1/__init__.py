@@ -29,9 +29,11 @@ def install(app) -> None:
     # only enables/disables Remote, while the agent supplies plan/step intent.
     importlib.import_module(f"{__name__}.remote_pairing").install(app)
     # Managed Browserbase execution is a transport implementation behind the
-    # DSG gate. Its public action route is protected by an ephemeral capability;
-    # its live-view route is authenticated as the DSG account.
+    # DSG gate. Its public action route is protected by an ephemeral capability.
     importlib.import_module(f"{__name__}.browserbase_executor").install(app)
+    # The Live View bridge keeps the dashboard CSP same-origin while giving the
+    # user an interactive view of the exact Browserbase session used by agents.
+    importlib.import_module(f"{__name__}.browserbase_live_ui").install(app)
     # ChatGPT/MCP-compatible action transport. This is intentionally mounted at
     # /mcp rather than under /api/v1 so remote execution cannot drift the
     # independent verification OpenAPI contract.
