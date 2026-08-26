@@ -8,7 +8,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api_v1 import browserbase_executor, remote_browser, remote_mcp, remote_pairing
+from api_v1 import (
+    browserbase_executor,
+    remote_browser,
+    remote_mcp,
+    remote_pairing,
+    remote_relay_security,
+)
 from api_v1.models import PlanDocument, PlanStep
 
 
@@ -254,7 +260,7 @@ def test_required_ci_proves_browserbase_session_is_recorded_and_plan_domain_scop
     ]
 
 
-def test_required_ci_proves_executor_capability_cannot_be_rebound(
+def test_required_ci_proves_signed_executor_binding_and_replay_protection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("DSG_REMOTE_ACTION_KEY", "q" * 64)
@@ -291,7 +297,7 @@ def test_required_ci_proves_executor_capability_cannot_be_rebound(
     monkeypatch.setattr(browserbase_executor, "_perform_action", fake_perform)
 
     app = FastAPI()
-    app.include_router(browserbase_executor.router)
+    app.include_router(remote_relay_security.router)
     executor = TestClient(app)
     envelope = {
         "version": "dsg.remote-action.v1",
@@ -314,13 +320,37 @@ def test_required_ci_proves_executor_capability_cannot_be_rebound(
             "parameters": {},
         },
     }
-    allowed = executor.post(f"/remote-browser/browserbase/action/{capability}", json=envelope)
+    signed = remote_relay_security.signed_headers_for_payload(envelope)
+    allowed = executor.post(
+        f"/remote-browser/browserbase/action/{capability}",
+        headers=signed,
+        json=envelope,
+    )
     assert allowed.status_code == 200, allowed.text
+
+    replay = executor.post(
+        f"/remote-browser/browserbase/action/{capability}",
+        headers=signed,
+        json=envelope,
+    )
+    assert replay.status_code == 409
+    assert replay.json()["detail"]["error"] == "REMOTE_RELAY_REPLAY_BLOCKED"
+
+    unsigned = executor.post(
+        f"/remote-browser/browserbase/action/{capability}",
+        json=envelope,
+    )
+    assert unsigned.status_code == 401
 
     rebound = {
         **envelope,
         "context": {**envelope["context"], "plan_hash": "0" * 64},
     }
-    blocked = executor.post(f"/remote-browser/browserbase/action/{capability}", json=rebound)
+    rebound_headers = remote_relay_security.signed_headers_for_payload(rebound)
+    blocked = executor.post(
+        f"/remote-browser/browserbase/action/{capability}",
+        headers=rebound_headers,
+        json=rebound,
+    )
     assert blocked.status_code == 403
     assert blocked.json()["detail"]["error"] == "MANAGED_BROWSER_BINDING_MISMATCH"
