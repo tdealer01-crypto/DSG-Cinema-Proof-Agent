@@ -28,6 +28,7 @@ from .engine import (
     idempotency_key,
 )
 from .ledger import ChainError, QuotaExceededError, verify_chain
+from .marketing_profiles import store_from_env
 from .pricing import catalog_snapshot, get_plan, micros_to_usd_string
 from .remediation import (
     ACCOUNT_SUSPENDED,
@@ -40,6 +41,12 @@ from .remediation import (
     UNKNOWN_KEY,
     VERIFICATION_NOT_PROVED,
     remediation_for,
+)
+from .revenue_pipeline import RevenuePipelineError, get_revenue_pipeline
+from .signals import RevenueSignal
+from .stripe_payment_proof import (
+    StripePaymentProofError,
+    payment_proof_from_verified_invoice,
 )
 from .stripe_sync import (
     SignatureError,
@@ -692,8 +699,69 @@ async def stripe_webhook(
     if not isinstance(event, dict):
         raise HTTPException(status_code=400, detail="webhook body is not a JSON object")
 
-    result = apply_webhook_event(event, get_engine().accounts, config)
-    return {"received": True, "event_id": event.get("id"), "result": result}
+    engine = get_engine()
+    result = apply_webhook_event(event, engine.accounts, config)
+    governed_revenue: Optional[dict[str, Any]] = None
+
+    if event.get("type") == "invoice.paid" and (
+        result.get("applied") is True or result.get("reason") == "duplicate"
+    ):
+        obj = ((event.get("data") or {}).get("object") or {})
+        customer_id = obj.get("customer") if isinstance(obj, dict) else None
+        account = (
+            engine.accounts.find_by_stripe_customer(customer_id)
+            if isinstance(customer_id, str) and customer_id
+            else None
+        )
+        if account is None:
+            raise HTTPException(
+                status_code=503,
+                detail="verified paid invoice could not be rebound to its DSG account",
+            )
+        try:
+            proof = payment_proof_from_verified_invoice(
+                event=event,
+                application=result,
+                config=config,
+                account=account,
+                signature_verified=True,
+                evidence_ref=f"stripe-webhook:{event.get('id')}",
+            )
+            profile = store_from_env().get(account.account_id)
+            governed_revenue = await get_revenue_pipeline().process_signal(
+                account=account,
+                profile=profile,
+                signal=RevenueSignal.PAYMENT_CONFIRMED,
+                source="stripe_webhook",
+                source_event_id=str(event.get("id")),
+                payload={
+                    "stripe_event_id": str(event.get("id")),
+                    "paid_invoice_id": proof.source_id,
+                },
+                trusted_source=True,
+                payment_proof=proof,
+            )
+        except (StripePaymentProofError, RevenuePipelineError) as exc:
+            # Billing evidence has already been applied/idempotently observed.
+            # Return a retryable status so Stripe can redeliver until lifecycle
+            # truth is durable. ActiveCampaign failures do not raise here because
+            # they occur after the DSG event is marked PROCESSED and are retried
+            # by the projection reconciler.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "REVENUE_PAYMENT_PIPELINE_PENDING",
+                    "message": str(exc),
+                    "stripe_event_id": event.get("id"),
+                },
+            ) from exc
+
+    return {
+        "received": True,
+        "event_id": event.get("id"),
+        "result": result,
+        "governed_revenue": governed_revenue,
+    }
 
 
 __all__ = [
