@@ -1,0 +1,168 @@
+openapi: 3.1.0
+
+info:
+  title: Cinema Production ChatGPT Remote Browser Actions
+  version: 1.0.0
+  description: >
+    Flat REST actions for ChatGPT Custom Actions. These endpoints reuse the
+    canonical Cinema MCP Remote Browser handlers internally, avoiding nested
+    JSON-RPC params in the Custom Action schema.
+
+servers:
+  - url: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+
+security:
+  - DSGApiKey: []
+
+paths:
+  /chatgpt-actions/remote-browser/status:
+    get:
+      operationId: cinemaRemoteStatus
+      summary: Read current Cinema Remote Browser status
+      responses:
+        "200":
+          description: Remote status and managed shared-browser state
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: Missing or invalid DSG API key
+
+  /chatgpt-actions/remote-browser/connect:
+    post:
+      operationId: cinemaRemoteAgentConnect
+      summary: Bind an approved plan step to Cinema managed Browserbase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id, agent_identity, step_id]
+              properties:
+                plan_id:
+                  type: string
+                agent_identity:
+                  type: string
+                step_id:
+                  type: string
+                ttl_seconds:
+                  type: integer
+                  minimum: 60
+                  maximum: 3600
+                  default: 900
+              additionalProperties: false
+      responses:
+        "200":
+          description: Managed remote session binding
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: Missing or invalid DSG API key
+        "403":
+          description: Blocked by DSG governance
+        "409":
+          description: Remote not enabled or approved-plan conflict
+        "503":
+          description: Managed Browserbase dependency unavailable
+
+  /chatgpt-actions/remote-browser/action:
+    post:
+      operationId: cinemaRemoteAction
+      summary: Execute one approved shared-browser action
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_token, kind]
+              properties:
+                session_token:
+                  type: string
+                kind:
+                  type: string
+                  enum:
+                    - browser.navigate
+                    - browser.click
+                    - browser.type
+                    - browser.select
+                    - browser.scroll
+                    - browser.extract
+                    - browser.screenshot
+                    - browser.upload
+                    - browser.download
+                    - browser.workflow
+                    - pointer.move
+                    - pointer.click
+                    - pointer.drag
+                    - keyboard.type
+                    - keyboard.press
+                    - identity.secret.inject
+                    - identity.otp.submit
+                    - identity.confirmation.click
+                controller:
+                  type: string
+                  enum: [agent_executor, agent_verifier, user_delegated]
+                  default: agent_executor
+                parameters:
+                  type: object
+                  additionalProperties: true
+                  default: {}
+              additionalProperties: false
+      responses:
+        "200":
+          description: Action result and evidence metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Invalid action request
+        "401":
+          description: Missing or invalid DSG API key
+        "403":
+          description: Action blocked by DSG governance
+        "409":
+          description: Action requires direct user input or conflicts with session state
+        "501":
+          description: Action kind is not implemented by the managed executor
+
+  /chatgpt-actions/remote-browser/disconnect:
+    post:
+      operationId: cinemaRemoteDisconnect
+      summary: Revoke agent authority without terminating the user browser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_token]
+              properties:
+                session_token:
+                  type: string
+              additionalProperties: false
+      responses:
+        "200":
+          description: Agent authority revoked; user browser remains available
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: Missing or invalid DSG API key
+
+components:
+  securitySchemes:
+    DSGApiKey:
+      type: apiKey
+      in: header
+      name: X-DSG-API-Key
