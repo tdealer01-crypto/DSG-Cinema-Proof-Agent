@@ -1,0 +1,176 @@
+/**
+ * Design reminder — The Roastery Ledger:
+ * Oat-paper surfaces, espresso ink, Ember Orange accents, editorial typography,
+ * a quiet tactile texture, and movement that is brief and respectful of reading.
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Manrope", Arial, sans-serif;
+  --font-serif: "Fraunces", Georgia, serif;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  --background: oklch(0.95 0.018 79);
+  --foreground: oklch(0.19 0.025 38);
+  --card: oklch(0.93 0.022 79);
+  --card-foreground: oklch(0.19 0.025 38);
+  --popover: oklch(0.95 0.018 79);
+  --popover-foreground: oklch(0.19 0.025 38);
+  --primary: oklch(0.57 0.15 43);
+  --primary-foreground: oklch(0.98 0.008 80);
+  --secondary: oklch(0.88 0.035 76);
+  --secondary-foreground: oklch(0.19 0.025 38);
+  --muted: oklch(0.9 0.018 76);
+  --muted-foreground: oklch(0.48 0.035 43);
+  --accent: oklch(0.57 0.15 43);
+  --accent-foreground: oklch(0.98 0.008 80);
+  --destructive: oklch(0.55 0.2 25);
+  --destructive-foreground: oklch(0.98 0.008 80);
+  --border: oklch(0.25 0.02 38 / 15%);
+  --input: oklch(0.25 0.02 38 / 15%);
+  --ring: oklch(0.57 0.15 43);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+* { @apply border-border outline-ring/50; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  font-family: "Manrope", Arial, sans-serif;
+  background: #f4efe5;
+  color: #281b17;
+}
+
+button, input, select { font: inherit; }
+
+.font-display { font-family: "Fraunces", Georgia, serif; }
+
+.paper-grain {
+  background-color: #f4efe5;
+  background-image:
+    radial-gradient(circle at 19% 24%, rgb(198 90 34 / 7%) 0 1px, transparent 1.2px),
+    radial-gradient(circle at 81% 75%, rgb(40 27 23 / 5%) 0 1px, transparent 1.3px),
+    linear-gradient(115deg, transparent 0 48%, rgb(255 255 255 / 35%) 49%, transparent 51%);
+  background-size: 11px 11px, 13px 13px, 100% 100%;
+  opacity: .56;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .17em;
+  line-height: 1.25;
+}
+
+.vertical-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .16em;
+  color: rgb(40 27 23 / 52%);
+}
+
+.nav-link {
+  position: relative;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgb(40 27 23 / 72%);
+  transition: color 160ms var(--ease-out);
+}
+
+.nav-link::after {
+  position: absolute;
+  right: 0;
+  bottom: -6px;
+  left: 0;
+  height: 1px;
+  transform: scaleX(0);
+  transform-origin: left;
+  background: #c65a22;
+  content: "";
+  transition: transform 180ms var(--ease-out);
+}
+
+.nav-link:hover { color: #281b17; }
+.nav-link:hover::after { transform: scaleX(1); }
+
+.cta-button {
+  display: inline-flex;
+  align-items: center;
+  gap: .7rem;
+  min-height: 48px;
+  padding: .85rem 1.15rem;
+  background: #c65a22;
+  color: white;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  transition: background-color 160ms var(--ease-out), transform 160ms var(--ease-out), box-shadow 160ms var(--ease-out);
+}
+
+.cta-button:hover { background: #a84316; box-shadow: 4px 4px 0 #281b17; }
+.cta-button:active { transform: scale(.97); box-shadow: 2px 2px 0 #281b17; }
+.cta-button-sm { min-height: 40px; padding: .68rem .95rem; font-size: 12px; }
+
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  border-bottom: 1px solid rgb(40 27 23 / 38%);
+  padding-bottom: .35rem;
+  font-size: 13px;
+  font-weight: 800;
+  transition: border-color 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+.text-link:hover { border-color: #c65a22; color: #c65a22; }
+.text-link span { transition: transform 160ms var(--ease-out); }
+.text-link:hover span { transform: translateY(2px); }
+
+@media (prefers-reduced-motion: no-preference) {
+  main > section { animation: settle-in 540ms var(--ease-out) both; }
+  main > section:nth-child(2) { animation-delay: 40ms; }
+  main > section:nth-child(3) { animation-delay: 70ms; }
+}
+
+@keyframes settle-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 640px) {
+  .eyebrow { font-size: 9px; letter-spacing: .13em; }
+}
