@@ -1,0 +1,25 @@
+name: Verify Revenue W2-A Lifecycle Store
+
+on:
+  pull_request:
+    paths:
+      - 'revenue/lifecycle_store.py'
+      - 'tests/test_lifecycle_store.py'
+      - '.github/workflows/revenue-w2a-lifecycle-store-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pytest
+      - run: python -m py_compile revenue/lifecycle_store.py
+      - run: python -m pytest -q tests/test_lifecycle_store.py
