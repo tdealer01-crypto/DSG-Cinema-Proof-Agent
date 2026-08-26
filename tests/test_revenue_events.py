@@ -82,6 +82,32 @@ def test_persistence_reload_and_no_raw_pii(tmp_path):
     assert reloaded == event
 
 
+def test_stale_store_reloads_before_write_and_preserves_prior_writer(tmp_path):
+    path = tmp_path / "events.json"
+    first = RevenueEventStore(path)
+    stale = RevenueEventStore(path)
+
+    first.record(
+        account_id="acct_dsg_a",
+        event_type="lead_created",
+        source="cinema",
+        source_event_id="evt_a",
+    )
+    stale.record(
+        account_id="acct_dsg_b",
+        event_type="demo_requested",
+        source="cinema",
+        source_event_id="evt_b",
+    )
+
+    persisted = RevenueEventStore(path).list_events()
+    assert [(item.account_id, item.source_event_id) for item in persisted] == [
+        ("acct_dsg_a", "evt_a"),
+        ("acct_dsg_b", "evt_b"),
+    ]
+    assert path.with_suffix(path.suffix + ".lock").exists()
+
+
 def test_terminal_status_requires_real_reason_or_evidence():
     store = RevenueEventStore()
     store.record(
