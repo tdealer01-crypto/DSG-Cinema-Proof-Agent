@@ -21,6 +21,7 @@ jobs:
     environment: production
     env:
       CINEMA_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
     steps:
       - name: Verify Stripe surface through governed shared browser
         shell: bash
@@ -30,13 +31,21 @@ jobs:
           mkdir -p "$work"
           api_key=""
           session_token=""
+          browserbase_session_id=""
           cleanup() {
             if [[ -n "$api_key" ]]; then
               curl -sS -o /dev/null -X POST "$CINEMA_BASE_URL/remote-browser/disable" -H "X-DSG-API-Key: $api_key" || true
             fi
+            if [[ -n "$browserbase_session_id" && -n "${BROWSERBASE_API_KEY:-}" ]]; then
+              curl -sS -o /dev/null -X POST "https://api.browserbase.com/v1/sessions/$browserbase_session_id" \
+                -H 'Content-Type: application/json' \
+                -H "X-BB-API-Key: $BROWSERBASE_API_KEY" \
+                --data '{"status":"REQUEST_RELEASE"}' || true
+            fi
             rm -rf "$work"
           }
           trap cleanup EXIT
+          echo "::add-mask::$BROWSERBASE_API_KEY"
 
           activation_id="stripe-surface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           http=$(curl -sS -o "$work/activate.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/billing/activate" \
@@ -46,6 +55,7 @@ jobs:
           api_key=$(jq -r '.api_key // empty' "$work/activate.json")
           [[ -n "$api_key" ]]
           echo "::add-mask::$api_key"
+          echo 'activation=PASS'
 
           cat > "$work/plan.json" <<'JSON'
           {
@@ -67,14 +77,18 @@ jobs:
           plan_id=$(jq -r '.plan_id // empty' "$work/plan.json.out")
           plan_hash=$(jq -r '.plan_hash // empty' "$work/plan.json.out")
           [[ -n "$plan_id" && ${#plan_hash} -eq 64 ]]
+          echo 'create_plan=PASS'
+
           http=$(curl -sS -o "$work/approved.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/api/v1/plans/$plan_id/approve" \
             -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
             --data "$(jq -nc --arg h "$plan_hash" '{approver:"production-smoke",plan_hash:$h}')")
           [[ "$http" == "200" ]]
           jq -e '.status == "APPROVED"' "$work/approved.json" >/dev/null
+          echo 'approve_plan=PASS'
 
           http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
+          echo 'remote_on=PASS'
 
           rpc() {
             local body="$1" output="$2"
@@ -86,20 +100,19 @@ jobs:
           [[ "$http" == "200" ]]
           jq -e '.result.isError == false' "$work/connect.json" >/dev/null
           session_token=$(jq -r '.result.structuredContent.session_token // empty' "$work/connect.json")
-          [[ -n "$session_token" ]]
+          browserbase_session_id=$(jq -r '.result.structuredContent.shared_browser.browserbase_session_id // empty' "$work/connect.json")
+          [[ -n "$session_token" && -n "$browserbase_session_id" ]]
           echo "::add-mask::$session_token"
+          echo 'remote_agent_connect=PASS'
 
           http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.navigate",controller:"agent_executor",parameters:{url:"https://dashboard.stripe.com/apps"}}}}}')" "$work/nav.json")
           [[ "$http" == "200" ]]
-          if ! jq -e '.result.isError == false' "$work/nav.json" >/dev/null; then
-            echo "navigate_tool_status=$(jq -r '.result.structuredContent.status_code // "UNKNOWN"' "$work/nav.json")"
-            echo "navigate_tool_error=$(jq -r '.result.structuredContent.error // "UNKNOWN"' "$work/nav.json")"
-            exit 1
-          fi
+          jq -e '.result.isError == false and .result.structuredContent.ok == true' "$work/nav.json" >/dev/null
+          echo 'navigate=PASS'
 
           http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.extract",controller:"agent_verifier",parameters:{}}}}}')" "$work/extract.json")
           [[ "$http" == "200" ]]
-          jq -e '.result.isError == false' "$work/extract.json" >/dev/null
+          jq -e '.result.isError == false and .result.structuredContent.ok == true' "$work/extract.json" >/dev/null
           final_url=$(jq -r '.result.structuredContent.response.url // empty' "$work/extract.json")
           title=$(jq -r '.result.structuredContent.response.title // empty' "$work/extract.json")
           controls=$(jq -r '.result.structuredContent.response.controls | length' "$work/extract.json")
@@ -109,22 +122,24 @@ jobs:
             echo "unexpected_final_host=$final_host" >&2
             exit 1
           fi
-          if (( controls < 1 )); then
-            echo 'Stripe surface rendered no interactive controls; browser network allowlist is too narrow.' >&2
-            exit 1
-          fi
+          (( controls >= 1 ))
+          echo "extract=PASS host=$final_host controls=$controls"
 
           http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:4,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.screenshot",controller:"agent_verifier",parameters:{full_page:true}}}}}')" "$work/shot.json")
           [[ "$http" == "200" ]]
-          jq -e '.result.isError == false' "$work/shot.json" >/dev/null
+          jq -e '.result.isError == false and .result.structuredContent.ok == true' "$work/shot.json" >/dev/null
           screenshot_sha=$(jq -r '.result.structuredContent.response.screenshot_sha256 // empty' "$work/shot.json")
           evidence_hash=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/shot.json")
           [[ ${#screenshot_sha} -eq 64 && ${#evidence_hash} -eq 64 ]]
+          echo 'screenshot=PASS'
 
-          rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"remote_disconnect",arguments:{session_token:$t}}}')" "$work/disconnect.json" >/dev/null
+          http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"remote_disconnect",arguments:{session_token:$t}}}')" "$work/disconnect.json")
+          [[ "$http" == "200" ]]
+          jq -e '.result.isError == false and .result.structuredContent.browser_session_terminated == false' "$work/disconnect.json" >/dev/null
+          echo 'disconnect=PASS'
 
           jq -n --arg commit "$GITHUB_SHA" --arg plan_hash "$plan_hash" --arg final_host "$final_host" --arg title "$title" --argjson controls "$controls" --arg screenshot_sha "$screenshot_sha" --arg evidence_hash "$evidence_hash" \
-            '{status:"PASS",provider:"browserbase",surface:"stripe_marketplace",commit:$commit,plan_hash:$plan_hash,final_host:$final_host,title:$title,interactive_controls:$controls,screenshot_sha256:$screenshot_sha,evidence_hash:$evidence_hash}' \
+            '{status:"PASS",provider:"browserbase",surface:"stripe_marketplace",commit:$commit,plan_hash:$plan_hash,final_host:$final_host,title:$title,interactive_controls:$controls,screenshot_sha256:$screenshot_sha,evidence_hash:$evidence_hash,session_cleanup:"REQUEST_RELEASE"}' \
             > stripe-browserbase-surface-evidence.json
           echo "stripe_surface=PASS host=$final_host controls=$controls"
 
