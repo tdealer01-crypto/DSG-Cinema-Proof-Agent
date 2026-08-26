@@ -1,0 +1,85 @@
+name: Cinema Browserbase Connect Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cinema-browserbase-connect-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  connect-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: production
+    env:
+      CINEMA_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+    steps:
+      - name: Diagnose managed connect without exposing authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/browserbase-connect-diagnostic"
+          mkdir -p "$work"
+          api_key=""
+          cleanup() {
+            if [[ -n "$api_key" ]]; then
+              curl -sS -o /dev/null -X POST "$CINEMA_BASE_URL/remote-browser/disable" -H "X-DSG-API-Key: $api_key" || true
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+
+          activation_id="connect-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          activation_http=$(curl -sS -o "$work/activate.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/billing/activate" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg id "$activation_id" '{channel:"browserbase_diag",activation_id:$id,display_name:"Browserbase Connect Diagnostic"}')")
+          echo "activation_http=$activation_http"
+          [[ "$activation_http" == "201" || "$activation_http" == "200" ]]
+          api_key=$(jq -r '.api_key // empty' "$work/activate.json")
+          [[ -n "$api_key" ]]
+          echo "::add-mask::$api_key"
+
+          cat > "$work/plan.json" <<'JSON'
+          {"title":"Browserbase connect diagnostic","agent_identity":"github-actions-connect-diagnostic","channel":"mcp","steps":[{"step_id":"example-domain","action":"browser_workflow","target":"example.com","parameters":{"browser_allowed_origins":"https://example.com"}}]}
+          JSON
+          plan_http=$(curl -sS -o "$work/plan-created.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/api/v1/plans" -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' --data-binary @"$work/plan.json")
+          echo "plan_http=$plan_http"
+          [[ "$plan_http" == "201" ]]
+          plan_id=$(jq -r '.plan_id // empty' "$work/plan-created.json")
+          plan_hash=$(jq -r '.plan_hash // empty' "$work/plan-created.json")
+          [[ -n "$plan_id" && ${#plan_hash} -eq 64 ]]
+
+          approve_http=$(curl -sS -o "$work/approved.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/api/v1/plans/$plan_id/approve" -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg h "$plan_hash" '{approver:"production-diagnostic",plan_hash:$h}')")
+          echo "approve_http=$approve_http"
+          [[ "$approve_http" == "200" ]]
+
+          enable_http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
+          echo "enable_http=$enable_http"
+          [[ "$enable_http" == "200" ]]
+
+          connect_request=$(jq -nc --arg p "$plan_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"remote_agent_connect",arguments:{plan_id:$p,agent_identity:"github-actions-connect-diagnostic",step_id:"example-domain",ttl_seconds:300}}}')
+          connect_http=$(curl -sS -o "$work/connect.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/mcp" -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' --data "$connect_request")
+          echo "connect_http=$connect_http"
+          echo "connect_json_type=$(jq -r 'type' "$work/connect.json" 2>/dev/null || echo non-json)"
+          echo "connect_top_keys=$(jq -r 'if type=="object" then (keys|sort|join(",")) else "non-object" end' "$work/connect.json" 2>/dev/null || echo unreadable)"
+          echo "connect_rpc_error_code=$(jq -r '.error.code // "NONE"' "$work/connect.json" 2>/dev/null || echo unreadable)"
+          echo "connect_rpc_error_message=$(jq -r '.error.message // "NONE"' "$work/connect.json" 2>/dev/null || echo unreadable)"
+          echo "connect_detail_error=$(jq -r '.detail.error // "NONE"' "$work/connect.json" 2>/dev/null || echo unreadable)"
+          echo "connect_detail_message=$(jq -r '.detail.message // (if (.detail|type)=="string" then .detail else "NONE" end)' "$work/connect.json" 2>/dev/null || echo unreadable)"
+          echo "connect_tool_is_error=$(jq -r '.result.isError // "ABSENT"' "$work/connect.json" 2>/dev/null || echo unreadable)"
+          echo "connect_tool_status=$(jq -r '.result.structuredContent.status_code // "ABSENT"' "$work/connect.json" 2>/dev/null || echo unreadable)"
+          echo "connect_tool_error=$(jq -r '.result.structuredContent.error // "ABSENT"' "$work/connect.json" 2>/dev/null || echo unreadable)"
+
+          if [[ "$connect_http" != "200" || "$(jq -r '.result.isError // true' "$work/connect.json" 2>/dev/null)" != "false" ]]; then
+            exit 1
+          fi
+          echo 'managed_connect_diagnostic=PASS'
