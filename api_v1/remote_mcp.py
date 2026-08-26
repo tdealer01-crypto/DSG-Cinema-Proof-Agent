@@ -3,7 +3,11 @@
 This transport intentionally lives at /mcp, outside the independent verification
 /api/v1 contract. It exposes the already-proven chat-driven pairing and remote
 action runtime as MCP tools so ChatGPT-compatible MCP clients can use the user's
-armed Remote Browser as an execution surface.
+armed shared Remote Browser as an execution surface.
+
+The MCP never accepts plaintext identity secrets. If the approved plan delegates
+the user's controller, the agent may request narrowly-scoped identity operations
+using opaque secret/OTP references that the trusted remote executor resolves.
 """
 
 from __future__ import annotations
@@ -109,7 +113,7 @@ class _Tool:
 TOOLS: tuple[_Tool, ...] = (
     _Tool(
         "remote_contract",
-        "Use this when you need to inspect the Remote Action protocol and its user/agent concurrency semantics.",
+        "Use this when you need to inspect the shared Remote Browser protocol, controller roles, concurrency semantics, and plan-bound user-controller delegation rules.",
         None,
         _remote_contract,
         read_only=True,
@@ -127,7 +131,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_agent_connect",
-        "Use this when the user has already turned Remote ON and the agent needs to bind an approved Cinema plan step to a live remote browser endpoint. Do not ask for per-click approval after this plan-bound connection succeeds.",
+        "Use this when the user has already turned Remote ON and the agent needs to bind an approved Cinema plan step to one live shared browser endpoint. Any user-controller delegation is derived from that approved plan step; do not invent or widen it at connection time.",
         remote_browser.RemoteSessionCreate,
         _remote_agent_connect,
         read_only=False,
@@ -135,7 +139,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_action",
-        "Use this when a connected agent needs to execute one browser, pointer, or keyboard action inside the approved remote session. Identity secrets such as passwords, OTPs, CAPTCHA responses, and passkeys must be entered directly by the user in the shared browser.",
+        "Execute one action in the approved shared browser session. Use controller=agent_executor for plan-bound mutations, agent_verifier only for extract/screenshot, and user_delegated only for identity operations explicitly delegated by the approved plan. Never send plaintext passwords, OTP values, CAPTCHA responses, passkeys, API keys, or other identity secrets; delegated identity actions use opaque secret_ref/otp_ref handles.",
         remote_browser.RemoteActionRequest,
         _remote_action,
         read_only=False,
@@ -143,7 +147,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_disconnect",
-        "Use this when agent remote authority for one remote session must be revoked without terminating the user's browser session.",
+        "Use this when all agent remote authority, including delegated user-controller authority, must be revoked without terminating the user's browser session.",
         remote_browser.RemoteDisconnectRequest,
         _remote_disconnect,
         read_only=False,
@@ -230,7 +234,10 @@ async def handle_message(message: dict[str, Any], api_key: Optional[str]) -> JSO
                         "The user controls Remote ON/OFF in Cinema. Check remote_status first. "
                         "When Remote is armed, bind an approved plan step with remote_agent_connect, "
                         "then use remote_action without a per-click approval cycle while remaining inside "
-                        "the approved plan. Never send password/OTP/CAPTCHA/passkey values through tools."
+                        "the approved plan. The user, executor, and read-only verifier share one live browser. "
+                        "Never send plaintext password/OTP/CAPTCHA/passkey/API-key values through tools. "
+                        "Only when the approved plan explicitly shares the user controller may the agent use "
+                        "user_delegated identity actions with opaque secret_ref/otp_ref handles."
                     ),
                 },
             )
