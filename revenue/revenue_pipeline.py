@@ -291,6 +291,14 @@ class RevenueSignalPipeline:
             raise RevenuePipelineError(
                 f"{route.signal.value} requires authoritative payment proof"
             )
+        if (
+            route.signal == RevenueSignal.PAYMENT_CONFIRMED
+            and payment_proof is not None
+            and payment_proof.source != "stripe_paid_invoice"
+        ):
+            raise RevenuePipelineError(
+                "payment_confirmed accepts only verified Stripe paid-invoice proof"
+            )
 
         event = self.events.record(
             account_id=account.account_id,
