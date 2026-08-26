@@ -36,6 +36,7 @@ jobs:
 
           async def main():
               sid = f"stripe-provider-{os.environ['GITHUB_RUN_ID']}"
+              browserbase_session_id = ""
               policy = {
                   "enforced": True,
                   "allowed_origins": [
@@ -50,6 +51,7 @@ jobs:
                       plan_hash=hashlib.sha256(b"stripe-provider-diag").hexdigest(),
                       browser_policy=policy,
                   )
+                  browserbase_session_id = str(shared.get("browserbase_session_id") or "")
                   print("session_create=PASS")
                   print("live_view_present=" + str(bool(shared.get("live_view_url"))).lower())
                   try:
@@ -83,10 +85,19 @@ jobs:
                       print("provider_exception_message=" + message)
                       raise
               finally:
-                  browser = bb._CONNECTIONS.pop(sid, None)
-                  if browser is not None:
-                      try: await browser.close()
-                      except Exception: pass
+                  # This workflow owns the provider session and must release it.
+                  # Do not use this behavior for user-owned shared sessions.
+                  if browserbase_session_id:
+                      try:
+                          await bb._bb_request(
+                              "POST",
+                              f"/sessions/{browserbase_session_id}",
+                              payload={"status": "REQUEST_RELEASE"},
+                          )
+                          print("session_release=PASS")
+                      except Exception as exc:
+                          print("session_release=FAILED:" + type(exc).__name__)
+                  bb._CONNECTIONS.pop(sid, None)
                   if bb._PLAYWRIGHT is not None:
                       try: await bb._PLAYWRIGHT.stop()
                       except Exception: pass
