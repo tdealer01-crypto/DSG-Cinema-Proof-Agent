@@ -26,11 +26,15 @@ def install(app) -> None:
     # verification contract remains a separate, exact integration surface.
     importlib.import_module(f"{__name__}.remote_transport").install(app)
     # Pairing is the user-facing chat-driven authority switch: the dashboard
-    # only enables/disables Remote, while the agent supplies plan/step/endpoint.
+    # only enables/disables Remote, while the agent supplies plan/step intent.
     importlib.import_module(f"{__name__}.remote_pairing").install(app)
+    # Managed Browserbase execution is a transport implementation behind the
+    # DSG gate. Its public action route is protected by an ephemeral capability;
+    # its live-view route is authenticated as the DSG account.
+    importlib.import_module(f"{__name__}.browserbase_executor").install(app)
     # ChatGPT/MCP-compatible action transport. This is intentionally mounted at
-    # /mcp rather than under /api/v1 so adding remote execution tools cannot
-    # drift the independent verification OpenAPI contract.
+    # /mcp rather than under /api/v1 so remote execution cannot drift the
+    # independent verification OpenAPI contract.
     importlib.import_module(f"{__name__}.remote_mcp").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.marketing_api").install(app)
