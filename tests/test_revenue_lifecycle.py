@@ -84,18 +84,57 @@ def test_customer_requires_authoritative_payment_proof():
         )
 
 
-def test_verified_live_payment_allows_customer_transition():
+@pytest.mark.parametrize(
+    "bad_proof",
+    [
+        proof(source="stripe_payment_intent", status="paid"),
+        proof(source="stripe_checkout_session", source_id="cs_live_001", status="succeeded"),
+        proof(source="stripe_paid_invoice", source_id="in_live_001", status="succeeded"),
+        proof(source="client_assertion", source_id="browser", status="paid"),
+    ],
+)
+def test_customer_rejects_noncanonical_source_status_pairs(bad_proof):
+    with pytest.raises(PaymentProofError):
+        transition(
+            account_id="acct_dsg_lifecycle",
+            current=RevenueState.CHECKOUT_STARTED,
+            target=RevenueState.CUSTOMER,
+            reason="invalid Stripe proof shape",
+            evidence_ref="event:invalid-payment",
+            payment_proof=bad_proof,
+        )
+
+
+@pytest.mark.parametrize(
+    "valid_proof",
+    [
+        proof(),
+        proof(
+            source="stripe_checkout_session",
+            source_id="cs_live_001",
+            status="paid",
+            evidence_ref="stripe:cs_live_001",
+        ),
+        proof(
+            source="stripe_paid_invoice",
+            source_id="in_live_001",
+            status="paid",
+            evidence_ref="stripe:in_live_001",
+        ),
+    ],
+)
+def test_canonical_verified_live_payment_allows_customer_transition(valid_proof):
     result = transition(
         account_id="acct_dsg_lifecycle",
         current=RevenueState.CHECKOUT_STARTED,
         target=RevenueState.CUSTOMER,
         reason="verified Stripe payment",
         evidence_ref="event:payment-confirmed",
-        payment_proof=proof(),
+        payment_proof=valid_proof,
     )
     assert result.to_state == RevenueState.CUSTOMER
-    assert result.payment_source == "stripe_payment_intent"
-    assert result.payment_source_id == "pi_live_001"
+    assert result.payment_source == valid_proof.source
+    assert result.payment_source_id == valid_proof.source_id
 
 
 def test_illegal_skip_and_backwards_transitions_fail_closed():
