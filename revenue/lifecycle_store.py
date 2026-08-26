@@ -5,6 +5,10 @@ persists only its approved structural transition output: account/state, evidence
 references, payment source identifiers, and SHA-256 reason digests. Raw reason
 text and marketing/customer PII are never copied into the lifecycle evidence
 store.
+
+Persistence is a second trust boundary. A ``LifecycleTransition`` dataclass can
+be instantiated directly by Python callers, so CUSTOMER persistence revalidates
+the authoritative ``PaymentProof`` instead of trusting copied source/id fields.
 """
 
 from __future__ import annotations
@@ -21,7 +25,12 @@ from threading import RLock
 import tempfile
 from typing import Any
 
-from .lifecycle import LifecycleTransition, RevenueState, allowed_next_states
+from .lifecycle import (
+    LifecycleTransition,
+    PaymentProof,
+    RevenueState,
+    allowed_next_states,
+)
 
 
 ZERO_HASH = "0" * 64
@@ -327,8 +336,19 @@ class LifecycleStateStore:
             self._persist()
             return record, True
 
-    def apply(self, transition: LifecycleTransition) -> tuple[LifecycleRecord, bool]:
-        """Compare current state and append one immutable approved transition."""
+    def apply(
+        self,
+        transition: LifecycleTransition,
+        *,
+        payment_proof: PaymentProof | None = None,
+    ) -> tuple[LifecycleRecord, bool]:
+        """Compare current state and persist one transition after trust revalidation.
+
+        For CUSTOMER, callers must supply the same authoritative PaymentProof that
+        authorized the lifecycle transition. This prevents a manually constructed
+        LifecycleTransition from smuggling unverified payment source fields across
+        the persistence boundary.
+        """
 
         entry_id = _transition_entry_id(transition)
         with self._critical_section():
@@ -352,11 +372,28 @@ class LifecycleStateStore:
                     f"illegal persisted lifecycle edge: {record.state.value} -> "
                     f"{transition.to_state.value}"
                 )
-            if transition.to_state == RevenueState.CUSTOMER and (
-                not transition.payment_source or not transition.payment_source_id
+
+            if transition.to_state == RevenueState.CUSTOMER:
+                if payment_proof is None or not payment_proof.is_authoritative_for(
+                    transition.account_id
+                ):
+                    raise LifecycleConflictError(
+                        "CUSTOMER persistence requires authoritative payment proof"
+                    )
+                if (
+                    transition.payment_source != payment_proof.source
+                    or transition.payment_source_id != payment_proof.source_id
+                ):
+                    raise LifecycleConflictError(
+                        "CUSTOMER transition payment fields do not match payment proof"
+                    )
+            elif (
+                payment_proof is not None
+                or transition.payment_source is not None
+                or transition.payment_source_id is not None
             ):
                 raise LifecycleConflictError(
-                    "CUSTOMER persistence requires payment source evidence"
+                    "payment evidence is valid only for CUSTOMER transitions"
                 )
 
             now = _utc_now()
