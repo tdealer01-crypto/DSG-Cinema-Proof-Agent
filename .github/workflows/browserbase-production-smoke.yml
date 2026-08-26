@@ -22,7 +22,6 @@ jobs:
     env:
       BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
       BROWSERBASE_PROJECT_ID: ${{ vars.BROWSERBASE_PROJECT_ID }}
-      DSG_REMOTE_ACTION_STORE: ${{ runner.temp }}/browserbase-smoke
 
     steps:
       - name: Checkout
@@ -37,6 +36,7 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$BROWSERBASE_API_KEY"
+          echo "DSG_REMOTE_ACTION_STORE=${RUNNER_TEMP}/browserbase-smoke" >> "$GITHUB_ENV"
 
       - name: Install Cinema browser runtime
         shell: bash
