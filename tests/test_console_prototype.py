@@ -91,7 +91,8 @@ def test_remote_dashboard_is_chat_driven_and_preserves_shared_browser_semantics(
     assert "remoteEndpoint" not in response.text
     assert "your browser session stays live" in script.text
     assert live_script.status_code == 200
-    assert "/remote-browser/browserbase/live-view" in live_script.text
+    assert "/remote-browser/browserbase/live-frame" in live_script.text
+    assert "/remote-browser/browserbase/embed/" in live_script.text
     assert "same browser session" in live_script.text
     assert "takeover" not in response.text.lower()
     assert "resume agent" not in response.text.lower()
