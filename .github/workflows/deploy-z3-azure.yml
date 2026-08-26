@@ -6,7 +6,8 @@ on:
       - 'z3_main.py'
       - 'requirements.txt'
       - 'Dockerfile'
-      - 'tests/**'
+      - 'tests/test_z3_main.py'
+      - 'tests/test_deploy_z3_azure_rest.py'
       - '.github/workflows/deploy-z3-azure.yml'
       - 'AZURE_BOOTSTRAP_GITHUB_OIDC.sh'
   # Coordinated production pushes are owned by deploy-cinema-production.yml so
