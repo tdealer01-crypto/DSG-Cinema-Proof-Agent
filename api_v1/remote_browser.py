@@ -1,14 +1,27 @@
-"""Plan-bound remote browser action surface for Cinema.
+"""Plan-bound shared remote browser action surface for Cinema.
 
 The remote browser is an execution tool, not a second policy engine. A session
 is opened only against an approved Cinema plan step. Once opened, ordinary
 browser/pointer/keyboard actions are relayed without per-click re-approval.
 
+The same browser session may be observed and controlled concurrently by:
+- the user through the provider live view;
+- an agent executor controller for plan-bound mutations;
+- an agent verifier controller for read-only observation/evidence.
+
+An approved plan step may additionally delegate the user's controller to the
+agent for narrowly-scoped identity input. Delegation is fail-closed and must be
+encoded in the approved plan itself. The agent never sends plaintext passwords,
+OTP values, API keys, passkeys, or other identity secrets through Cinema.
+Delegated identity actions carry only an opaque secret/OTP reference which the
+trusted remote executor resolves outside the model/MCP/evidence path.
+
 Hard boundaries remain:
 - the approved plan/agent/step binding must be valid;
 - the remote endpoint must be public HTTPS (no localhost/private-network SSRF);
-- identity secrets are entered by the user directly in the shared browser, not
-  copied through the agent payload;
+- plaintext identity material is never accepted through the remote payload;
+- CAPTCHA/passkey operations remain direct-user-only;
+- verifier controllers cannot mutate browser state;
 - explicit attempts to bypass authorization, steal credentials, or tamper with
   audit/evidence are refused.
 
@@ -51,6 +64,8 @@ TOKEN_VERSION = 1
 MAX_RESPONSE_BYTES = 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
+RemoteController = Literal["agent_executor", "agent_verifier", "user_delegated"]
+
 RemoteActionKind = Literal[
     "browser.navigate",
     "browser.click",
@@ -67,8 +82,20 @@ RemoteActionKind = Literal[
     "pointer.drag",
     "keyboard.type",
     "keyboard.press",
+    "identity.secret.inject",
+    "identity.otp.submit",
+    "identity.confirmation.click",
 ]
 
+_DELEGATED_IDENTITY_ACTIONS = {
+    "identity.secret.inject",
+    "identity.otp.submit",
+    "identity.confirmation.click",
+}
+_VERIFIER_ACTIONS = {
+    "browser.extract",
+    "browser.screenshot",
+}
 _SENSITIVE_KEYS = {
     "password",
     "passcode",
@@ -82,6 +109,11 @@ _SENSITIVE_KEYS = {
     "mfa_code",
     "2fa_code",
 }
+_REFERENCE_KEYS = {"secret_ref", "otp_ref"}
+_ALLOWED_REFERENCE_SCHEMES = {"vault", "secret", "credential", "otp"}
+_DELEGATION_SHARED_KEY = "user_controller_shared"
+_DELEGATION_OPERATIONS_KEY = "user_controller_operations"
+_DELEGATION_ORIGINS_KEY = "user_controller_origins"
 
 _HARD_INVARIANT = re.compile(
     r"(?:bypass|disable|evade|circumvent)\s+(?:security|authorization|permission|audit|governance)"
@@ -102,6 +134,7 @@ class RemoteSessionCreate(Strict):
 
 class RemoteAction(Strict):
     kind: RemoteActionKind
+    controller: RemoteController = "agent_executor"
     parameters: dict[str, Scalar] = Field(default_factory=dict)
 
     @field_validator("parameters")
@@ -249,9 +282,24 @@ def _public_https_endpoint(value: str) -> str:
         ):
             raise HTTPException(status_code=400, detail="remote endpoint resolves to a non-public address")
 
-    # Fragments are client-only and must not be relayed. Query strings are kept
-    # because many remote-browser providers use short-lived signed endpoint URLs.
     return urlunsplit((parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, ""))
+
+
+def _normalize_origin(value: str) -> str:
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError as exc:
+        raise ValueError("invalid delegated origin") from exc
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ValueError("delegated identity origins must be HTTPS")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("delegated identity origins cannot contain credentials, query strings, or fragments")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("delegated identity origins must not contain a path")
+    host = parsed.hostname.rstrip(".").lower()
+    port = parsed.port
+    netloc = host if port in {None, 443} else f"{host}:{port}"
+    return f"https://{netloc}"
 
 
 def _plan_step(plan_document: Any, step_id: str) -> Any:
@@ -259,6 +307,61 @@ def _plan_step(plan_document: Any, step_id: str) -> Any:
         if step.step_id == step_id:
             return step
     raise HTTPException(status_code=409, detail="step_id is not present in the approved plan")
+
+
+def _delegation_policy(step: Any) -> dict[str, Any]:
+    parameters = dict(step.parameters or {})
+    shared = parameters.get(_DELEGATION_SHARED_KEY) is True
+    if not shared:
+        return {"enabled": False, "operations": [], "origins": []}
+
+    raw_operations = parameters.get(_DELEGATION_OPERATIONS_KEY)
+    raw_origins = parameters.get(_DELEGATION_ORIGINS_KEY)
+    if not isinstance(raw_operations, str) or not isinstance(raw_origins, str):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "INVALID_APPROVED_DELEGATION_POLICY",
+                "message": "An approved user-controller delegation needs operations and HTTPS origins.",
+            },
+        )
+
+    operations = [item.strip() for item in raw_operations.split(",") if item.strip()]
+    unknown = sorted(set(operations) - _DELEGATED_IDENTITY_ACTIONS)
+    if not operations or unknown:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "INVALID_APPROVED_DELEGATION_POLICY",
+                "message": "The approved delegation contains unsupported identity operations.",
+                "unsupported_operations": unknown,
+            },
+        )
+
+    try:
+        origins = [_normalize_origin(item) for item in raw_origins.split(",") if item.strip()]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "INVALID_APPROVED_DELEGATION_POLICY",
+                "message": str(exc),
+            },
+        ) from exc
+    if not origins:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "INVALID_APPROVED_DELEGATION_POLICY",
+                "message": "At least one approved HTTPS origin is required.",
+            },
+        )
+
+    return {
+        "enabled": True,
+        "operations": sorted(set(operations)),
+        "origins": sorted(set(origins)),
+    }
 
 
 def _authorize_session(request: RemoteSessionCreate) -> tuple[dict[str, Any], Any]:
@@ -332,6 +435,133 @@ def _validate_navigation(action: RemoteAction) -> None:
         raise HTTPException(status_code=400, detail="browser navigation must target http(s)")
 
 
+def _opaque_reference(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "INVALID_IDENTITY_REFERENCE", "message": f"{label} must be an opaque secret reference."},
+        )
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in _ALLOWED_REFERENCE_SCHEMES or not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "INVALID_IDENTITY_REFERENCE",
+                "message": f"{label} must use an approved opaque reference scheme.",
+            },
+        )
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "INVALID_IDENTITY_REFERENCE",
+                "message": f"{label} cannot embed credentials, query strings, or fragments.",
+            },
+        )
+    return value
+
+
+def _authorize_controller(action: RemoteAction, session: dict[str, Any]) -> str:
+    if action.controller == "agent_verifier":
+        if action.kind not in _VERIFIER_ACTIONS:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "VERIFIER_MUTATION_BLOCKED",
+                    "message": "The verifier controller is read-only and may only extract or capture evidence.",
+                },
+            )
+        return "AGENT_VERIFIER"
+
+    if action.controller == "agent_executor":
+        if action.kind in _DELEGATED_IDENTITY_ACTIONS:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "USER_CONTROLLER_DELEGATION_REQUIRED",
+                    "message": "This identity operation requires an approved delegated user controller.",
+                },
+            )
+        return "AGENT_EXECUTOR"
+
+    if action.kind not in _DELEGATED_IDENTITY_ACTIONS:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "USER_CONTROLLER_SCOPE_BLOCKED",
+                "message": "Delegated user-controller authority is limited to approved identity operations.",
+            },
+        )
+
+    delegation = session.get("user_controller_delegation") or {}
+    if not delegation.get("enabled"):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "USER_CONTROLLER_NOT_DELEGATED",
+                "message": "The approved plan did not delegate the user's controller to the agent.",
+            },
+        )
+    if action.kind not in set(delegation.get("operations") or []):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "USER_CONTROLLER_OPERATION_BLOCKED",
+                "message": "The approved plan did not delegate this identity operation.",
+            },
+        )
+
+    raw_origin = action.parameters.get("origin")
+    if not isinstance(raw_origin, str):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "IDENTITY_ORIGIN_REQUIRED", "message": "Delegated identity actions require parameters.origin."},
+        )
+    try:
+        origin = _normalize_origin(raw_origin)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "INVALID_IDENTITY_ORIGIN", "message": str(exc)},
+        ) from exc
+    if origin not in set(delegation.get("origins") or []):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "USER_CONTROLLER_ORIGIN_BLOCKED",
+                "message": "The requested identity origin is outside the approved plan.",
+            },
+        )
+
+    target = action.parameters.get("target")
+    if not isinstance(target, str) or not target.strip() or len(target) > 1024:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "IDENTITY_TARGET_REQUIRED", "message": "Delegated identity actions require a target."},
+        )
+
+    if action.kind == "identity.secret.inject":
+        _opaque_reference(action.parameters.get("secret_ref"), label="secret_ref")
+    elif action.kind == "identity.otp.submit":
+        _opaque_reference(action.parameters.get("otp_ref"), label="otp_ref")
+
+    return "AGENT_VIA_USER_CONTROLLER"
+
+
+def _evidence_action(action: RemoteAction) -> dict[str, Any]:
+    payload = action.model_dump(mode="json")
+    parameters = dict(payload.get("parameters") or {})
+    for key in _REFERENCE_KEYS:
+        value = parameters.get(key)
+        if isinstance(value, str):
+            parameters[key] = f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+    for key in list(parameters):
+        if key.lower() in _SENSITIVE_KEYS:
+            parameters[key] = "[REDACTED]"
+    payload["parameters"] = parameters
+    return payload
+
+
 def _event_path(session_id: str, event_id: str) -> Path:
     path = _ensure_store() / "events" / session_id
     path.mkdir(parents=True, exist_ok=True)
@@ -382,11 +612,36 @@ async def contract() -> dict[str, Any]:
     return {
         "protocol": REMOTE_PROTOCOL_VERSION,
         "semantics": "approved plan grants remote execution authority; no per-click approval cycle",
-        "controllers": ["user", "agent"],
-        "concurrency": "independent user and agent input channels may operate simultaneously",
+        "controllers": [
+            "user",
+            "agent_executor",
+            "agent_verifier",
+            "agent_via_user_controller",
+        ],
+        "concurrency": (
+            "the user, agent executor, and read-only agent verifier share one live browser session; "
+            "the remote executor is responsible for serializing only colliding low-level input"
+        ),
         "remote_off": "revokes only agent remote authority; the user's browser session remains live",
-        "identity_input": "password/OTP/CAPTCHA/passkey are entered directly by the user in the shared browser",
-        "evidence": "each relayed action is recorded on durable Cinema storage with a canonical evidence hash",
+        "identity_input": (
+            "plaintext password/OTP/CAPTCHA/passkey values never pass through Cinema. "
+            "An approved plan may delegate secret injection, OTP submission, and confirmation clicks "
+            "via opaque references resolved by the trusted executor."
+        ),
+        "delegation": {
+            "plan_parameters": {
+                _DELEGATION_SHARED_KEY: True,
+                _DELEGATION_OPERATIONS_KEY: "identity.secret.inject,identity.otp.submit,identity.confirmation.click",
+                _DELEGATION_ORIGINS_KEY: "https://example.com",
+            },
+            "expires_with_session": True,
+            "revocable_with_remote_off": True,
+            "captcha_and_passkey": "direct-user-only",
+        },
+        "evidence": (
+            "each relayed action records actor/controller and a canonical evidence hash; "
+            "opaque secret/OTP references are hashed before durable evidence is written"
+        ),
     }
 
 
@@ -399,6 +654,7 @@ async def create_session(
     _ensure_store()
     endpoint = _public_https_endpoint(request.remote_endpoint)
     decision, step = _authorize_session(request)
+    delegation = _delegation_policy(step)
     now = int(time.time())
     session_id = f"rbs_{uuid.uuid4().hex}"
     payload = {
@@ -411,6 +667,7 @@ async def create_session(
         "step_action": step.action,
         "step_target": step.target,
         "endpoint": endpoint,
+        "user_controller_delegation": delegation,
         "iat": now,
         "exp": now + request.ttl_seconds,
     }
@@ -428,6 +685,8 @@ async def create_session(
         "control_hash": decision["control_hash"],
         "remote_enabled": True,
         "endpoint_exposed": False,
+        "controllers": ["user", "agent_executor", "agent_verifier"],
+        "user_controller_delegation": delegation,
     }
 
 
@@ -446,7 +705,10 @@ async def execute_action(
             status_code=409,
             detail={
                 "error": "DIRECT_USER_INPUT_REQUIRED",
-                "message": "Enter identity material directly in the shared browser; Remote stays connected.",
+                "message": (
+                    "Plaintext identity material cannot pass through Cinema. "
+                    "Use direct user input, or an approved delegated identity action with an opaque reference."
+                ),
             },
         )
     if _hard_invariant_violation(request.action):
@@ -458,6 +720,7 @@ async def execute_action(
             },
         )
     _validate_navigation(request.action)
+    actor = _authorize_controller(request.action, session)
 
     event_id = f"evt_{uuid.uuid4().hex}"
     event_path = _event_path(session_id, event_id)
@@ -469,7 +732,9 @@ async def execute_action(
         "plan_hash": session["plan_hash"],
         "agent_identity": session["agent_identity"],
         "step_id": session["step_id"],
-        "action": request.action.model_dump(mode="json"),
+        "actor": actor,
+        "controller": request.action.controller,
+        "action": _evidence_action(request.action),
         "recorded_at": utc_now(),
     }
     _write_event(event_path, intent)
@@ -482,6 +747,7 @@ async def execute_action(
             "plan_hash": session["plan_hash"],
             "agent_identity": session["agent_identity"],
             "step_id": session["step_id"],
+            "actor": actor,
         },
         "action": request.action.model_dump(mode="json"),
     }
@@ -520,6 +786,8 @@ async def execute_action(
         "plan_id": session["plan_id"],
         "plan_hash": session["plan_hash"],
         "step_id": session["step_id"],
+        "actor": actor,
+        "controller": request.action.controller,
         "remote_enabled": True,
     }
 
@@ -538,7 +806,7 @@ async def disconnect(
         "session_id": session_id,
         "remote_enabled": False,
         "browser_session_terminated": False,
-        "message": "Agent remote authority revoked; the user's browser session remains live.",
+        "message": "Agent remote authority and any delegated user-controller authority were revoked; the user's browser session remains live.",
     }
 
 
