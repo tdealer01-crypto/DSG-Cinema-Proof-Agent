@@ -1,0 +1,178 @@
+name: Browserbase Production Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/browserbase-production-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cinema-browserbase-live-smoke
+  cancel-in-progress: false
+
+jobs:
+  browserbase-live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+      BROWSERBASE_PROJECT_ID: ${{ vars.BROWSERBASE_PROJECT_ID }}
+      DSG_REMOTE_ACTION_STORE: ${{ runner.temp }}/browserbase-smoke
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse missing Browserbase credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${BROWSERBASE_API_KEY:-}" ]]; then
+            echo 'BROWSERBASE_API_KEY is not configured.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$BROWSERBASE_API_KEY"
+
+      - name: Install Cinema browser runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -r requirements-cinema.txt >/dev/null
+
+      - name: Run real Browserbase shared-session smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from api_v1 import browserbase_executor as bb
+
+          async def main() -> None:
+              cinema_session_id = f"smoke-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+              plan_hash = hashlib.sha256(
+                  f"browserbase-smoke:{os.environ['GITHUB_SHA']}".encode("utf-8")
+              ).hexdigest()
+              policy = {
+                  "enforced": True,
+                  "allowed_origins": ["https://example.com"],
+                  "enforce_current_origin": True,
+              }
+              evidence = {
+                  "commit": os.environ["GITHUB_SHA"],
+                  "provider": "browserbase",
+                  "allowed_origins": policy["allowed_origins"],
+                  "record_session_expected": True,
+                  "log_session_expected": True,
+              }
+
+              try:
+                  shared = await bb.ensure_browser_session(
+                      cinema_session_id,
+                      plan_hash=plan_hash,
+                      browser_policy=policy,
+                  )
+                  browserbase_session_id = str(shared.get("browserbase_session_id") or "")
+                  live_view_url = str(shared.get("live_view_url") or "")
+                  if not browserbase_session_id:
+                      raise RuntimeError("Browserbase did not return a session id")
+                  if not live_view_url.startswith("https://"):
+                      raise RuntimeError("Browserbase did not return an HTTPS Live View URL")
+
+                  context = {"browser_policy": policy}
+                  status, navigated = await bb._perform_action(
+                      cinema_session_id,
+                      {
+                          "context": context,
+                          "action": {
+                              "kind": "browser.navigate",
+                              "controller": "agent_executor",
+                              "parameters": {"url": "https://example.com"},
+                          },
+                      },
+                  )
+                  if status != 200 or not str(navigated.get("url") or "").startswith("https://example.com"):
+                      raise RuntimeError(f"navigate failed: HTTP {status}")
+
+                  status, extracted = await bb._perform_action(
+                      cinema_session_id,
+                      {
+                          "context": context,
+                          "action": {
+                              "kind": "browser.extract",
+                              "controller": "agent_verifier",
+                              "parameters": {},
+                          },
+                      },
+                  )
+                  if status != 200 or extracted.get("title") != "Example Domain":
+                      raise RuntimeError("extract did not verify Example Domain")
+
+                  status, screenshot = await bb._perform_action(
+                      cinema_session_id,
+                      {
+                          "context": context,
+                          "action": {
+                              "kind": "browser.screenshot",
+                              "controller": "agent_verifier",
+                              "parameters": {"full_page": True},
+                          },
+                      },
+                  )
+                  screenshot_hash = str(screenshot.get("screenshot_sha256") or "")
+                  if status != 200 or len(screenshot_hash) != 64:
+                      raise RuntimeError("screenshot evidence hash is missing")
+
+                  evidence.update(
+                      {
+                          "status": "PASS",
+                          "browserbase_session_sha256": hashlib.sha256(
+                              browserbase_session_id.encode("utf-8")
+                          ).hexdigest(),
+                          "live_view_present": True,
+                          "same_session_actions": 3,
+                          "final_url": extracted.get("url"),
+                          "title": extracted.get("title"),
+                          "screenshot_sha256": screenshot_hash,
+                      }
+                  )
+              finally:
+                  browser = bb._CONNECTIONS.pop(cinema_session_id, None)
+                  if browser is not None:
+                      try:
+                          await browser.close()
+                      except Exception:
+                          pass
+                  if bb._PLAYWRIGHT is not None:
+                      try:
+                          await bb._PLAYWRIGHT.stop()
+                      except Exception:
+                          pass
+                      bb._PLAYWRIGHT = None
+
+              Path("browserbase-live-smoke-evidence.json").write_text(
+                  json.dumps(evidence, indent=2, sort_keys=True),
+                  encoding="utf-8",
+              )
+              print(json.dumps(evidence, sort_keys=True))
+
+          asyncio.run(main())
+          PY
+
+      - name: Upload non-secret smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: browserbase-live-smoke-${{ github.sha }}
+          path: browserbase-live-smoke-evidence.json
+          if-no-files-found: error
+          retention-days: 30
