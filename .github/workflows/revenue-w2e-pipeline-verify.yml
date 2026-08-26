@@ -1,0 +1,107 @@
+name: Verify Revenue W2-E Governed Pipeline
+
+on:
+  pull_request:
+    paths:
+      - 'revenue/revenue_pipeline.py'
+      - 'revenue/revenue_events.py'
+      - 'revenue/lifecycle.py'
+      - 'revenue/lifecycle_store.py'
+      - 'revenue/signals.py'
+      - 'revenue/intent.py'
+      - 'revenue/activecampaign_projection.py'
+      - 'revenue/activecampaign_projection_sync.py'
+      - 'revenue/activecampaign_sync.py'
+      - 'revenue/marketing_api.py'
+      - 'revenue/checkout.py'
+      - 'revenue/api.py'
+      - 'revenue/stripe_payment_proof.py'
+      - 'revenue/stripe_sync.py'
+      - 'tests/test_revenue_pipeline.py'
+      - 'tests/test_stripe_payment_proof.py'
+      - 'tests/test_revenue_checkout.py'
+      - 'tests/test_activecampaign_revenue.py'
+      - '.github/workflows/revenue-w2e-pipeline-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'revenue/revenue_pipeline.py'
+      - 'revenue/activecampaign_projection_sync.py'
+      - 'revenue/marketing_api.py'
+      - 'revenue/checkout.py'
+      - 'revenue/api.py'
+      - 'revenue/stripe_payment_proof.py'
+      - 'tests/test_revenue_pipeline.py'
+      - 'tests/test_stripe_payment_proof.py'
+      - '.github/workflows/revenue-w2e-pipeline-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revenue-w2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Cinema dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest pytest-asyncio z3-solver==4.13.0
+
+      - name: Compile governed revenue surface
+        run: |
+          python -m py_compile \
+            revenue/revenue_pipeline.py \
+            revenue/activecampaign_projection_sync.py \
+            revenue/marketing_api.py \
+            revenue/checkout.py \
+            revenue/api.py \
+            revenue/stripe_payment_proof.py \
+            tests/test_revenue_pipeline.py \
+            tests/test_stripe_payment_proof.py
+
+      - name: Run W2-E integration and adjacent contracts
+        run: |
+          python -m pytest -q \
+            tests/test_revenue_pipeline.py \
+            tests/test_stripe_payment_proof.py \
+            tests/test_revenue_checkout.py \
+            tests/test_activecampaign_revenue.py
+
+      - name: Assert payment authority remains Stripe paid invoice
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          pipeline = Path('revenue/revenue_pipeline.py').read_text(encoding='utf-8')
+          marketing = Path('revenue/marketing_api.py').read_text(encoding='utf-8')
+          checkout = Path('revenue/checkout.py').read_text(encoding='utf-8')
+
+          required = [
+              'payment_proof.source != "stripe_paid_invoice"',
+              'RevenueSignal.PAYMENT_CONFIRMED',
+              'sync_current_projection',
+          ]
+          missing = [token for token in required if token not in pipeline + marketing]
+          if missing:
+              raise SystemExit(f'missing payment/projection authority guards: {missing}')
+          if 'payment_linked=True' in checkout or 'payment_linked = True' in checkout:
+              raise SystemExit('checkout must not grant payment entitlement')
+          print('PASS: W2-E keeps paid-invoice authority and checkout non-entitled')
+          PY
