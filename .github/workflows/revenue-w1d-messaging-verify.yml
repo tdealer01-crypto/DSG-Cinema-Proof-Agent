@@ -1,0 +1,25 @@
+name: Verify Revenue W1-D Messaging
+
+on:
+  pull_request:
+    paths:
+      - 'revenue/messaging_policy.py'
+      - 'tests/test_messaging_policy.py'
+      - '.github/workflows/revenue-w1d-messaging-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pytest
+      - run: python -m py_compile revenue/messaging_policy.py
+      - run: python -m pytest -q tests/test_messaging_policy.py
