@@ -22,6 +22,18 @@ def _transition(account_id, current, target, *, reason=None, evidence=None, paym
     )
 
 
+def _paid_proof(account_id="acct_1", source_id="in_123"):
+    return PaymentProof(
+        account_id=account_id,
+        source="stripe_paid_invoice",
+        source_id=source_id,
+        livemode=True,
+        status="paid",
+        verified=True,
+        evidence_ref=f"evidence/stripe/{source_id}.json",
+    )
+
+
 def test_initialize_only_at_lead_and_exact_replay_is_idempotent():
     store = LifecycleStateStore()
     record, created = store.initialize(account_id="acct_1", evidence_ref="evidence/lead.json")
@@ -68,7 +80,7 @@ def test_apply_requires_initialized_account_and_exact_current_state():
         store.apply(stale)
 
 
-def test_forged_illegal_edge_and_customer_without_payment_evidence_fail_closed():
+def test_forged_illegal_edge_and_customer_without_authoritative_proof_fail_closed():
     store = LifecycleStateStore()
     store.initialize(account_id="acct_1", evidence_ref="evidence/lead.json")
 
@@ -82,7 +94,6 @@ def test_forged_illegal_edge_and_customer_without_payment_evidence_fail_closed()
     with pytest.raises(LifecycleConflictError, match="illegal persisted lifecycle edge"):
         store.apply(forged)
 
-    # Walk to CHECKOUT_STARTED with valid structural transitions.
     for current, target in [
         (RevenueState.LEAD, RevenueState.ENGAGED),
         (RevenueState.ENGAGED, RevenueState.QUALIFIED),
@@ -90,18 +101,26 @@ def test_forged_illegal_edge_and_customer_without_payment_evidence_fail_closed()
     ]:
         store.apply(_transition("acct_1", current, target))
 
+    # A caller can manually construct the dataclass and copy plausible payment
+    # source fields. The persistence boundary must still demand the PaymentProof.
     forged_customer = LifecycleTransition(
         account_id="acct_1",
         from_state=RevenueState.CHECKOUT_STARTED,
         to_state=RevenueState.CUSTOMER,
         reason="client claimed paid",
         evidence_ref="evidence/not-payment-proof.json",
+        payment_source="stripe_paid_invoice",
+        payment_source_id="in_forged",
     )
-    with pytest.raises(LifecycleConflictError, match="payment source evidence"):
+    with pytest.raises(LifecycleConflictError, match="authoritative payment proof"):
         store.apply(forged_customer)
 
+    wrong_account = _paid_proof(account_id="acct_other", source_id="in_forged")
+    with pytest.raises(LifecycleConflictError, match="authoritative payment proof"):
+        store.apply(forged_customer, payment_proof=wrong_account)
 
-def test_authoritative_customer_transition_persists_payment_source_only():
+
+def test_customer_transition_requires_matching_authoritative_payment_proof():
     store = LifecycleStateStore()
     store.initialize(account_id="acct_1", evidence_ref="evidence/lead.json")
     for current, target in [
@@ -111,15 +130,7 @@ def test_authoritative_customer_transition_persists_payment_source_only():
     ]:
         store.apply(_transition("acct_1", current, target))
 
-    proof = PaymentProof(
-        account_id="acct_1",
-        source="stripe_paid_invoice",
-        source_id="in_123",
-        livemode=True,
-        status="paid",
-        verified=True,
-        evidence_ref="evidence/stripe/in_123.json",
-    )
+    proof = _paid_proof()
     customer = _transition(
         "acct_1",
         RevenueState.CHECKOUT_STARTED,
@@ -128,13 +139,34 @@ def test_authoritative_customer_transition_persists_payment_source_only():
         evidence="evidence/customer.json",
         payment_proof=proof,
     )
-    record, created = store.apply(customer)
+
+    mismatched = _paid_proof(source_id="in_other")
+    with pytest.raises(LifecycleConflictError, match="do not match"):
+        store.apply(customer, payment_proof=mismatched)
+
+    record, created = store.apply(customer, payment_proof=proof)
     assert created is True
     assert record.state == RevenueState.CUSTOMER
     evidence = store.history("acct_1")[-1]
     assert evidence.payment_source == "stripe_paid_invoice"
     assert evidence.payment_source_id == "in_123"
     assert store.verify_chain("acct_1") is True
+
+
+def test_non_customer_transition_rejects_payment_fields():
+    store = LifecycleStateStore()
+    store.initialize(account_id="acct_1", evidence_ref="evidence/lead.json")
+    forged = LifecycleTransition(
+        account_id="acct_1",
+        from_state=RevenueState.LEAD,
+        to_state=RevenueState.ENGAGED,
+        reason="smuggle payment metadata",
+        evidence_ref="evidence/engaged.json",
+        payment_source="stripe_paid_invoice",
+        payment_source_id="in_123",
+    )
+    with pytest.raises(LifecycleConflictError, match="valid only for CUSTOMER"):
+        store.apply(forged)
 
 
 def test_two_stale_store_instances_reload_before_write(tmp_path):
