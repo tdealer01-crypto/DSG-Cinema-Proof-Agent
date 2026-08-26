@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api_v1 import remote_browser, remote_mcp, remote_pairing
+from api_v1 import browserbase_executor, remote_browser, remote_mcp, remote_pairing
 from api_v1.models import PlanDocument, PlanStep
 
 
@@ -15,6 +15,7 @@ from api_v1.models import PlanDocument, PlanStep
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("DSG_REMOTE_ACTION_KEY", "r" * 64)
     monkeypatch.setenv("DSG_REMOTE_ACTION_STORE", str(tmp_path / "remote-store"))
+    monkeypatch.setenv("DSG_BROWSERBASE_EXECUTOR_BASE_URL", "https://1.1.1.1")
 
     authorization = SimpleNamespace(account=SimpleNamespace(account_id="acct-mcp"))
     monkeypatch.setattr(remote_pairing.billing, "authorize_request", lambda *_args, **_kwargs: authorization)
@@ -28,7 +29,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
                 step_id="github-actions",
                 action="configure_github_actions",
                 target="github.com",
-                parameters={},
+                parameters={"browser_allowed_origins": "https://github.com"},
             )
         ],
     )
@@ -36,15 +37,43 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(remote_browser.service, "get_plan_record", lambda _plan_id: record)
     monkeypatch.setattr(remote_browser.service, "plan_document", lambda _record: document)
 
+    observed_endpoints: list[str] = []
+
     async def fake_relay(endpoint: str, payload: dict):
-        assert endpoint == "https://1.1.1.1/relay"
+        observed_endpoints.append(endpoint)
+        assert endpoint.startswith("https://1.1.1.1/remote-browser/browserbase/action/")
         return 200, {"ok": True, "kind": payload["action"]["kind"]}, "c" * 64
 
+    async def fake_ensure(cinema_session_id: str, *, plan_hash: str, browser_policy: dict):
+        assert cinema_session_id.startswith("rbs_")
+        assert plan_hash == "a" * 64
+        assert browser_policy["allowed_origins"] == ["https://github.com"]
+        return {
+            "provider": "browserbase",
+            "browserbase_session_id": "bb_test",
+            "live_view_url": "https://browserbase.example/live/test",
+            "connected": True,
+            "pages": [],
+        }
+
+    async def fake_live_view(*, x_dsg_api_key=None):
+        return {
+            "ok": True,
+            "provider": "browserbase",
+            "browserbase_session_id": "bb_test",
+            "live_view_url": "https://browserbase.example/live/test",
+            "connected": True,
+            "pages": [],
+        }
+
     monkeypatch.setattr(remote_browser, "_relay", fake_relay)
+    monkeypatch.setattr(browserbase_executor, "ensure_browser_session", fake_ensure)
+    monkeypatch.setattr(browserbase_executor, "live_view", fake_live_view)
 
     app = FastAPI()
     app.include_router(remote_pairing.router)
     app.include_router(remote_mcp.router)
+    app.state.observed_endpoints = observed_endpoints
     return TestClient(app)
 
 
@@ -67,20 +96,23 @@ def _tool(client: TestClient, name: str, arguments: dict | None = None, message_
     return response.json()["result"]
 
 
-def test_mcp_lists_remote_tools_and_supports_chat_driven_flow(client: TestClient):
+def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client: TestClient):
     initialized = _rpc(client, "initialize")
     assert initialized.status_code == 200
     assert initialized.json()["result"]["serverInfo"]["name"] == "dsg-cinema-remote"
 
     listed = _rpc(client, "tools/list")
-    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
-    assert names == {
+    definitions = {tool["name"]: tool for tool in listed.json()["result"]["tools"]}
+    assert set(definitions) == {
         "remote_contract",
         "remote_status",
         "remote_agent_connect",
         "remote_action",
         "remote_disconnect",
     }
+    connect_schema = definitions["remote_agent_connect"]["inputSchema"]
+    assert "remote_endpoint" not in connect_schema["properties"]
+    assert set(connect_schema["required"]) == {"plan_id", "agent_identity", "step_id"}
 
     headers = {"X-DSG-API-Key": "dsg_live_test"}
     enabled = client.post("/remote-browser/enable", headers=headers)
@@ -90,6 +122,7 @@ def test_mcp_lists_remote_tools_and_supports_chat_driven_flow(client: TestClient
     status = _tool(client, "remote_status")
     assert status["isError"] is False
     assert status["structuredContent"]["agent_connection"] == "waiting"
+    assert status["structuredContent"]["shared_browser"]["provider"] == "browserbase"
 
     connected = _tool(
         client,
@@ -98,11 +131,13 @@ def test_mcp_lists_remote_tools_and_supports_chat_driven_flow(client: TestClient
             "plan_id": "plan-mcp-1",
             "agent_identity": "chatgpt",
             "step_id": "github-actions",
-            "remote_endpoint": "https://1.1.1.1/relay",
             "ttl_seconds": 600,
         },
     )
     assert connected["isError"] is False
+    assert connected["structuredContent"]["endpoint_exposed"] is False
+    assert connected["structuredContent"]["managed_provider"] == "browserbase"
+    assert connected["structuredContent"]["shared_browser"]["browserbase_session_id"] == "bb_test"
     token = connected["structuredContent"]["session_token"]
 
     action = _tool(
@@ -110,16 +145,35 @@ def test_mcp_lists_remote_tools_and_supports_chat_driven_flow(client: TestClient
         "remote_action",
         {
             "session_token": token,
-            "action": {"kind": "pointer.click", "parameters": {"x": 12, "y": 34}},
+            "action": {"kind": "browser.navigate", "parameters": {"url": "https://github.com"}},
         },
     )
     assert action["isError"] is False
     assert action["structuredContent"]["ok"] is True
     assert len(action["structuredContent"]["evidence_hash"]) == 64
+    assert len(client.app.state.observed_endpoints) == 1
 
     disconnected = _tool(client, "remote_disconnect", {"session_token": token})
     assert disconnected["isError"] is False
     assert disconnected["structuredContent"]["browser_session_terminated"] is False
+
+
+def test_mcp_rejects_client_supplied_remote_endpoint(client: TestClient):
+    headers = {"X-DSG-API-Key": "dsg_live_test"}
+    assert client.post("/remote-browser/enable", headers=headers).status_code == 200
+    result = _tool(
+        client,
+        "remote_agent_connect",
+        {
+            "plan_id": "plan-mcp-1",
+            "agent_identity": "chatgpt",
+            "step_id": "github-actions",
+            "remote_endpoint": "https://attacker.example/relay",
+            "ttl_seconds": 600,
+        },
+    )
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"] == "INVALID_ARGUMENTS"
 
 
 def test_mcp_rejects_identity_input_without_dropping_remote_connection(client: TestClient):
@@ -132,7 +186,6 @@ def test_mcp_rejects_identity_input_without_dropping_remote_connection(client: T
             "plan_id": "plan-mcp-1",
             "agent_identity": "chatgpt",
             "step_id": "github-actions",
-            "remote_endpoint": "https://1.1.1.1/relay",
             "ttl_seconds": 600,
         },
     )
