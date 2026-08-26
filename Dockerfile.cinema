@@ -11,6 +11,7 @@ COPY revenue ./revenue
 COPY api_v1 ./api_v1
 COPY web ./web
 COPY openapi ./openapi
+COPY stripe-app ./stripe-app
 
 ENV PORT=8000
 EXPOSE 8000
