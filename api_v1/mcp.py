@@ -12,6 +12,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, Optional
 
+import httpx
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -69,6 +70,11 @@ class VerifyExecutionArgs(Strict):
     execution_id: str = Field(min_length=1, max_length=64)
     require_content_evidence: bool = True
     note: Optional[str] = Field(default=None, max_length=1024)
+
+
+class ActiveCampaignListUsersArgs(Strict):
+    limit: int = Field(default=100, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 def _schema(model: type[BaseModel]) -> dict[str, Any]:
@@ -145,6 +151,83 @@ async def _read_proof(args: ProofIdArgs) -> dict[str, Any]:
     return service.read_proof(args.proof_id)
 
 
+async def _activecampaign_list_users(args: ActiveCampaignListUsersArgs) -> dict[str, Any]:
+    """Read ActiveCampaign users for deterministic deal-owner resolution.
+
+    Credentials stay server-side in environment variables. The API token is never
+    accepted as a tool argument and is never returned in the result.
+    """
+    from revenue.activecampaign_sync import config_from_env
+
+    config = config_from_env()
+    if not config.configured:
+        return {
+            "state": "PENDING_CONFIGURATION",
+            "detail": "ACTIVECAMPAIGN_API_URL and ACTIVECAMPAIGN_API_TOKEN are required",
+            "users": [],
+        }
+
+    assert config.api_url is not None
+    assert config.api_token is not None
+    try:
+        async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+            response = await client.get(
+                f"{config.api_url}/api/3/users",
+                params={"limit": args.limit, "offset": args.offset},
+                headers={
+                    "Api-Token": config.api_token,
+                    "Accept": "application/json",
+                },
+            )
+    except httpx.HTTPError as exc:
+        return {
+            "state": "FAILED",
+            "detail": f"ActiveCampaign request failed: {type(exc).__name__}",
+            "users": [],
+        }
+
+    if response.status_code != 200:
+        return {
+            "state": "FAILED",
+            "detail": f"ActiveCampaign GET /api/3/users returned HTTP {response.status_code}",
+            "users": [],
+        }
+
+    try:
+        body = response.json()
+    except ValueError:
+        return {
+            "state": "FAILED",
+            "detail": "ActiveCampaign GET /api/3/users returned non-JSON data",
+            "users": [],
+        }
+
+    raw_users = body.get("users", []) if isinstance(body, dict) else []
+    users: list[dict[str, Any]] = []
+    for raw in raw_users:
+        if not isinstance(raw, dict):
+            continue
+        user_id = raw.get("id")
+        if user_id is None:
+            continue
+        users.append(
+            {
+                "id": str(user_id),
+                "username": raw.get("username"),
+                "email": raw.get("email"),
+                "first_name": raw.get("firstName"),
+                "last_name": raw.get("lastName"),
+            }
+        )
+
+    meta = body.get("meta", {}) if isinstance(body, dict) else {}
+    return {
+        "state": "READY",
+        "users": users,
+        "meta": meta if isinstance(meta, dict) else {},
+    }
+
+
 class _Tool:
     def __init__(
         self,
@@ -179,6 +262,14 @@ TOOLS: tuple[_Tool, ...] = (
         "Call this before any other tool so an outage is never mistaken for a pass.",
         None,
         _status,
+    ),
+    _Tool(
+        "activecampaign_list_users",
+        "List ActiveCampaign users from the server-side configured account so a valid "
+        "deal owner ID can be resolved without guessing. The API token stays in server "
+        "environment configuration and is never accepted or returned by this tool.",
+        ActiveCampaignListUsersArgs,
+        _activecampaign_list_users,
     ),
     _Tool(
         "dsg_create_plan",
