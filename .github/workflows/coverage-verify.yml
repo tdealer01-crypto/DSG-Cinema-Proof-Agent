@@ -1,0 +1,110 @@
+name: Verify Python Coverage Gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'requirements*.txt'
+      - '.coveragerc'
+      - '.github/workflows/coverage-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'requirements*.txt'
+      - '.coveragerc'
+      - '.github/workflows/coverage-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-cinema.txt
+
+      - name: Install runtime and coverage dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-cinema.txt pyyaml==6.0.2 pytest-cov==7.0.0
+
+      - name: Run complete pytest suite with branch coverage
+        run: |
+          python -m pytest -q \
+            tests \
+            hackathons/agents-for-humans/test_dsg_client.py \
+            --cov \
+            --cov-config=.coveragerc \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=json:coverage.json \
+            --cov-report=html:htmlcov
+
+      - name: Validate and summarize measured baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s coverage.xml
+          test -s coverage.json
+          test -s htmlcov/index.html
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(Path('coverage.json').read_text(encoding='utf-8'))
+          totals = data['totals']
+          statements = int(totals['num_statements'])
+          covered_lines = int(totals['covered_lines'])
+          branches = int(totals.get('num_branches', 0))
+          covered_branches = int(totals.get('covered_branches', 0))
+          line_pct = 100.0 if statements == 0 else covered_lines * 100.0 / statements
+          branch_pct = 100.0 if branches == 0 else covered_branches * 100.0 / branches
+          overall_pct = float(totals['percent_covered'])
+
+          assert 0.0 <= line_pct <= 100.0
+          assert 0.0 <= branch_pct <= 100.0
+          assert 0.0 <= overall_pct <= 100.0
+
+          summary = (
+              '## Python coverage baseline\n\n'
+              f'- Overall (statements + branches): **{overall_pct:.2f}%**\n'
+              f'- Line coverage: **{line_pct:.2f}%** ({covered_lines}/{statements})\n'
+              f'- Branch coverage: **{branch_pct:.2f}%** ({covered_branches}/{branches})\n'
+              f'- Measured files: **{len(data.get("files", {}))}**\n'
+              '- Gate mode: **BASELINE MEASUREMENT** — thresholds are set only after this measured run.\n'
+          )
+          print(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
+              handle.write(summary)
+          PY
+
+      - name: Upload commit-bound coverage evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-${{ github.sha }}
+          path: |
+            coverage.xml
+            coverage.json
+            htmlcov/
+          if-no-files-found: error
+          retention-days: 30
