@@ -4,21 +4,33 @@ on:
   pull_request:
     paths:
       - 'revenue/activecampaign_sync.py'
+      - 'revenue/activecampaign_projection.py'
+      - 'revenue/activecampaign_projection_sync.py'
       - 'revenue/marketing_profiles.py'
       - 'revenue/marketing_api.py'
+      - 'revenue/revenue_pipeline.py'
+      - 'revenue/signals.py'
+      - 'revenue/lifecycle.py'
       - 'api_v1/__init__.py'
       - 'web/customer-dashboard/**'
       - 'tests/test_activecampaign_revenue.py'
+      - 'tests/test_revenue_pipeline.py'
       - '.github/workflows/activecampaign-revenue-*.yml'
   push:
     branches: [main]
     paths:
       - 'revenue/activecampaign_sync.py'
+      - 'revenue/activecampaign_projection.py'
+      - 'revenue/activecampaign_projection_sync.py'
       - 'revenue/marketing_profiles.py'
       - 'revenue/marketing_api.py'
+      - 'revenue/revenue_pipeline.py'
+      - 'revenue/signals.py'
+      - 'revenue/lifecycle.py'
       - 'api_v1/__init__.py'
       - 'web/customer-dashboard/**'
       - 'tests/test_activecampaign_revenue.py'
+      - 'tests/test_revenue_pipeline.py'
       - '.github/workflows/activecampaign-revenue-*.yml'
   workflow_dispatch:
 
@@ -51,13 +63,21 @@ jobs:
         run: |
           python -m py_compile \
             revenue/activecampaign_sync.py \
+            revenue/activecampaign_projection.py \
+            revenue/activecampaign_projection_sync.py \
             revenue/marketing_profiles.py \
             revenue/marketing_api.py \
+            revenue/revenue_pipeline.py \
+            revenue/signals.py \
+            revenue/lifecycle.py \
             api_v1/__init__.py \
             cinema_main.py
 
       - name: Run consent and payment truth tests
-        run: python -m pytest -q tests/test_activecampaign_revenue.py
+        run: |
+          python -m pytest -q \
+            tests/test_activecampaign_revenue.py \
+            tests/test_revenue_pipeline.py
 
       - name: Validate workflow contracts
         shell: bash
@@ -90,15 +110,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'EVENT_PAYMENT_CONFIRMED' revenue/marketing_api.py
-          grep -q 'stripe_paid_invoice_ids' revenue/marketing_api.py
+          grep -q 'authorize_signal_source(signal, trusted_source=trusted_source)' revenue/revenue_pipeline.py
+          grep -q 'payment_proof.source != "stripe_paid_invoice"' revenue/revenue_pipeline.py
+          grep -q 'requires authoritative payment proof' revenue/revenue_pipeline.py
+          grep -q 'reconcile retries ActiveCampaign projection only' revenue/marketing_api.py
           python - <<'PY'
           from revenue.marketing_api import LifecycleEventRequest
+          from revenue.signals import RevenueSignal, route_signal
 
           allowed = LifecycleEventRequest.model_fields['event'].annotation
           text = str(allowed)
           assert 'payment_confirmed' not in text, text
-          print('client payment assertion is excluded')
+
+          route = route_signal(RevenueSignal.PAYMENT_CONFIRMED)
+          assert route.trusted_source_required is True
+          assert route.requires_payment_proof is True
+          print('client payment assertion is excluded; payment authority is trusted paid-invoice proof')
           PY
 
       - name: Assert no ActiveCampaign credential is committed
