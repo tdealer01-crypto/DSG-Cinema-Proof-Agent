@@ -123,7 +123,7 @@ jobs:
           assert 'payment_confirmed' not in text, text
 
           route = route_signal(RevenueSignal.PAYMENT_CONFIRMED)
-          assert route.trusted_source_required is True
+          assert route.trusted_source_only is True
           assert route.requires_payment_proof is True
           print('client payment assertion is excluded; payment authority is trusted paid-invoice proof')
           PY
