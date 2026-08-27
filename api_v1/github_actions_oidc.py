@@ -2,9 +2,10 @@
 
 The verifier authenticates the workflow identity without requiring Cinema or the
 Control Plane to hold a PAT for the private repository. It validates the GitHub
-OIDC signature and pins issuer, audience, repository id/name, visibility, ref,
-workflow path, and governed trigger class. Caller-provided ``sub`` is never used
-as the sole trust boundary because GitHub can use immutable subject formats.
+OIDC signature and pins issuer, audience, repository id/name, owner id,
+visibility, ref, exact workflow path+SHA, runner class, and governed trigger
+class. Caller-provided ``sub`` is never used as the sole trust boundary because
+GitHub subject formats can evolve.
 """
 
 from __future__ import annotations
@@ -36,10 +37,12 @@ class GitHubOidcTrustPolicy:
     audience: str = AGENTIC_IMPROVEMENT_AUDIENCE
     repository: str = "tdealer01-crypto/dsg-agi-simulation"
     repository_id: str = "1263153975"
+    repository_owner_id: str = "260597462"
     repository_visibility: str = "private"
     workflow_path: str = ".github/workflows/governed-self-evolution.yml"
     allowed_refs: tuple[str, ...] = ("refs/heads/master",)
     allowed_events: tuple[str, ...] = ("schedule", "workflow_dispatch")
+    allowed_runner_environments: tuple[str, ...] = ("github-hosted",)
     issuer: str = GITHUB_OIDC_ISSUER
     clock_skew_seconds: int = 60
     max_token_age_seconds: int = 900
@@ -50,10 +53,13 @@ class GitHubActionsIdentity(BaseModel):
 
     repository: str
     repositoryId: str
+    repositoryOwnerId: str
     repositoryVisibility: str
     ref: str
     sha: str
     workflowRef: str
+    workflowSha: str
+    runnerEnvironment: str
     runId: str
     runAttempt: str
     eventName: str
@@ -160,6 +166,8 @@ def verify_github_actions_oidc(
         raise OidcVerificationError("OIDC_REPOSITORY_MISMATCH")
     if str(claims.get("repository_id", "")) != policy.repository_id:
         raise OidcVerificationError("OIDC_REPOSITORY_ID_MISMATCH")
+    if str(claims.get("repository_owner_id", "")) != policy.repository_owner_id:
+        raise OidcVerificationError("OIDC_REPOSITORY_OWNER_ID_MISMATCH")
     if claims.get("repository_visibility") != policy.repository_visibility:
         raise OidcVerificationError("OIDC_REPOSITORY_VISIBILITY_MISMATCH")
 
@@ -171,11 +179,20 @@ def verify_github_actions_oidc(
     if workflow_ref != expected_workflow_ref:
         raise OidcVerificationError("OIDC_WORKFLOW_REF_MISMATCH")
 
-    required_string_claims = ("sha", "run_id", "run_attempt", "event_name")
+    required_string_claims = ("sha", "workflow_sha", "runner_environment", "run_id", "run_attempt", "event_name")
     for name in required_string_claims:
         value = claims.get(name)
         if value is None or not str(value).strip():
             raise OidcVerificationError(f"OIDC_{name.upper()}_MISSING")
+
+    sha = str(claims["sha"])
+    workflow_sha = str(claims["workflow_sha"])
+    if workflow_sha != sha:
+        raise OidcVerificationError("OIDC_WORKFLOW_SHA_MISMATCH")
+
+    runner_environment = str(claims["runner_environment"])
+    if runner_environment not in policy.allowed_runner_environments:
+        raise OidcVerificationError("OIDC_RUNNER_ENVIRONMENT_NOT_ALLOWED")
 
     event_name = str(claims["event_name"])
     if event_name not in policy.allowed_events:
@@ -185,10 +202,13 @@ def verify_github_actions_oidc(
     return GitHubActionsIdentity(
         repository=policy.repository,
         repositoryId=policy.repository_id,
+        repositoryOwnerId=policy.repository_owner_id,
         repositoryVisibility=policy.repository_visibility,
         ref=ref,
-        sha=str(claims["sha"]),
+        sha=sha,
         workflowRef=expected_workflow_ref,
+        workflowSha=workflow_sha,
+        runnerEnvironment=runner_environment,
         runId=str(claims["run_id"]),
         runAttempt=str(claims["run_attempt"]),
         eventName=event_name,

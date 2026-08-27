@@ -2,7 +2,9 @@ name: Agentic Improvement Proof CI
 
 on:
   push:
-    branches: [feat/improvement-proof-adapter]
+    branches:
+      - feat/improvement-proof-adapter
+      - feat/agentic-org-wave2-attestation
     paths:
       - 'api_v1/improvement_proof.py'
       - 'api_v1/github_actions_oidc.py'
