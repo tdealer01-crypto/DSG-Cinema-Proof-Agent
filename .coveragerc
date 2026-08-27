@@ -1,0 +1,30 @@
+[run]
+branch = True
+relative_files = True
+source =
+    api_v1
+    revenue
+    cinema_main
+    z3_main
+    marketplace_verification
+    error_monitoring
+    logging_config
+
+[report]
+precision = 2
+show_missing = True
+skip_covered = False
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
+
+[xml]
+output = coverage.xml
+
+[json]
+output = coverage.json
+pretty_print = True
+
+[html]
+directory = htmlcov

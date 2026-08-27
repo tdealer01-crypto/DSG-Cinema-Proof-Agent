@@ -8,24 +8,44 @@ This document maps the current `DSG-Cinema-Proof-Agent` verification and deliver
 
 At the reviewed revision, the repository contains:
 
-- **43 GitHub Actions workflow files** under `.github/workflows/`.
+- **44 GitHub Actions workflow files** under `.github/workflows/`.
 - **40 primary pytest modules** under `tests/test_*.py`.
 - **2 additional test/check utilities** under `tests/check_*.py`.
 - **1 additional hackathon client test module** at `hackathons/agents-for-humans/test_dsg_client.py`.
 - Staging and production E2E workflows that build/deploy or call real external/runtime surfaces.
-- Persisted deployment and client evidence artifacts.
+- Persisted deployment, client and coverage evidence artifacts.
 
-### Numeric source-code coverage is not currently measured
+## Instrumented Python coverage
 
-No `pytest-cov` configuration or dependency was found in the reviewed repository, and `requirements-cinema.txt` does not include `coverage`/`pytest-cov`. Therefore this repository must **not** publish a line-coverage or branch-coverage percentage from the current CI configuration.
+Numeric source coverage is now measured by `.github/workflows/coverage-verify.yml` using `pytest-cov==7.0.0` and `coverage==7.15.4` with branch measurement enabled.
 
-The word **coverage** in this document is split into three different concepts:
+The first successful measured baseline was GitHub Actions run **33036844728** on PR **#151**:
+
+```text
+Tests: 509 passed
+Measured runtime files: 56
+Overall statements + branches: 76.16%
+Line coverage: 79.79% (6174/7738)
+Branch coverage: 62.77% (1317/2098)
+```
+
+The enforced floors derived from that measured baseline are:
+
+```text
+Overall minimum: 76.00%
+Line minimum:    79.50%
+Branch minimum:  62.50%
+```
+
+The workflow generates `coverage.xml`, `coverage.json`, `coverage-gate.json` and an HTML report, then uploads them as a commit-bound GitHub Actions artifact. The baseline run uploaded artifact ID **9632311771**.
+
+Coverage terminology in this document is intentionally separated:
 
 1. **Test-surface coverage** — which contracts, modules, adapters and failure modes have executable tests.
 2. **E2E path coverage** — which real deployment/client paths are exercised end to end.
-3. **Instrumented source coverage** — line/branch percentages collected by a coverage tool. **Status: NOT MEASURED in current CI.**
+3. **Instrumented source coverage** — measured line/branch execution from the selected active first-party Python runtime surfaces.
 
-A high number of tests or passing E2E runs is not a substitute for instrumented line/branch coverage.
+A high test count or passing E2E run is not a substitute for instrumented line/branch coverage, and a coverage percentage is not a substitute for production E2E evidence.
 
 ---
 
@@ -40,6 +60,8 @@ Path-scoped GitHub Actions triggers
         +--> compile / syntax / package validation
         |
         +--> unit + contract + integration tests
+        |
+        +--> line + branch coverage gate
         |
         +--> deterministic governance assertions
         |
@@ -61,6 +83,7 @@ PERSISTED EVIDENCE
   .deployment/*.json
   evidence/client/*.json
   docs/evidence/*.md
+  coverage.xml / coverage.json / coverage-gate.json / htmlcov
   GitHub Actions artifacts / run records
 ```
 
@@ -69,6 +92,20 @@ The release model is deliberately layered. A unit-test PASS does not imply produ
 ---
 
 ## Core CI gates
+
+### `coverage-verify.yml` — full pytest line/branch coverage gate
+
+This gate triggers on Python source, Python requirements, `.coveragerc` and the coverage workflow itself. It:
+
+- installs both active Python dependency sets;
+- pins the instrumentation versions used for the measured baseline;
+- runs the complete `tests/` pytest suite plus the fail-closed hackathon client receipt test;
+- measures the selected active first-party runtime surfaces in `.coveragerc`;
+- enforces overall, line and branch floors independently;
+- writes a machine-readable `coverage-gate.json` verdict;
+- uploads XML, JSON and HTML coverage evidence even when the gate fails after reports exist.
+
+A coverage FAIL remains a CI failure. Missing reports or an incomplete pytest run cannot be converted to PASS.
 
 ### `api-v1-verify.yml` — DSG ONE v1 API and control-plane contract
 
@@ -250,11 +287,12 @@ Covers plugin conformance, Azure/GitHub/Stripe marketplace contracts, channel ac
 - `tests/test_revenue_lifecycle.py`
 - `tests/test_revenue_signals.py`
 - `tests/test_lifecycle_store.py`
+- `tests/test_messaging_policy.py`
 - `tests/test_activecampaign_mcp_users.py`
 - `tests/test_activecampaign_projection.py`
 - `tests/test_activecampaign_revenue.py`
 
-Covers pricing/metering/ledger/checkout, lifecycle events/intents/signals/storage and deterministic ActiveCampaign projection/reconciliation surfaces.
+Covers pricing/metering/ledger/checkout, lifecycle events/intents/signals/storage, messaging policy and deterministic ActiveCampaign projection/reconciliation surfaces.
 
 ### Observability
 
@@ -274,7 +312,7 @@ The hackathon client test explicitly fails closed when a receipt is unverified, 
 
 ## Complete GitHub Actions workflow inventory
 
-The following is the reviewed set of **43** workflow files in `.github/workflows/`:
+The following is the reviewed set of **44** workflow files in `.github/workflows/`:
 
 1. `activecampaign-revenue-reconcile.yml`
 2. `activecampaign-revenue-verify.yml`
@@ -295,36 +333,37 @@ The following is the reviewed set of **43** workflow files in `.github/workflows
 17. `copilot-cli-full-governed-e2e.yml`
 18. `copilot-cli-mcp-auth-e2e.yml`
 19. `copilot-cli-plugin-e2e.yml`
-20. `deploy-azure-3d-landing.yml`
-21. `deploy-cinema-production.yml`
-22. `deploy-dashboard-production-trigger.yml`
-23. `deploy-z3-azure.yml`
-24. `diagnose-stripe-webhooks.yml`
-25. `marketplace-launch-verify.yml`
-26. `probe-cinema-azure.yml`
-27. `remote-browser-verify.yml`
-28. `retire-legacy-stripe-webhooks.yml`
-29. `revenue-autopilot.yml`
-30. `revenue-checkout-verify.yml`
-31. `revenue-verify.yml`
-32. `revenue-w1a-events-verify.yml`
-33. `revenue-w1b-lifecycle-verify.yml`
-34. `revenue-w1c-intent-verify.yml`
-35. `revenue-w1d-messaging-verify.yml`
-36. `revenue-w2a-lifecycle-store-verify.yml`
-37. `revenue-w2b-signals-verify.yml`
-38. `revenue-w2c-stripe-proof-verify.yml`
-39. `revenue-w2d-ac-projection-verify.yml`
-40. `stripe-app-v2-7.yml`
-41. `stripe-browserbase-provider-diagnostic.yml`
-42. `stripe-browserbase-surface-smoke.yml`
-43. `verify-z3.yml`
+20. `coverage-verify.yml`
+21. `deploy-azure-3d-landing.yml`
+22. `deploy-cinema-production.yml`
+23. `deploy-dashboard-production-trigger.yml`
+24. `deploy-z3-azure.yml`
+25. `diagnose-stripe-webhooks.yml`
+26. `marketplace-launch-verify.yml`
+27. `probe-cinema-azure.yml`
+28. `remote-browser-verify.yml`
+29. `retire-legacy-stripe-webhooks.yml`
+30. `revenue-autopilot.yml`
+31. `revenue-checkout-verify.yml`
+32. `revenue-verify.yml`
+33. `revenue-w1a-events-verify.yml`
+34. `revenue-w1b-lifecycle-verify.yml`
+35. `revenue-w1c-intent-verify.yml`
+36. `revenue-w1d-messaging-verify.yml`
+37. `revenue-w2a-lifecycle-store-verify.yml`
+38. `revenue-w2b-signals-verify.yml`
+39. `revenue-w2c-stripe-proof-verify.yml`
+40. `revenue-w2d-ac-projection-verify.yml`
+41. `stripe-app-v2-7.yml`
+42. `stripe-browserbase-provider-diagnostic.yml`
+43. `stripe-browserbase-surface-smoke.yml`
+44. `verify-z3.yml`
 
 ### Workflow responsibility groups
 
 | Group | Representative workflows | Boundary |
 |---|---|---|
-| Core verification | `api-v1-verify`, `verify-z3`, `marketplace-launch-verify`, `agent-plugin-conformance`, `remote-browser-verify` | source/contract correctness |
+| Core verification | `coverage-verify`, `api-v1-verify`, `verify-z3`, `marketplace-launch-verify`, `agent-plugin-conformance`, `remote-browser-verify` | tests, measured coverage and source/contract correctness |
 | Revenue/commercial | `revenue-verify`, checkout, W1/W2 waves, ActiveCampaign verify/reconcile | entitlement, lifecycle, metering, projections |
 | Browser/provider | Browserbase diagnostics/smoke/binding, Cinema Browserbase workflows | remote provider/session behavior |
 | Client E2E | Copilot CLI full/MCP/plugin workflows | real client + plugin + MCP path |
@@ -379,13 +418,11 @@ The reviewed `tests/` directory contains these **40** `test_*.py` modules:
 39. `test_stripe_payment_proof.py`
 40. `test_z3_main.py`
 
-`test_messaging_policy.py` belongs to the revenue messaging-policy boundary and is kept in the complete inventory even though it is not repeated in the grouped list above.
-
 ---
 
 ## Evidence inventory
 
-Examples of persisted evidence surfaces currently present in the repository include:
+Examples of persisted or run-scoped evidence surfaces include:
 
 - `.deployment/azure-3d-landing.json`
 - `docs/evidence/ui-e2e-2026-08-21.md`
@@ -395,6 +432,7 @@ Examples of persisted evidence surfaces currently present in the repository incl
 - `evidence/client/copilot-cli-agent-auth-preflight-2026-08-21.json`
 - `docs/GITHUB_MARKETPLACE_E2E_CUTOVER.md`
 - `docs/STRIPE_AZURE_CUTOVER_EVIDENCE.md`
+- coverage workflow artifacts containing `coverage.xml`, `coverage.json`, `coverage-gate.json` and `htmlcov/`
 
 Evidence files are scoped observations. Their presence does not prove later revisions unless commit/run bindings establish that relationship.
 
@@ -405,6 +443,7 @@ Evidence files are scoped observations. Their presence does not prove later revi
 | Result | What it proves | What it does **not** prove |
 |---|---|---|
 | Unit/contract test PASS | encoded behavior passed for the tested revision/input | production deployment is healthy |
+| Coverage gate PASS | complete selected pytest run passed and measured overall/line/branch floors were met | production path is live or all risk is tested |
 | CI workflow PASS | every executed gate in that workflow passed | workflows that did not run passed |
 | Staging E2E PASS | the encoded end-to-end path worked in that isolated staging run | production path is identical/live |
 | Production smoke/probe PASS | the named production observations passed at that run time | all product behavior or future availability |
@@ -416,25 +455,26 @@ Evidence files are scoped observations. Their presence does not prove later revi
 
 ---
 
-## Coverage hardening gap
+## Coverage gate current state
 
-The remaining measurable gap is instrumented source-code coverage. A future hardening change should add a dedicated coverage job rather than infer a percentage from test count. A suitable implementation would:
-
-1. add `pytest-cov` as an explicit CI/dev test dependency;
-2. run the intended complete test set with `--cov` against the selected first-party packages/modules;
-3. produce `coverage.xml` plus a human-readable report;
-4. upload the report as a GitHub Actions artifact;
-5. define an initial threshold only after a baseline run is observed;
-6. increase thresholds deliberately without excluding difficult control/exception paths simply to improve the number.
-
-Until that is implemented and a report is attached to a concrete commit, the correct public status remains:
+Current measured and enforced status:
 
 ```text
-Test-surface coverage: DOCUMENTED
+Test-surface coverage: DOCUMENTED + EXECUTABLE
 E2E path coverage: DOCUMENTED + EXECUTABLE
-Instrumented line coverage: NOT MEASURED
-Instrumented branch coverage: NOT MEASURED
+Instrumented overall coverage baseline: 76.16%
+Instrumented line coverage baseline: 79.79%
+Instrumented branch coverage baseline: 62.77%
+Enforced overall minimum: 76.00%
+Enforced line minimum: 79.50%
+Enforced branch minimum: 62.50%
+Coverage reports: XML + JSON + HTML
+Machine-readable gate receipt: coverage-gate.json
 ```
+
+The floors are intentionally based on measured reality rather than a fabricated target. Raising them should be done by adding tests for real unexercised control/exception paths, then ratcheting the thresholds upward. Production or difficult-to-test code must not be excluded merely to improve the number.
+
+The lowest-covered active areas in the baseline report provide the next hardening targets, including Browserbase executor/live UI paths, PostgreSQL-backed revenue paths, error monitoring, and selected Marketplace/remote-relay branches.
 
 ---
 
@@ -445,9 +485,10 @@ Before describing a revision as production-verified:
 - [ ] Identify the exact commit SHA.
 - [ ] Identify which path-scoped CI workflows actually triggered.
 - [ ] Require all relevant triggered gates to complete successfully.
+- [ ] For Python runtime changes, require `coverage-verify.yml` to pass its overall, line and branch floors.
+- [ ] Retain the commit-bound coverage artifact when coverage evidence is relevant to the release claim.
 - [ ] Check staging/live E2E only when the changed boundary requires it.
 - [ ] Verify production deploy workflow completion for changed deployable surfaces.
 - [ ] Verify production health/proof/browser probes as applicable.
 - [ ] Retain the run ID and non-secret evidence artifact/receipt.
 - [ ] Do not convert a skipped, cancelled, untriggered or externally blocked check into PASS.
-- [ ] Do not publish numeric source coverage until a real coverage report exists.

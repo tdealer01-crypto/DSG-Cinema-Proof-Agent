@@ -36,6 +36,7 @@ The machine-readable channel state is
 | `.deployment/azure-3d-landing.json` | Receipt-verified official Azure landing URL |
 | `.github/workflows/deploy-cinema-production.yml` | Cinema deployment plus production E2E |
 | `.github/workflows/deploy-azure-3d-landing.yml` | Shared landing deployment and receipt |
+| `.github/workflows/coverage-verify.yml` | Complete pytest run plus measured overall/line/branch coverage gate and artifacts |
 | `.github/workflows/marketplace-launch-verify.yml` | Multi-Marketplace package and UI validation |
 | `.github/workflows/stripe-app-v2-7.yml` | Stripe UI validation and production package |
 | `.github/workflows/revenue-verify.yml` | Entitlement, ledger, Stripe, and channel regressions |
@@ -43,13 +44,15 @@ The machine-readable channel state is
 
 ## Verification coverage
 
-The complete workflow/test/E2E inventory and coverage truth boundary is maintained in:
+The complete workflow/test/E2E inventory and coverage contract is maintained in:
 
 - [`docs/CI_CD_TEST_E2E_COVERAGE.md`](docs/CI_CD_TEST_E2E_COVERAGE.md)
 
-Current reviewed inventory: **43 GitHub Actions workflow files**, **40 primary `tests/test_*.py` modules**, two additional test/check utilities, and one additional hackathon client test module.
+Current reviewed inventory: **44 GitHub Actions workflow files**, **40 primary `tests/test_*.py` modules**, two additional test/check utilities, and one additional hackathon client test module.
 
-Important distinction: the repository has broad executable test and E2E surfaces, but **numeric line/branch source coverage is not currently measured by CI** because no `pytest-cov`/coverage instrumentation is configured in the reviewed runtime dependency/workflow set. No coverage percentage should be claimed without a commit-bound coverage report.
+The first successful instrumented baseline on PR #151 ran **509 tests** and measured **76.16% overall**, **79.79% line coverage**, and **62.77% branch coverage** across 56 selected active runtime files. The enforced floors are **76.00% overall**, **79.50% line**, and **62.50% branch**. The coverage workflow emits `coverage.xml`, `coverage.json`, `coverage-gate.json`, and HTML evidence as commit-bound GitHub Actions artifacts.
+
+These measurements establish tested execution coverage only; they do not replace staging/production E2E, deployment proof, external marketplace acceptance, legal correctness, or certification claims.
 
 ## Commercial truth boundary
 

@@ -15,8 +15,14 @@ def test_activecampaign_list_users_is_exposed():
     assert "activecampaign_list_users" in mcp.tool_names()
     tool = next(tool for tool in mcp.TOOLS if tool.name == "activecampaign_list_users")
     definition = tool.definition()
-    assert definition["inputSchema"]["properties"]["limit"]["maximum"] == 100
-    assert "token" not in json.dumps(definition).lower()
+    schema = definition["inputSchema"]
+    assert schema["properties"]["limit"]["maximum"] == 100
+
+    # The public tool schema may explain that credentials remain server-side, but
+    # it must never expose a credential-bearing input field to the caller.
+    property_names = {name.lower() for name in schema.get("properties", {})}
+    assert not ({"token", "api_token", "apikey", "api_key", "secret"} & property_names)
+    assert "token" not in json.dumps(schema).lower()
 
 
 @pytest.mark.asyncio
