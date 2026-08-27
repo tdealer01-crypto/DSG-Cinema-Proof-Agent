@@ -13,7 +13,7 @@ __all__ = ["API_VERSION", "ENGINE_VERSION", "install", "router"]
 
 
 def install(app) -> None:
-    """Mount verification, control, remote transport, mobile, billing, and Marketplace."""
+    """Mount verification, control, evidence attestation, transport, billing, and Marketplace."""
     import importlib
 
     importlib.import_module(f"{__name__}.router").install(app)
@@ -21,6 +21,7 @@ def install(app) -> None:
     importlib.import_module(f"{__name__}.mutation").install(app)
     importlib.import_module(f"{__name__}.stripe_app_executor").install(app)
     importlib.import_module(f"{__name__}.mobile_control").install(app)
+    importlib.import_module(f"{__name__}.improvement_attestation").install(app)
     # Remote browser reuses the v1 Decision Core internally, but its HTTP
     # transport deliberately lives outside /api/v1 so the independent
     # verification contract remains a separate, exact integration surface.
