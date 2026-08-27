@@ -24,6 +24,11 @@ concurrency:
   group: coverage-verify-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  COVERAGE_MIN_OVERALL: '76.00'
+  COVERAGE_MIN_LINE: '79.50'
+  COVERAGE_MIN_BRANCH: '62.50'
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
@@ -44,7 +49,12 @@ jobs:
       - name: Install runtime and coverage dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-cinema.txt pyyaml==6.0.2 pytest-cov==7.0.0
+          python -m pip install \
+            -r requirements.txt \
+            -r requirements-cinema.txt \
+            pyyaml==6.0.2 \
+            coverage==7.15.4 \
+            pytest-cov==7.0.0
 
       - name: Run complete pytest suite with branch coverage
         run: |
@@ -59,7 +69,7 @@ jobs:
             --cov-report=json:coverage.json \
             --cov-report=html:htmlcov
 
-      - name: Validate and summarize measured baseline
+      - name: Enforce measured coverage floors
         shell: bash
         run: |
           set -euo pipefail
@@ -81,30 +91,69 @@ jobs:
           branch_pct = 100.0 if branches == 0 else covered_branches * 100.0 / branches
           overall_pct = float(totals['percent_covered'])
 
-          assert 0.0 <= line_pct <= 100.0
-          assert 0.0 <= branch_pct <= 100.0
-          assert 0.0 <= overall_pct <= 100.0
+          minimums = {
+              'overall': float(os.environ['COVERAGE_MIN_OVERALL']),
+              'line': float(os.environ['COVERAGE_MIN_LINE']),
+              'branch': float(os.environ['COVERAGE_MIN_BRANCH']),
+          }
+          measured = {
+              'overall': overall_pct,
+              'line': line_pct,
+              'branch': branch_pct,
+          }
+          failures = [
+              f'{name} coverage {measured[name]:.2f}% < required {minimums[name]:.2f}%'
+              for name in ('overall', 'line', 'branch')
+              if measured[name] + 1e-9 < minimums[name]
+          ]
+
+          evidence = {
+              'schema_version': '1.0',
+              'commit': os.environ['GITHUB_SHA'],
+              'workflow_run_id': int(os.environ['GITHUB_RUN_ID']),
+              'python': '3.11',
+              'pytest_cov': '7.0.0',
+              'coverage_py': '7.15.4',
+              'measured_files': len(data.get('files', {})),
+              'statements': statements,
+              'covered_lines': covered_lines,
+              'branches': branches,
+              'covered_branches': covered_branches,
+              'coverage_percent': measured,
+              'minimum_percent': minimums,
+              'status': 'FAIL' if failures else 'PASS',
+              'failures': failures,
+          }
+          Path('coverage-gate.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
 
           summary = (
-              '## Python coverage baseline\n\n'
-              f'- Overall (statements + branches): **{overall_pct:.2f}%**\n'
-              f'- Line coverage: **{line_pct:.2f}%** ({covered_lines}/{statements})\n'
-              f'- Branch coverage: **{branch_pct:.2f}%** ({covered_branches}/{branches})\n'
+              '## Python coverage gate\n\n'
+              f'- Overall: **{overall_pct:.2f}%** / minimum **{minimums["overall"]:.2f}%**\n'
+              f'- Line: **{line_pct:.2f}%** ({covered_lines}/{statements}) / minimum **{minimums["line"]:.2f}%**\n'
+              f'- Branch: **{branch_pct:.2f}%** ({covered_branches}/{branches}) / minimum **{minimums["branch"]:.2f}%**\n'
               f'- Measured files: **{len(data.get("files", {}))}**\n'
-              '- Gate mode: **BASELINE MEASUREMENT** — thresholds are set only after this measured run.\n'
+              f'- Gate: **{"FAIL" if failures else "PASS"}**\n'
           )
           print(summary)
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
               handle.write(summary)
+
+          if failures:
+              raise SystemExit('; '.join(failures))
           PY
 
       - name: Upload commit-bound coverage evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: python-coverage-${{ github.sha }}
           path: |
             coverage.xml
             coverage.json
+            coverage-gate.json
             htmlcov/
           if-no-files-found: error
           retention-days: 30
