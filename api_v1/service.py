@@ -540,6 +540,9 @@ def store_summary() -> dict[str, Any]:
     return {
         "mode": store.mode,
         "durable": store.durable,
+        "source": store.source,
+        "single_writer_attested": store.single_writer_attested,
+        "production_safe": store.production_safe,
         "records": store.counts(),
     }
 
