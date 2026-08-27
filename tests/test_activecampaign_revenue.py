@@ -19,7 +19,10 @@ from revenue.activecampaign_sync import (
     sync_account_event,
 )
 from revenue.engine import RevenueEngine
+from revenue.lifecycle import PaymentProof, RevenueState
 from revenue.marketing_profiles import MarketingProfile, MarketingProfileStore
+from revenue.revenue_pipeline import RevenueSignalPipeline, reset_revenue_pipeline
+from revenue.signals import RevenueSignal
 
 client = TestClient(cinema_main.app)
 ADMIN_SECRET = "M" * 48
@@ -30,11 +33,15 @@ def isolated_state(monkeypatch):
     monkeypatch.setenv("DSG_REVENUE_ADMIN_SECRET", ADMIN_SECRET)
     monkeypatch.delenv("ACTIVECAMPAIGN_API_URL", raising=False)
     monkeypatch.delenv("ACTIVECAMPAIGN_API_TOKEN", raising=False)
+    monkeypatch.delenv("DSG_REVENUE_EVENT_STORE", raising=False)
+    monkeypatch.delenv("DSG_REVENUE_LIFECYCLE_STORE", raising=False)
     billing.reset_engine(RevenueEngine(enforce=False))
     marketing_api.reset_store(MarketingProfileStore())
+    reset_revenue_pipeline()
     yield
     billing.reset_engine(RevenueEngine(enforce=False))
     marketing_api.reset_store(MarketingProfileStore())
+    reset_revenue_pipeline()
 
 
 def activate() -> tuple[str, str]:
@@ -110,7 +117,7 @@ def test_client_cannot_assert_payment_confirmed():
     assert response.status_code == 422
 
 
-def test_reconcile_does_not_promote_payment_linked_without_paid_invoice(monkeypatch):
+def test_reconcile_does_not_create_payment_or_lifecycle_truth(monkeypatch):
     _, account_id = activate()
     profile = marketing_api.get_store().upsert(
         account_id=account_id,
@@ -124,11 +131,11 @@ def test_reconcile_does_not_promote_payment_linked_without_paid_invoice(monkeypa
 
     calls = []
 
-    async def fake_sync(account, profile, *, event, source=None, config=None):
-        calls.append((account.account_id, event))
-        return {"sync_state": "SYNCED", "event": event}
+    async def fake_projection(account, profile, *, projection, source, signal):
+        calls.append((account.account_id, projection.state.value))
+        return {"sync_state": "SYNCED"}
 
-    monkeypatch.setattr(marketing_api, "sync_account_event", fake_sync)
+    pipeline = reset_revenue_pipeline(RevenueSignalPipeline(projection_sync=fake_projection))
     response = client.post(
         "/billing/marketing/reconcile",
         headers={"Authorization": f"Bearer {ADMIN_SECRET}"},
@@ -136,15 +143,24 @@ def test_reconcile_does_not_promote_payment_linked_without_paid_invoice(monkeypa
     assert response.status_code == 200
     body = response.json()
     assert body["checked"] == 1
-    assert body["eligible_from_paid_invoice"] == 0
     assert body["synced"] == 0
+    assert body["pending"] == 1
+    assert body["failed"] == 0
+    assert body["results"] == [
+        {
+            "account_id": account_id,
+            "state": "PENDING_NO_LIFECYCLE",
+            "lifecycle": None,
+        }
+    ]
+    assert pipeline.lifecycle.get(account_id) is None
     assert calls == []
     assert profile.marketing_consent is True
 
 
-def test_reconcile_promotes_only_after_scoped_paid_invoice_evidence(monkeypatch):
+def test_reconcile_projects_customer_only_after_authoritative_paid_invoice():
     _, account_id = activate()
-    marketing_api.get_store().upsert(
+    profile = marketing_api.get_store().upsert(
         account_id=account_id,
         email="paid@example.com",
         marketing_consent=True,
@@ -152,30 +168,60 @@ def test_reconcile_promotes_only_after_scoped_paid_invoice_evidence(monkeypatch)
     )
     account = billing.get_engine().accounts.get(account_id)
     assert account is not None
-    billing.get_engine().accounts.import_account(
-        replace(
-            account,
-            payment_linked=True,
-            stripe_paid_invoice_ids=["in_dsg_paid_001"],
-        )
-    )
 
     calls = []
 
-    async def fake_sync(account, profile, *, event, source=None, config=None):
-        calls.append((account.account_id, event, profile.email))
-        return {"sync_state": "SYNCED", "event": event}
+    async def fake_projection(account, profile, *, projection, source, signal):
+        calls.append((account.account_id, projection.state.value, signal))
+        return {"sync_state": "SYNCED", "projection": projection.public_view()}
 
-    monkeypatch.setattr(marketing_api, "sync_account_event", fake_sync)
+    pipeline = reset_revenue_pipeline(RevenueSignalPipeline(projection_sync=fake_projection))
+    asyncio.run(
+        pipeline.process_signal(
+            account=account,
+            profile=profile,
+            signal=RevenueSignal.CHECKOUT_STARTED,
+            source="stripe_checkout",
+            source_event_id="cs_live_reconcile_paid",
+            trusted_source=True,
+        )
+    )
+    proof = PaymentProof(
+        account_id=account_id,
+        source="stripe_paid_invoice",
+        source_id="in_dsg_paid_001",
+        livemode=True,
+        status="paid",
+        verified=True,
+        evidence_ref="stripe-webhook:evt_reconcile_paid",
+    )
+    asyncio.run(
+        pipeline.process_signal(
+            account=account,
+            profile=profile,
+            signal=RevenueSignal.PAYMENT_CONFIRMED,
+            source="stripe_webhook",
+            source_event_id="evt_reconcile_paid",
+            trusted_source=True,
+            payment_proof=proof,
+        )
+    )
+    assert pipeline.lifecycle.get(account_id).state == RevenueState.CUSTOMER
+    calls.clear()
+
     response = client.post(
         "/billing/marketing/reconcile",
         headers={"Authorization": f"Bearer {ADMIN_SECRET}"},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["eligible_from_paid_invoice"] == 1
+    assert body["checked"] == 1
     assert body["synced"] == 1
-    assert calls == [(account_id, "payment_confirmed", "paid@example.com")]
+    assert body["pending"] == 0
+    assert body["failed"] == 0
+    assert body["results"][0]["state"] == "SYNCED"
+    assert body["results"][0]["lifecycle"]["state"] == "CUSTOMER"
+    assert calls == [(account_id, "CUSTOMER", None)]
 
 
 def test_sync_writes_dsg_account_id_and_keeps_intent_tags_exclusive(monkeypatch):
