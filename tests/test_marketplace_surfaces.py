@@ -58,6 +58,26 @@ def test_landing_contains_live_proof_flow_and_fail_closed_contract():
     assert "channel:'api',activation_id" not in html
 
 
+def test_landing_closes_the_self_serve_checkout_loop_without_claiming_redirect_payment():
+    html = landing_html()
+    required = [
+        'id="checkoutButton"',
+        "'/billing/checkout/session'",
+        "plan:'metered'",
+        "body.state!=='CHECKOUT_CREATED_NOT_ENTITLED'",
+        "body.entitled!==false",
+        "'/billing/subscription'",
+        "subscription.subscription_active&&subscription.payment_linked",
+        "Waiting for signed Stripe webhook confirmation",
+        "only Z3-verified proofs are billable",
+        'set("badgeTeam","CONTACT SALES","warn")',
+    ]
+    for value in required:
+        assert value in html
+    assert "Request billing access" not in html
+    assert 'set("badgeTeam",live?"READY"' not in html
+
+
 def test_landing_exposes_every_supported_marketplace_status_truthfully():
     html = landing_html()
     expected = {
