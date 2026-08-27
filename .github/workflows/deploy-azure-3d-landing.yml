@@ -49,6 +49,7 @@ jobs:
           grep -q 'JetBrains Marketplace' azure-landing/index.html
           grep -q 'Checkout status: NOT VERIFIED / NOT LINKED' azure-landing/index.html
           cmp --silent azure-landing/index.html landing/index.html
+          node tests/landing_checkout_behavior.mjs azure-landing/index.html
           if grep -Eqi 'Trinity|tdealer01-crypto-dsg-control-plane|proofgate-github-action|dsg-stripe-app\.vercel\.app|planned paid control plane' azure-landing/index.html; then
             echo 'Retired-system reference found in Azure landing page' >&2
             exit 1
@@ -65,6 +66,23 @@ jobs:
 
           CINEMA_ORIGIN='https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io'
           VERIFY_URL="$CINEMA_ORIGIN/verify/evaluate"
+          CHECKOUT_URL="$CINEMA_ORIGIN/billing/checkout/session"
+
+          curl --fail-with-body --silent --show-error \
+            "$CINEMA_ORIGIN/openapi.json" \
+            > /tmp/cinema-openapi.json
+          jq -e \
+            '.paths["/billing/checkout/session"].post and .paths["/billing/subscription"].get' \
+            /tmp/cinema-openapi.json >/dev/null
+
+          CHECKOUT_CORS_CODE=$(curl --silent --show-error --output /dev/null --dump-header /tmp/checkout-cors.txt --write-out '%{http_code}' \
+            --request OPTIONS "$CHECKOUT_URL" \
+            --header "Origin: $ORIGIN" \
+            --header 'Access-Control-Request-Method: POST' \
+            --header 'Access-Control-Request-Headers: content-type,x-dsg-api-key' || true)
+          [[ "$CHECKOUT_CORS_CODE" == '200' ]]
+          tr -d '\r' < /tmp/checkout-cors.txt | grep -Fxiq "access-control-allow-origin: $ORIGIN"
+          tr -d '\r' < /tmp/checkout-cors.txt | grep -Eiq '^access-control-allow-headers:.*x-dsg-api-key'
 
           # Production can require X-DSG-API-Key when DSG_REVENUE_ENFORCE=1.
           # Exercise the same self-serve path available to a real browser user:

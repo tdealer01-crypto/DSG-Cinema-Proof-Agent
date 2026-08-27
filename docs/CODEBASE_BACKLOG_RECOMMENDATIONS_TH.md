@@ -34,6 +34,7 @@ Guardrail ที่ห้ามเปลี่ยน: billing ได้เฉพ
 |---|---|---|
 | ราคา | `free` 25 proofs; `metered` self-serve ที่ $0.05 ต่อ verified proof; Team $490 เป็น catalog offer เท่านั้น | Team Checkout พร้อมใช้งาน |
 | การเริ่มใช้ | `POST /billing/activate` ออก free entitlement แบบ idempotent และคืน next step | activation production ผ่านโดยไม่ probe |
+| browser key | landing เก็บ DSG API key ใน `sessionStorage` เฉพาะ tab, ย้าย key เก่าจาก `localStorage` ออก และมีปุ่ม Forget | การล้าง key ใน browser เท่ากับ revoke key ฝั่ง server |
 | การซื้อ | `POST /billing/checkout/session` รองรับเฉพาะ `metered` และคืน `CHECKOUT_CREATED_NOT_ENTITLED` | การสร้าง Session เท่ากับได้เงิน |
 | สิทธิ์ | signed, product/price-scoped Stripe webhook เป็นผู้เลื่อน plan | browser success URL เป็น payment proof |
 | usage | hash-chained ledger, `/billing/usage`, `/billing/report` และ Stripe meter sync มี implementation/test | settlement หรือรายได้ผ่าน audit แล้ว |
@@ -67,8 +68,9 @@ network หรือ credential เข้าไม่ถึง ให้สถ�
 
 Owner: ผู้ถือ Stripe test/live account และ revenue admin secret
 
-1. สร้าง activation id ใหม่ เรียก `/billing/activate` สองครั้ง และยืนยันว่าได้ account
-   เดิม/API key เดิมตาม idempotency contract
+1. สร้าง activation id ใหม่ เรียก `/billing/activate` ครั้งแรกและเก็บ API key ที่แสดง
+   ครั้งเดียว จากนั้นเรียกซ้ำด้วย activation id เดิม ต้องได้ `409 ACTIVATION_EXISTS`,
+   ไม่คืน API key ใหม่ และจำนวน account ต้องคงเดิมตาม idempotency contract
 2. ใช้ free proof หนึ่งครั้ง แล้วอ่าน `/billing/usage` เพื่อผูก receipt, account,
    quantity และ ledger sequence
 3. เรียก `/billing/checkout/session` ด้วย `plan=metered` และ checkout id คงที่;
@@ -102,12 +104,14 @@ Direct API/landing เป็น acquisition channel ที่พร้อมก�
 
 1. หลัง free activation แสดง `ใช้แล้ว / 25`, ราคาจริง `$0.05 / verified proof` และ
    CTA **Upgrade with Stripe**
-2. quota denial ต้องแสดง remediation และเริ่ม Checkout ได้โดยไม่ต้อง copy secret ไปมา
-3. หลัง redirect แสดง `Waiting for verified payment` และ poll subscription; ห้ามแสดง
+2. browser เก็บ key เฉพาะ tab, มีปุ่ม Forget ที่บอกชัดว่าไม่ได้ revoke key ฝั่ง server
+   และต้องไม่ส่ง key เข้า log, analytics หรือ URL
+3. quota denial ต้องแสดง remediation และเริ่ม Checkout ได้โดยไม่ต้อง copy secret ไปมา
+4. หลัง redirect แสดง `Waiting for verified payment` และ poll subscription; ห้ามแสดง
    “Paid” จาก query string
-4. หลัง webhook แสดง plan, current usage, last verified receipt และ link ไป billing portal
+5. หลัง webhook แสดง plan, current usage, last verified receipt และ link ไป billing portal
    เฉพาะเมื่อ route นั้นมีอยู่ใน live OpenAPI จริง
-5. emit funnel events ที่ไม่เก็บ API key/Stripe secret: `activation_succeeded`,
+6. emit funnel events ที่ไม่เก็บ API key/Stripe secret: `activation_succeeded`,
    `free_proof_verified`, `checkout_created`, `entitlement_verified`,
    `paid_proof_metered`, `meter_sync_failed`
 

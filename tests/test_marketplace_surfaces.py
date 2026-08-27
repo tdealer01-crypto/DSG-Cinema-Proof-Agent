@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import struct
+import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -62,20 +64,46 @@ def test_landing_closes_the_self_serve_checkout_loop_without_claiming_redirect_p
     html = landing_html()
     required = [
         'id="checkoutButton"',
+        'id="clearKeyButton"',
         "'/billing/checkout/session'",
         "plan:'metered'",
         "body.state!=='CHECKOUT_CREATED_NOT_ENTITLED'",
         "body.entitled!==false",
+        "checkoutUrl.hostname!=='checkout.stripe.com'",
         "'/billing/subscription'",
         "subscription.subscription_active&&subscription.payment_linked",
+        "SUBSCRIPTION_POLL_ATTEMPTS=60",
         "Waiting for signed Stripe webhook confirmation",
         "only Z3-verified proofs are billable",
+        "This does not revoke the server-side key",
+        "Metered usage has no hard cap",
         'set("badgeTeam","CONTACT SALES","warn")',
     ]
     for value in required:
         assert value in html
     assert "Request billing access" not in html
     assert 'set("badgeTeam",live?"READY"' not in html
+    assert "localStorage.setItem(KEY_STORE" not in html
+    assert "sessionStorage.setItem(SESSION_KEY_STORE" in html
+
+
+def test_landing_checkout_behavior_runs_in_javascript_without_network_calls():
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required to execute the landing checkout contract"
+    result = subprocess.run(
+        [
+            node,
+            str(ROOT / "tests" / "landing_checkout_behavior.mjs"),
+            str(ROOT / "azure-landing" / "index.html"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "landing checkout behavior: ok" in result.stdout
 
 
 def test_landing_exposes_every_supported_marketplace_status_truthfully():
