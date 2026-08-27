@@ -1,0 +1,204 @@
+name: Post Deploy V1 Persistence Audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/post-deploy-v1-persistence-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: post-deploy-v1-persistence-audit
+  cancel-in-progress: false
+
+jobs:
+  audit-current-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      V1_STORE_PATH: /revenue/v1-records.json
+      AUDITED_DEPLOYMENT_COMMIT: d49fab00a1696ed13e862748e53a2032d61fd461
+      PLAN_ID: plan_01m11bpgn7spnngsss2my8
+      EXECUTION_ID: exec_01m11bph7ypxhyxdhktvvp
+      PROOF_ID: proof_01m11bphtegy69rr1tda1y
+      RECEIPT_HASH: 3fe3965ce6d532c2813b59f63e33f268de37af09b1ba3532e7b9f02dc7121bdf
+
+    steps:
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Inspect current production storage and scale contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+          az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --output json > /tmp/cinema-current.json
+
+          python - <<'PY'
+          import json
+          import os
+
+          with open('/tmp/cinema-current.json', encoding='utf-8') as handle:
+              app = json.load(handle)
+
+          template = app['properties']['template']
+          containers = template.get('containers') or []
+          if not containers:
+              raise SystemExit('Cinema has no container template')
+
+          mounts = containers[0].get('volumeMounts') or []
+          if not any(item.get('mountPath') == '/revenue' for item in mounts):
+              raise SystemExit('Cinema /revenue mount is missing')
+
+          volumes = template.get('volumes') or []
+          if not any(item.get('storageType') == 'AzureFile' for item in volumes):
+              raise SystemExit('Cinema persistent volume is not AzureFile')
+
+          scale = template.get('scale') or {}
+          max_replicas = int(scale.get('maxReplicas') or 0)
+          if max_replicas != 1:
+              raise SystemExit(f'file-backed V1 store requires maxReplicas=1, found {max_replicas}')
+
+          env = {item.get('name'): item.get('value') for item in containers[0].get('env') or []}
+          if env.get('DSG_V1_STORE_PATH') != os.environ['V1_STORE_PATH']:
+              raise SystemExit('DSG_V1_STORE_PATH is not bound to the Azure Files path')
+          if env.get('DSG_V1_SINGLE_WRITER') != '1':
+              raise SystemExit('DSG_V1_SINGLE_WRITER=1 is not attested in the running template')
+          PY
+
+          CINEMA_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$CINEMA_FQDN"
+          echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
+
+      - name: Verify current runtime status and pre-deploy proof still exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/status" > /tmp/status-before.json
+          jq -e '
+            .status == "READY" and
+            .storage.mode == "file" and
+            .storage.durable == true and
+            .storage.single_writer_attested == true and
+            .storage.production_safe == true
+          ' /tmp/status-before.json >/dev/null
+
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/plans/$PLAN_ID" > /tmp/plan-before.json
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/executions/$EXECUTION_ID" > /tmp/execution-before.json
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/proofs/$PROOF_ID" > /tmp/proof-before.json
+
+          jq -e --arg id "$PLAN_ID" '.plan_id == $id and .plan_hash_verified == true' /tmp/plan-before.json >/dev/null
+          jq -e --arg id "$EXECUTION_ID" '.execution_id == $id and .status == "VERIFIED"' /tmp/execution-before.json >/dev/null
+          jq -e --arg id "$PROOF_ID" --arg hash "$RECEIPT_HASH" '
+            .proof_id == $id and
+            .receipt_hash == $hash and
+            .receipt_hash_verified == true and
+            .decision == "ALLOW" and
+            .verified == true and
+            .verification == "VERIFIED_GLOBAL_OPTIMUM"
+          ' /tmp/proof-before.json >/dev/null
+
+      - name: Force post-deploy revision without changing the proof store
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --set-env-vars \
+              DSG_V1_STORE_PATH="$V1_STORE_PATH" \
+              DSG_V1_SINGLE_WRITER=1 \
+              DSG_V1_POST_DEPLOY_AUDIT="$GITHUB_RUN_ID" \
+            --min-replicas 1 \
+            --max-replicas 1 \
+            --output none
+
+      - name: Verify the same proof after the post-deploy revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 72); do
+            CODE=$(curl --silent --show-error --output /tmp/status-after.json --write-out '%{http_code}' "$CINEMA_URL/api/v1/status" || true)
+            if [[ "$CODE" == "200" ]] && jq -e '
+              .status == "READY" and
+              .storage.mode == "file" and
+              .storage.durable == true and
+              .storage.single_writer_attested == true and
+              .storage.production_safe == true
+            ' /tmp/status-after.json >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == "72" ]]; then
+              echo 'Cinema did not return to a production-safe V1 storage state.' >&2
+              cat /tmp/status-after.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/plans/$PLAN_ID" > /tmp/plan-after.json
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/executions/$EXECUTION_ID" > /tmp/execution-after.json
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/proofs/$PROOF_ID" > /tmp/proof-after.json
+
+          jq -e --arg id "$PLAN_ID" '.plan_id == $id and .plan_hash_verified == true' /tmp/plan-after.json >/dev/null
+          jq -e --arg id "$EXECUTION_ID" '.execution_id == $id and .status == "VERIFIED"' /tmp/execution-after.json >/dev/null
+          jq -e --arg id "$PROOF_ID" --arg hash "$RECEIPT_HASH" '
+            .proof_id == $id and
+            .receipt_hash == $hash and
+            .receipt_hash_verified == true and
+            .decision == "ALLOW" and
+            .verified == true and
+            .verification == "VERIFIED_GLOBAL_OPTIMUM"
+          ' /tmp/proof-after.json >/dev/null
+
+          jq -n \
+            --arg result PASS \
+            --arg audit_commit "$GITHUB_SHA" \
+            --arg audited_deployment_commit "$AUDITED_DEPLOYMENT_COMMIT" \
+            --arg plan_id "$PLAN_ID" \
+            --arg execution_id "$EXECUTION_ID" \
+            --arg proof_id "$PROOF_ID" \
+            --arg receipt_hash "$RECEIPT_HASH" \
+            --arg store_path "$V1_STORE_PATH" \
+            --slurpfile before /tmp/status-before.json \
+            --slurpfile after /tmp/status-after.json \
+            '{
+              result:$result,
+              audit_commit:$audit_commit,
+              audited_deployment_commit:$audited_deployment_commit,
+              storage:{path:$store_path,mode:$after[0].storage.mode,durable:$after[0].storage.durable,source:$after[0].storage.source,single_writer_attested:$after[0].storage.single_writer_attested,production_safe:$after[0].storage.production_safe,azure_files:true,max_replicas:1},
+              records:{plan_id:$plan_id,execution_id:$execution_id,proof_id:$proof_id,receipt_hash:$receipt_hash,receipt_hash_verified:true},
+              status_before:$before[0].storage,
+              status_after:$after[0].storage
+            }' > /tmp/post-deploy-v1-persistence-audit.json
+          cat /tmp/post-deploy-v1-persistence-audit.json
+
+      - name: Upload post-deploy persistence evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-v1-persistence-${{ github.run_id }}
+          path: /tmp/post-deploy-v1-persistence-audit.json
+          if-no-files-found: error
+          retention-days: 30
