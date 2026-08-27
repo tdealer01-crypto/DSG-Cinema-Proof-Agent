@@ -1,14 +1,14 @@
 """Self-serve paid checkout for DSG verified execution.
 
 The existing revenue engine already owns entitlement, proof-bound metering,
-and signed Stripe webhook handling.  This module closes the missing step between
+and signed Stripe webhook handling. This module closes the missing step between
 free activation and a paid entitlement: it creates a Stripe-hosted Checkout
 Session for the configured *metered* recurring Price.
 
-Creating a Checkout Session does **not** grant entitlement.  The account remains
-on its current DSG plan until the existing signature-verified Stripe webhook
-path observes the scoped subscription event and updates the account.  This keeps
-browser redirects and client-provided state outside the trust boundary.
+Creating a Checkout Session does **not** grant entitlement. The account remains
+on its current DSG plan until the signature-verified Stripe webhook path observes
+scoped paid evidence. The successful server-created session is also recorded as
+a governed ``checkout_started`` revenue signal before its URL is returned.
 """
 
 from __future__ import annotations
@@ -25,7 +25,10 @@ from pydantic import BaseModel, Field
 
 from revenue import api as billing
 from .accounts import Account
+from .marketing_profiles import store_from_env
 from .pricing import get_plan
+from .revenue_pipeline import RevenuePipelineError, get_revenue_pipeline
+from .signals import RevenueSignal
 from .stripe_sync import (
     STRIPE_API_BASE,
     StripeConfig,
@@ -370,6 +373,37 @@ async def create_checkout_session(
             },
         )
 
+    # The server-created Stripe session is authoritative evidence that checkout
+    # started. Persist that state before disclosing the URL. A retry with the same
+    # checkout_id receives the same Stripe session and the same idempotent signal.
+    profile = store_from_env().get(account.account_id)
+    try:
+        governed = await get_revenue_pipeline().process_signal(
+            account=account,
+            profile=profile,
+            signal=RevenueSignal.CHECKOUT_STARTED,
+            source="stripe_checkout",
+            source_event_id=session_id,
+            payload={
+                "checkout_session_id": session_id,
+                "requested_plan": plan.plan,
+                "checkout_id_hash": hashlib.sha256(
+                    request.checkout_id.encode("utf-8")
+                ).hexdigest(),
+            },
+            trusted_source=True,
+        )
+    except RevenuePipelineError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "REVENUE_PIPELINE_UNAVAILABLE",
+                "message": str(exc),
+                "checkout_session_id": session_id,
+                "entitled": False,
+            },
+        ) from exc
+
     # Deliberately re-read the account and report its *current* entitlement.
     # Checkout creation is not payment evidence and must never flip these fields.
     current = billing.get_engine().accounts.get(account.account_id)
@@ -381,9 +415,10 @@ async def create_checkout_session(
         "checkout_url": checkout_url,
         "requested_plan": plan.plan,
         "account": current.public_view(),
+        "governed_revenue": governed,
         "next_step": (
             "Complete Stripe Checkout. DSG keeps the current entitlement until "
-            "a valid signed Stripe webhook confirms the scoped subscription."
+            "a valid signed Stripe webhook confirms a scoped paid invoice."
         ),
     }
 

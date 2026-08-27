@@ -1,12 +1,8 @@
-"""Marketing identity and lifecycle endpoints for DSG revenue.
-
-These routes never grant entitlement. Payment/customer transitions are emitted
-only by reconciliation against billing accounts that contain signed Stripe
-invoice evidence.
-"""
+"""Marketing identity and governed revenue-signal endpoints for DSG."""
 
 from __future__ import annotations
 
+from hashlib import sha256
 import hmac
 import os
 from typing import Literal, Optional
@@ -15,17 +11,10 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from revenue import api as billing
-from .activecampaign_sync import (
-    EVENT_CHECKOUT_ABANDONED,
-    EVENT_CHECKOUT_STARTED,
-    EVENT_DEMO_REQUESTED,
-    EVENT_LEAD,
-    EVENT_PAYMENT_CONFIRMED,
-    EVENT_TRIAL_STARTED,
-    config_from_env,
-    sync_account_event,
-)
+from .activecampaign_sync import config_from_env
 from .marketing_profiles import MarketingProfileStore, store_from_env
+from .revenue_pipeline import RevenuePipelineError, get_revenue_pipeline
+from .signals import RevenueSignal
 
 router = APIRouter(prefix="/billing/marketing", tags=["billing", "marketing"])
 
@@ -73,6 +62,11 @@ def _require_admin(authorization: Optional[str]) -> None:
         raise HTTPException(status_code=403, detail="invalid admin token")
 
 
+def _fallback_event_id(*parts: str) -> str:
+    material = "\x00".join(parts).encode("utf-8")
+    return "client_" + sha256(material).hexdigest()[:40]
+
+
 class IdentifyRequest(BaseModel):
     email: str = Field(
         min_length=3,
@@ -86,28 +80,52 @@ class IdentifyRequest(BaseModel):
         max_length=32,
         pattern=r"^[a-z][a-z0-9_]*$",
     )
+    event_id: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
 
 
 class LifecycleEventRequest(BaseModel):
     event: Literal[
+        "email_click",
+        "pricing_visit",
         "demo_requested",
         "trial_started",
         "checkout_started",
         "checkout_abandoned",
     ]
+    event_id: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
 
 
 @router.get("/status")
 def marketing_status() -> dict:
     config = config_from_env()
     store = get_store()
+    pipeline = get_revenue_pipeline()
     return {
         "activecampaign_configured": config.configured,
         "list_id": config.list_id,
         "account_id_field_id": config.account_id_field_id,
         "profile_store_durable": store.path is not None,
         "profiles": len(store.all()),
-        "payment_truth": "signed Stripe invoice evidence only",
+        "event_store_durable": bool((os.getenv("DSG_REVENUE_EVENT_STORE") or "").strip()),
+        "lifecycle_store_durable": bool(
+            (os.getenv("DSG_REVENUE_LIFECYCLE_STORE") or "").strip()
+        ),
+        "lifecycle_accounts": sum(
+            1 for profile in store.all()
+            if pipeline.lifecycle.get(profile.account_id) is not None
+        ),
+        "payment_truth": "signature-verified scoped Stripe invoice.paid evidence only",
+        "crm_truth": "downstream projection only; ActiveCampaign cannot grant entitlement",
     }
 
 
@@ -123,15 +141,33 @@ async def identify(
         marketing_consent=request.marketing_consent,
         source=request.source or account.channel,
     )
-    sync = await sync_account_event(
-        account,
-        profile,
-        event=EVENT_LEAD,
-        source=profile.source,
+    event_id = request.event_id or _fallback_event_id(
+        account.account_id,
+        "lead_created",
+        request.email.strip().lower(),
+        str(bool(request.marketing_consent)),
+        profile.source,
     )
+    try:
+        governed = await get_revenue_pipeline().process_signal(
+            account=account,
+            profile=profile,
+            signal=RevenueSignal.LEAD_CREATED,
+            source=profile.source,
+            source_event_id=event_id,
+            payload={
+                "email_hash": sha256(request.email.strip().lower().encode("utf-8")).hexdigest(),
+                "marketing_consent": bool(request.marketing_consent),
+                "source": profile.source,
+            },
+            trusted_source=False,
+        )
+    except RevenuePipelineError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "profile": profile.public_view(),
-        "marketing_sync": sync,
+        "governed_revenue": governed,
+        "marketing_sync": governed.get("marketing_sync"),
     }
 
 
@@ -142,33 +178,42 @@ async def lifecycle_event(
 ) -> dict:
     account = _require_account(x_dsg_api_key)
     profile = get_store().get(account.account_id)
-    sync = await sync_account_event(
-        account,
-        profile,
-        event=request.event,
-        source=profile.source if profile else account.channel,
+    source = profile.source if profile else account.channel
+    event_id = request.event_id or _fallback_event_id(
+        account.account_id,
+        request.event,
+        source,
     )
+    try:
+        governed = await get_revenue_pipeline().process_signal(
+            account=account,
+            profile=profile,
+            signal=request.event,
+            source=source,
+            source_event_id=event_id,
+            payload={"signal": request.event},
+            trusted_source=False,
+        )
+    except RevenuePipelineError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "account_id": account.account_id,
-        "marketing_sync": sync,
+        "governed_revenue": governed,
+        "marketing_sync": governed.get("marketing_sync"),
     }
 
 
 @router.post("/reconcile")
-async def reconcile_paid_customers(
+async def reconcile_marketing_projection(
     authorization: Optional[str] = Header(default=None),
 ) -> dict:
-    """Promote marketing lifecycle only from recorded signed Stripe invoices.
+    """Retry downstream CRM projection without promoting lifecycle/payment truth."""
 
-    ``payment_linked`` alone is insufficient because a trialing subscription can
-    be linked without paid revenue. At least one scoped ``invoice.paid`` id must
-    already exist on the DSG account before customer/onboarding tags are emitted.
-    """
     _require_admin(authorization)
     engine = billing.get_engine()
     store = get_store()
+    pipeline = get_revenue_pipeline()
     checked = 0
-    eligible = 0
     synced = 0
     pending = 0
     failed = 0
@@ -185,19 +230,27 @@ async def reconcile_paid_customers(
                 }
             )
             continue
-        if not account.stripe_paid_invoice_ids:
-            continue
-        eligible += 1
-        sync = await sync_account_event(
-            account,
-            profile,
-            event=EVENT_PAYMENT_CONFIRMED,
+
+        result = await pipeline.sync_current_projection(
+            account=account,
+            profile=profile,
             source=profile.source,
         )
-        state = sync.get("sync_state")
+        sync = result.get("marketing_sync")
+        state = (
+            sync.get("sync_state")
+            if isinstance(sync, dict)
+            else result.get("sync_state", "UNKNOWN")
+        )
         if state == "SYNCED":
             synced += 1
-        elif state in {"PENDING_CONFIGURATION", "SKIPPED_NO_PROFILE"}:
+        elif state in {
+            "PENDING_CONFIGURATION",
+            "PENDING_NO_LIFECYCLE",
+            "SKIPPED_NO_PROFILE",
+            "SKIPPED_NO_CONSENT",
+            "SKIPPED_NO_EMAIL",
+        }:
             pending += 1
         elif state == "FAILED":
             failed += 1
@@ -205,16 +258,20 @@ async def reconcile_paid_customers(
             {
                 "account_id": account.account_id,
                 "state": state,
+                "lifecycle": result.get("lifecycle"),
             }
         )
 
     return {
         "checked": checked,
-        "eligible_from_paid_invoice": eligible,
         "synced": synced,
         "pending": pending,
         "failed": failed,
         "results": results,
+        "truth_boundary": (
+            "reconcile retries ActiveCampaign projection only; "
+            "it never creates CUSTOMER or payment proof"
+        ),
     }
 
 
