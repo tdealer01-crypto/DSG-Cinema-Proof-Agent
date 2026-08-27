@@ -1,11 +1,18 @@
 """Record store for plans, executions, evidence, and proofs.
 
-Truth boundary, stated plainly: with `DSG_V1_STORE_PATH` set this is a
-single-file JSON store guarded by an advisory file lock — correct for one
-replica and durable across restarts. Without it the store is process memory,
-which loses records on restart. `/api/v1/status` reports which mode is live, so
-a UI never has to guess whether a proof it was shown will still exist tomorrow.
-Multi-replica deployments need a transactional store; see REVENUE_AUTOMATION.md.
+Truth boundary, stated plainly:
+
+- `DSG_V1_STORE_PATH` is the explicit v1 persistence path.
+- When it is unset but Cinema already has the durable revenue Azure Files mount,
+  v1 automatically stores `v1-records.json` beside the revenue ledger/account
+  files. This closes the gap where billing survived a revision but plan/proof
+  records silently stayed in process memory.
+- With no durable path at all, the store remains process memory and
+  `/api/v1/status` reports `durable: false`.
+
+The JSON-file backend is intended for one writer. Production therefore pairs it
+with a single-replica deployment guard. A future multi-replica deployment should
+move these records to a transactional store rather than weakening this boundary.
 """
 
 from __future__ import annotations
@@ -16,15 +23,48 @@ import os
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 COLLECTIONS = ("plans", "executions", "proofs")
+_REVENUE_STORE_VARS = ("DSG_REVENUE_LEDGER_STORE", "DSG_REVENUE_ACCOUNT_STORE")
+
+
+def resolve_store_path(
+    path: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[Path], str]:
+    """Resolve v1 persistence without inventing a second production volume.
+
+    Precedence is explicit v1 path -> existing durable revenue mount -> memory.
+    `source` is deliberately non-secret so status/debugging can say why a record
+    is persistent without exposing the filesystem path.
+    """
+    source = env if env is not None else os.environ
+    if path is not None:
+        raw = path.strip()
+        return (Path(raw), "explicit") if raw else (None, "memory")
+
+    explicit = (source.get("DSG_V1_STORE_PATH") or "").strip()
+    if explicit:
+        return Path(explicit), "explicit"
+
+    for name in _REVENUE_STORE_VARS:
+        revenue_path = (source.get(name) or "").strip()
+        if revenue_path:
+            return Path(revenue_path).parent / "v1-records.json", "revenue_mount"
+
+    return None, "memory"
 
 
 class RecordStore:
-    def __init__(self, path: Optional[str] = None) -> None:
-        raw = (path if path is not None else os.getenv("DSG_V1_STORE_PATH", "")).strip()
-        self.path: Optional[Path] = Path(raw) if raw else None
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        *,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        self.path, self.source = resolve_store_path(path, env)
+        self._env = env if env is not None else os.environ
         self._lock = threading.RLock()
         self._data: dict[str, dict[str, Any]] = {name: {} for name in COLLECTIONS}
         if self.path is not None:
@@ -41,6 +81,22 @@ class RecordStore:
     @property
     def mode(self) -> str:
         return "file" if self.durable else "memory"
+
+    @property
+    def single_writer_attested(self) -> bool:
+        if not self.durable:
+            return False
+        value = (
+            self._env.get("DSG_V1_SINGLE_WRITER")
+            or self._env.get("DSG_REVENUE_SINGLE_WRITER")
+            or ""
+        )
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @property
+    def production_safe(self) -> bool:
+        """File persistence is safe only when deployment attests one writer."""
+        return self.durable and self.single_writer_attested
 
     def _load(self) -> None:
         if self.path is None or not self.path.exists():
