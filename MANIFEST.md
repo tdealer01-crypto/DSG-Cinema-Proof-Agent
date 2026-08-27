@@ -43,11 +43,13 @@ The machine-readable channel state is
 
 ## Verification coverage
 
-- `tests/test_z3_main.py`: exact solver and proof behavior.
-- `tests/test_cinema_main.py`: Cinema, CORS, bounded policy, and fail-closed proof behavior.
-- `tests/test_marketplace_surfaces.py`: shared UI, status labels, links, and manifest consistency.
-- `tests/test_revenue.py`: pricing, atomic quota enforcement, ledger, Stripe scope/order/idempotency, API billing.
-- `tests/test_channel_delivery.py`: activation, channel attribution, remediation, and diagnosis.
+The complete workflow/test/E2E inventory and coverage truth boundary is maintained in:
+
+- [`docs/CI_CD_TEST_E2E_COVERAGE.md`](docs/CI_CD_TEST_E2E_COVERAGE.md)
+
+Current reviewed inventory: **43 GitHub Actions workflow files**, **40 primary `tests/test_*.py` modules**, two additional test/check utilities, and one additional hackathon client test module.
+
+Important distinction: the repository has broad executable test and E2E surfaces, but **numeric line/branch source coverage is not currently measured by CI** because no `pytest-cov`/coverage instrumentation is configured in the reviewed runtime dependency/workflow set. No coverage percentage should be claimed without a commit-bound coverage report.
 
 ## Commercial truth boundary
 
@@ -60,5 +62,5 @@ The machine-readable channel state is
   paid-invoice evidence is reported, separately from usage, and no independent
   financial audit is claimed.
 
-See `README.md`, `CHANNEL_DELIVERY.md`, and `REVENUE_AUTOMATION.md` for the
-current operating contract.
+See `README.md`, `CHANNEL_DELIVERY.md`, `REVENUE_AUTOMATION.md`, and
+`docs/CI_CD_TEST_E2E_COVERAGE.md` for the current operating and verification contract.
