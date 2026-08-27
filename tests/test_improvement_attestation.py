@@ -49,10 +49,13 @@ def token(**overrides) -> str:
         "sub": "repo:tdealer01-crypto/dsg-agi-simulation:ref:refs/heads/master",
         "repository": "tdealer01-crypto/dsg-agi-simulation",
         "repository_id": "1263153975",
+        "repository_owner_id": "260597462",
         "repository_visibility": "private",
         "ref": "refs/heads/master",
         "sha": "a" * 40,
         "workflow_ref": "tdealer01-crypto/dsg-agi-simulation/.github/workflows/governed-self-evolution.yml@refs/heads/master",
+        "workflow_sha": "a" * 40,
+        "runner_environment": "github-hosted",
         "run_id": "4242",
         "run_attempt": "1",
         "event_name": "workflow_dispatch",
@@ -133,6 +136,8 @@ def test_oidc_and_raw_evidence_verify_deterministically():
     envelope, artifacts = envelope_and_artifacts()
     first = verify_raw_improvement_evidence(envelope, artifacts, identity)
     second = verify_raw_improvement_evidence(envelope, artifacts, identity)
+    assert identity.workflowSha == "a" * 40
+    assert identity.runnerEnvironment == "github-hosted"
     assert first.verified is True
     assert first.rawEvidenceVerified is True
     assert first.verification == "VERIFIED_RAW_EVIDENCE"
@@ -141,11 +146,22 @@ def test_oidc_and_raw_evidence_verify_deterministically():
     assert set(first.artifactDigests) == {"metric", "test_output", "build_output"}
 
 
-def test_oidc_rejects_wrong_audience_and_repository_id():
+def test_oidc_rejects_wrong_audience_and_repository_identity():
     with pytest.raises(OidcVerificationError, match="OIDC_AUDIENCE_MISMATCH"):
         verify_github_actions_oidc(token(aud="wrong-audience"), JWKS)
     with pytest.raises(OidcVerificationError, match="OIDC_REPOSITORY_ID_MISMATCH"):
         verify_github_actions_oidc(token(repository_id="999"), JWKS)
+    with pytest.raises(OidcVerificationError, match="OIDC_REPOSITORY_OWNER_ID_MISMATCH"):
+        verify_github_actions_oidc(token(repository_owner_id="999"), JWKS)
+
+
+def test_oidc_rejects_movable_or_untrusted_execution_identity():
+    with pytest.raises(OidcVerificationError, match="OIDC_WORKFLOW_SHA_MISMATCH"):
+        verify_github_actions_oidc(token(workflow_sha="c" * 40), JWKS)
+    with pytest.raises(OidcVerificationError, match="OIDC_RUNNER_ENVIRONMENT_NOT_ALLOWED"):
+        verify_github_actions_oidc(token(runner_environment="self-hosted"), JWKS)
+    with pytest.raises(OidcVerificationError, match="OIDC_EVENT_NOT_ALLOWED"):
+        verify_github_actions_oidc(token(event_name="pull_request"), JWKS)
 
 
 def test_raw_evidence_blocks_tampered_bytes():
