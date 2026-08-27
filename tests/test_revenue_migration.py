@@ -314,20 +314,28 @@ def test_workflows_require_manual_parity_before_deploy_can_keep_postgres_enabled
     assert deploy.index(marker_gate) < deploy.index(secret_binding)
     assert "Merely adding the GitHub\n          # secret or merging this workflow must never switch" in deploy
     assert "DSG_REVENUE_DATABASE_URL= DSG_REVENUE_POSTGRES_ENABLED=0" in deploy
+    assert "Refusing an ordinary deployment until the cutover workflow" in deploy
+    assert deploy.index("CURRENT_REVENUE_FREEZE_MARKER") < deploy.index(
+        "            DSG_REVENUE_WRITE_FROZEN=0"
+    )
 
     positions = [
         cutover.index("CUTOVER_REVENUE_TO_POSTGRES"),
-        cutover.index("DSG_REVENUE_WRITE_FROZEN=1"),
-        cutover.index("az containerapp ingress disable"),
+        cutover.index('FREEZE_SUFFIX="freeze-'),
         cutover.index("scripts/migrate_revenue_store.py apply"),
         cutover.index("scripts/migrate_revenue_store.py verify"),
         cutover.index("DSG_REVENUE_DATABASE_URL=secretref:revenue-database-url"),
-        cutover.rindex("az containerapp ingress enable"),
-        cutover.rindex("DSG_REVENUE_WRITE_FROZEN=0"),
+        cutover.index('COMMIT_SUFFIX="commit-'),
+        cutover.index("replay_github_marketplace_queue /tmp/github-marketplace-before-unfreeze.json"),
+        cutover.index('UNFREEZE_SUFFIX="unfreeze-'),
+        cutover.index("replay_github_marketplace_queue /tmp/github-marketplace-final.json"),
     ]
     assert positions == sorted(positions)
+    assert "az containerapp ingress disable" not in cutover
     assert "ARCHIVE_AND_REPLACE_DIVERGENT_TARGET" in cutover
     assert "restoring the unchanged file stores" in cutover
+    assert "POSTGRES_RECOVERY_REQUIRED=1" in cutover
+    assert "/marketplace/github/replay-pending" in cutover
 
     production_mutators = (
         "apply-guarded-migration.yml",

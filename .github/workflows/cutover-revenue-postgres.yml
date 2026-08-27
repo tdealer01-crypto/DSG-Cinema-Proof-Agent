@@ -43,6 +43,7 @@ jobs:
       - name: Refuse an implicit or non-main cutover
         env:
           DSG_REVENUE_DATABASE_URL: ${{ secrets.DSG_REVENUE_DATABASE_URL }}
+          DSG_REVENUE_ADMIN_SECRET: ${{ secrets.DSG_REVENUE_ADMIN_SECRET }}
           CUTOVER_CONFIRMATION: ${{ inputs.confirmation }}
         shell: bash
         run: |
@@ -59,6 +60,11 @@ jobs:
             echo 'The production DSG_REVENUE_DATABASE_URL secret is not configured.' >&2
             exit 1
           fi
+          if (( ${#DSG_REVENUE_ADMIN_SECRET} < 32 )); then
+            echo 'The production DSG_REVENUE_ADMIN_SECRET is missing or too short.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$DSG_REVENUE_ADMIN_SECRET"
           echo 'Explicit production cutover confirmation accepted; database URI not printed.'
 
       - name: Set up migration runner
@@ -74,6 +80,7 @@ jobs:
           python -m pytest -q \
             tests/test_revenue_migration.py \
             tests/test_cinema_main.py \
+            tests/test_github_marketplace.py \
             tests/test_revenue.py \
             tests/test_guarded_mutation.py
 
@@ -87,6 +94,7 @@ jobs:
       - name: Freeze, migrate, prove parity, and unfreeze
         env:
           DSG_REVENUE_DATABASE_URL: ${{ secrets.DSG_REVENUE_DATABASE_URL }}
+          DSG_REVENUE_ADMIN_SECRET: ${{ secrets.DSG_REVENUE_ADMIN_SECRET }}
         shell: bash
         run: |
           set -euo pipefail
@@ -101,6 +109,15 @@ jobs:
               ((attempt++))
             done
             return 1
+          }
+
+          replay_github_marketplace_queue() {
+            local output="$1"
+            curl --fail-with-body --silent --show-error \
+              --request POST "$CINEMA_URL/marketplace/github/replay-pending" \
+              --header "Authorization: Bearer $DSG_REVENUE_ADMIN_SECRET" \
+              --output "$output"
+            jq -e '.status == "PASS" and .pending == 0' "$output" >/dev/null
           }
 
           wait_for_revision() {
@@ -150,6 +167,61 @@ jobs:
             echo "Cutover requires single-revision mode; live mode is ${REVISION_MODE:-unknown}." >&2
             exit 1
           fi
+
+          ROLLBACK_REQUIRED=0
+          POSTGRES_RECOVERY_REQUIRED=0
+          recover_on_exit() {
+            local status=$?
+            if [[ "$status" != "0" && "$ROLLBACK_REQUIRED" == "1" ]]; then
+              set +e
+              echo 'Cutover did not complete; restoring the unchanged file stores.' >&2
+              ROLLBACK_SUFFIX="rollback-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
+              if az containerapp update \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --set-env-vars \
+                  DSG_REVENUE_DATABASE_URL= \
+                  DSG_REVENUE_POSTGRES_ENABLED=0 \
+                  DSG_REVENUE_WRITE_FROZEN=0 \
+                --max-replicas "$ORIGINAL_MAX_REPLICAS" \
+                --revision-suffix "$ROLLBACK_SUFFIX" \
+                --output none \
+                && az containerapp ingress enable \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --type external --target-port 8000 --transport http \
+                --allow-insecure false --output none \
+                && wait_for_revision "$CINEMA_APP--$ROLLBACK_SUFFIX" 0 0; then
+                if replay_github_marketplace_queue /tmp/github-marketplace-rollback.json; then
+                  echo 'File-store rollback and queued-delivery replay completed.' >&2
+                else
+                  echo 'CRITICAL: file store is restored but queued Marketplace replay did not verify.' >&2
+                fi
+              else
+                echo 'CRITICAL: file-store rollback did not verify; queued deliveries were left durable for recovery.' >&2
+              fi
+              echo 'PostgreSQL/archive rows were retained for diagnosis.' >&2
+            elif [[ "$status" != "0" && "$POSTGRES_RECOVERY_REQUIRED" == "1" ]]; then
+              set +e
+              echo 'PostgreSQL is authoritative; restoring the write freeze for safe recovery.' >&2
+              RECOVERY_SUFFIX="recovery-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
+              if az containerapp update \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --set-env-vars DSG_REVENUE_WRITE_FROZEN=1 DSG_REVENUE_POSTGRES_ENABLED=1 \
+                --revision-suffix "$RECOVERY_SUFFIX" --output none \
+                && az containerapp ingress enable \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --type external --target-port 8000 --transport http \
+                --allow-insecure false --output none \
+                && wait_for_revision "$CINEMA_APP--$RECOVERY_SUFFIX" 1 1; then
+                echo 'The database remains authoritative and read-only; rerun this workflow to resume.' >&2
+              else
+                echo 'CRITICAL: PostgreSQL remains authoritative, but the recovery write freeze could not be verified.' >&2
+              fi
+            fi
+            trap - EXIT
+            exit "$status"
+          }
+          trap recover_on_exit EXIT
+
           CURRENT_POSTGRES_MARKER=$(az containerapp show \
             --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
             --query "properties.template.containers[0].env[?name=='DSG_REVENUE_POSTGRES_ENABLED'].value | [0]" \
@@ -200,6 +272,15 @@ jobs:
                 "$(jq -r '.ledger.entries' /tmp/billing-resume.json)"
               test "$(jq -r '.target.ledger.head_hash' /tmp/postgres-resume.json)" = \
                 "$(jq -r '.ledger.head_hash' /tmp/billing-resume.json)"
+            fi
+
+            # From this point, any failed recovery must leave PostgreSQL frozen.
+            # Signed GitHub Marketplace purchases accepted during the freeze are
+            # applied while normal writes are still closed.
+            POSTGRES_RECOVERY_REQUIRED=1
+            replay_github_marketplace_queue /tmp/github-marketplace-resume-before.json
+
+            if [[ "$CURRENT_FREEZE_MARKER" == "1" ]]; then
               retry az containerapp secret set \
                 --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
                 --secrets "revenue-database-url=$DSG_REVENUE_DATABASE_URL" --output none
@@ -225,6 +306,9 @@ jobs:
               [[ "$attempt" == "60" ]] && { echo 'PostgreSQL resume did not become writable; no file rollback attempted.' >&2; exit 1; }
               sleep 5
             done
+            # Catch a delivery that observed the frozen revision immediately
+            # before the single-revision swap completed.
+            replay_github_marketplace_queue /tmp/github-marketplace-resume-final.json
             UNFROZEN_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
               --request POST "$CINEMA_URL/solve" \
               --header 'Content-Type: application/json' --data '{}')
@@ -235,9 +319,12 @@ jobs:
             jq -n \
               --slurpfile final /tmp/billing-final.json \
               --slurpfile database /tmp/postgres-final.json \
-              '{cutover:"VERIFIED_RESUME",storage:$final[0].storage,ledger:$final[0].ledger,database:$database[0].target,source:null,migration_action:"resume",archive_id:null,archived:{}}' \
+              --slurpfile replay_before /tmp/github-marketplace-resume-before.json \
+              --slurpfile replay_final /tmp/github-marketplace-resume-final.json \
+              '{cutover:"VERIFIED_RESUME",storage:$final[0].storage,ledger:$final[0].ledger,database:$database[0].target,source:null,migration_action:"resume",archive_id:null,archived:{},github_marketplace_replay:{before:$replay_before[0],final:$replay_final[0]}}' \
               > /tmp/cutover-evidence.json
             cat /tmp/cutover-evidence.json
+            POSTGRES_RECOVERY_REQUIRED=0
             exit 0
           fi
 
@@ -258,33 +345,11 @@ jobs:
           ' /tmp/v1-before.json >/dev/null
 
           ROLLBACK_REQUIRED=1
-          rollback() {
-            local status=$?
-            if [[ "$ROLLBACK_REQUIRED" == "1" ]]; then
-              set +e
-              echo 'Cutover did not complete; restoring the unchanged file stores.' >&2
-              az containerapp update \
-                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
-                --set-env-vars \
-                  DSG_REVENUE_DATABASE_URL= \
-                  DSG_REVENUE_POSTGRES_ENABLED=0 \
-                  DSG_REVENUE_WRITE_FROZEN=0 \
-                --max-replicas "$ORIGINAL_MAX_REPLICAS" \
-                --revision-suffix "rollback-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}" \
-                --output none
-              az containerapp ingress enable \
-                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
-                --type external --target-port 8000 --transport http \
-                --allow-insecure false --output none
-              echo 'Rollback requested. PostgreSQL/archive rows were retained for diagnosis.' >&2
-            fi
-            exit "$status"
-          }
-          trap rollback EXIT
 
           # First make the file-backed revision read-only while it is still
-          # observable. Stripe receives 503 during this short window and retries
-          # signed webhook deliveries instead of having them accepted and lost.
+          # observable. Stripe receives 503 and retries; verified GitHub
+          # Marketplace deliveries are accepted into the independent durable
+          # queue and replayed after PostgreSQL becomes authoritative.
           FREEZE_SUFFIX="freeze-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
           retry az containerapp update \
             --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
@@ -326,9 +391,6 @@ jobs:
             "$(jq -r '.ledger.entries' /tmp/billing-stable.json)"
           test "$(jq -r '.ledger.head_hash' /tmp/billing-frozen.json)" = \
             "$(jq -r '.ledger.head_hash' /tmp/billing-stable.json)"
-
-          retry az containerapp ingress disable \
-            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --output none
 
           STORAGE_KEY=$(az storage account keys list \
             --resource-group "$RESOURCE_GROUP" --account-name "$REVENUE_STORAGE_ACCOUNT" \
@@ -403,10 +465,6 @@ jobs:
             --revision-suffix "$POSTGRES_SUFFIX" \
             --output none
           wait_for_revision "$CINEMA_APP--$POSTGRES_SUFFIX" 0 1
-          retry az containerapp ingress enable \
-            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
-            --type external --target-port 8000 --transport http \
-            --allow-insecure false --output none
 
           for attempt in $(seq 1 60); do
             if curl --silent --fail --show-error "$CINEMA_URL/billing/status" \
@@ -451,6 +509,8 @@ jobs:
           # because a successful unfreeze could accept a new PostgreSQL write
           # before a later probe fails.
           ROLLBACK_REQUIRED=0
+          POSTGRES_RECOVERY_REQUIRED=1
+          replay_github_marketplace_queue /tmp/github-marketplace-before-unfreeze.json
           UNFREEZE_SUFFIX="unfreeze-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
           retry az containerapp update \
             --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
@@ -470,9 +530,13 @@ jobs:
                 /tmp/v1-final.json >/dev/null; then
               break
             fi
-            [[ "$attempt" == "60" ]] && { echo 'PostgreSQL revision did not unfreeze cleanly.' >&2; exit 1; }
-            sleep 5
-          done
+              [[ "$attempt" == "60" ]] && { echo 'PostgreSQL revision did not unfreeze cleanly.' >&2; exit 1; }
+              sleep 5
+            done
+          # The second pass closes the revision-swap race: after this health
+          # probe, new webhook deliveries apply directly instead of entering the
+          # frozen queue.
+          replay_github_marketplace_queue /tmp/github-marketplace-final.json
           SOURCE_ENTRIES=$(jq -r '.source.ledger.entries' /tmp/source-summary.json)
           SOURCE_ACCOUNTS=$(jq -r '.source.accounts' /tmp/source-summary.json)
           FINAL_ENTRIES=$(jq -r '.ledger.entries' /tmp/billing-final.json)
@@ -500,9 +564,12 @@ jobs:
             --slurpfile migration /tmp/migration-result.json \
             --slurpfile final /tmp/billing-final.json \
             --slurpfile database /tmp/postgres-final.json \
-            '{cutover:"VERIFIED",storage:$final[0].storage,ledger:$final[0].ledger,database:$database[0].target,source:$source[0].source,migration_action:$migration[0].action,archive_id:$migration[0].archive_id,archived:$migration[0].archived}' \
+            --slurpfile replay_before /tmp/github-marketplace-before-unfreeze.json \
+            --slurpfile replay_final /tmp/github-marketplace-final.json \
+            '{cutover:"VERIFIED",storage:$final[0].storage,ledger:$final[0].ledger,database:$database[0].target,source:$source[0].source,migration_action:$migration[0].action,archive_id:$migration[0].archive_id,archived:$migration[0].archived,github_marketplace_replay:{before:$replay_before[0],final:$replay_final[0]}}' \
             > /tmp/cutover-evidence.json
           cat /tmp/cutover-evidence.json
+          POSTGRES_RECOVERY_REQUIRED=0
 
       - name: Upload non-secret cutover evidence
         uses: actions/upload-artifact@v4

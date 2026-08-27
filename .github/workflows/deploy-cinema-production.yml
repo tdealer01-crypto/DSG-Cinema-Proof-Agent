@@ -367,6 +367,7 @@ jobs:
           # secret or merging this workflow must never switch a populated ledger.
           # Only cutover-revenue-postgres.yml writes this marker after parity.
           REVENUE_POSTGRES_ENABLED=0
+          CURRENT_REVENUE_FREEZE_MARKER=0
           if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
             CURRENT_POSTGRES_MARKER=$(az containerapp show \
               --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
@@ -374,6 +375,15 @@ jobs:
               --output tsv 2>/dev/null || true)
             if [[ "$CURRENT_POSTGRES_MARKER" == "1" ]]; then
               REVENUE_POSTGRES_ENABLED=1
+            fi
+            CURRENT_REVENUE_FREEZE_MARKER=$(az containerapp show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query "properties.template.containers[0].env[?name=='DSG_REVENUE_WRITE_FROZEN'].value | [0]" \
+              --output tsv 2>/dev/null || true)
+            if [[ "$CURRENT_REVENUE_FREEZE_MARKER" == "1" ]]; then
+              echo 'Live revenue writes are frozen for PostgreSQL cutover recovery.' >&2
+              echo 'Refusing an ordinary deployment until the cutover workflow verifies and clears the freeze.' >&2
+              exit 1
             fi
           fi
 

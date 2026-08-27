@@ -40,7 +40,7 @@ from marketplace_verification import (
     target_decision as verification_target_decision,
 )
 from revenue import api as billing
-from revenue.cutover import WRITE_METHODS, writes_frozen
+from revenue.cutover import CONTROLLED_FREEZE_WRITE_PATHS, WRITE_METHODS, writes_frozen
 from revenue.stripe_marketplace import get_store as get_stripe_marketplace_store
 from revenue.stripe_sync import SignatureError, verify_webhook_signature
 
@@ -71,7 +71,11 @@ app.add_middleware(
 @app.middleware("http")
 async def revenue_cutover_write_freeze(request: Request, call_next):
     """Make the live service read-only while storage parity is established."""
-    if request.method in WRITE_METHODS and writes_frozen():
+    if (
+        request.method in WRITE_METHODS
+        and writes_frozen()
+        and request.url.path not in CONTROLLED_FREEZE_WRITE_PATHS
+    ):
         return JSONResponse(
             status_code=503,
             content={

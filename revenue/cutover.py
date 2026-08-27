@@ -7,6 +7,12 @@ from typing import Mapping
 
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+CONTROLLED_FREEZE_WRITE_PATHS = frozenset(
+    {
+        "/marketplace/github/webhook",
+        "/marketplace/github/replay-pending",
+    }
+)
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
@@ -32,4 +38,9 @@ def storage_summary(engine) -> dict[str, object]:
     }
 
 
-__all__ = ["WRITE_METHODS", "storage_summary", "writes_frozen"]
+__all__ = [
+    "CONTROLLED_FREEZE_WRITE_PATHS",
+    "WRITE_METHODS",
+    "storage_summary",
+    "writes_frozen",
+]

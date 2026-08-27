@@ -247,10 +247,12 @@ sequence:
 
 1. Confirm the live backend is the durable file store, guarded memory contains
    zero rows, and the app uses single-revision mode.
-2. Deploy a read-only revision, prove mutations return retryable HTTP 503, and
+2. Deploy a read-only revision, prove normal mutations return retryable HTTP
+   503, durably queue signature-verified GitHub Marketplace deliveries, and
    require the ledger count and chain head to stop changing.
-3. Disable ingress and download the authoritative `accounts.json` and
-   `ledger.json` directly from the mounted Azure Files share.
+3. Keep ingress available for that signed-delivery queue and download the
+   authoritative `accounts.json` and `ledger.json` twice from the mounted Azure
+   Files share, requiring both copies to be byte-identical.
 4. Validate every source row and the complete ledger chain. If PostgreSQL
    already contains divergent rows, replacement is refused unless the operator
    explicitly enables archival. The displaced account, ledger, and guarded
@@ -259,18 +261,22 @@ sequence:
    back, and commit only when account fingerprint, ledger count, chain head, and
    every stored field match.
 6. Start PostgreSQL in read-only mode, verify the running service reports the
-   PostgreSQL backends and the exact frozen ledger head, then unfreeze writes.
+   PostgreSQL backends and the exact frozen ledger head, replay the durable
+   GitHub Marketplace queue, then unfreeze writes and replay once more to close
+   the revision-swap race.
 
 Any failure before the frozen PostgreSQL runtime proves exact parity updates the
-Container App back to the unchanged file stores and re-enables ingress. Once
+Container App back to the unchanged file stores and replays the durable queue. Once
 that runtime passes, PostgreSQL becomes authoritative before writes are
 unfrozen; a later unfreeze/probe failure deliberately leaves PostgreSQL
 read-only instead of risking loss of a newly accepted database write. A
 successful cutover writes `DSG_REVENUE_POSTGRES_ENABLED=1` to the live Container
 App; later deployments preserve PostgreSQL only when that marker is present and
-refuse to fall back if the database secret is unavailable. Re-running the
-cutover workflow with that marker present verifies the current database chain
-and safely resumes an interrupted unfreeze; it never imports the files again.
+refuse to fall back if the database secret is unavailable. Ordinary deployments
+also refuse to run while the live write-freeze marker is set. Re-running the
+cutover workflow with the PostgreSQL marker present verifies the current
+database chain, drains the queue, and safely resumes an interrupted unfreeze; it
+never imports the files again.
 
 ## Truth boundary
 
