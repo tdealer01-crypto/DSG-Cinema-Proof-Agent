@@ -1,0 +1,252 @@
+name: Enforce V1 Persistent Proof Store
+
+on:
+  workflow_run:
+    workflows: ["Deploy Cinema + Z3 Production"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: v1-persistent-proof-store-production
+  cancel-in-progress: false
+
+jobs:
+  enforce-and-prove:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      V1_STORE_PATH: /revenue/v1-records.json
+
+    steps:
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify durable Azure Files mount exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+          az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --output json > /tmp/cinema-before.json
+
+          python - <<'PY'
+          import json
+
+          with open('/tmp/cinema-before.json', encoding='utf-8') as handle:
+              app = json.load(handle)
+          template = app['properties']['template']
+          containers = template.get('containers') or []
+          if not containers:
+              raise SystemExit('Cinema has no container template')
+          mounts = containers[0].get('volumeMounts') or []
+          if not any(item.get('mountPath') == '/revenue' for item in mounts):
+              raise SystemExit('Cinema /revenue Azure Files mount is missing; refusing to claim persistence')
+          volumes = template.get('volumes') or []
+          if not any(item.get('storageType') == 'AzureFile' for item in volumes):
+              raise SystemExit('Cinema volume is not backed by AzureFile')
+          PY
+
+      - name: Bind v1 records to durable mount and force one writer
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --set-env-vars \
+              DSG_V1_STORE_PATH="$V1_STORE_PATH" \
+              DSG_V1_SINGLE_WRITER=1 \
+            --min-replicas 1 \
+            --max-replicas 1 \
+            --output none
+
+          CINEMA_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+          test -n "$CINEMA_FQDN"
+          echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
+
+      - name: Wait for durable v1 status
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 72); do
+            CODE=$(curl --silent --show-error --output /tmp/v1-status-before.json --write-out '%{http_code}' "$CINEMA_URL/api/v1/status" || true)
+            if [[ "$CODE" == "200" ]] && jq -e '.status == "READY" and .storage.mode == "file" and .storage.durable == true' /tmp/v1-status-before.json >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [[ "$attempt" == "72" ]]; then
+              echo 'Cinema did not report durable v1 storage after the persistent-store binding.' >&2
+              cat /tmp/v1-status-before.json 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Create a proof receipt in the durable store
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTIVATION_ID="v1-persistence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          jq -n \
+            --arg activation_id "$ACTIVATION_ID" \
+            '{channel:"api",activation_id:$activation_id,display_name:"V1 persistence production probe"}' \
+            > /tmp/activation-request.json
+
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/billing/activate" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/activation-request.json > /tmp/activation.json
+          API_KEY=$(jq -r '.api_key // empty' /tmp/activation.json)
+          if [[ -z "$API_KEY" ]]; then
+            echo 'Self-serve activation did not return an API key.' >&2
+            cat /tmp/activation.json >&2
+            exit 1
+          fi
+          echo "::add-mask::$API_KEY"
+
+          jq -n \
+            --arg run_id "$GITHUB_RUN_ID" \
+            '{title:"Production persistent proof-store probe",agent_identity:"github-persistence-probe",channel:"github",steps:[{step_id:"persist",action:"persist_probe",target:"dsg/v1-record-store",parameters:{run_id:$run_id},requires_evidence:true}]}' \
+            > /tmp/plan-request.json
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/api/v1/plans" \
+            --header "X-DSG-API-Key: $API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/plan-request.json > /tmp/plan-created.json
+          PLAN_ID=$(jq -r '.plan_id' /tmp/plan-created.json)
+          PLAN_HASH=$(jq -r '.plan_hash' /tmp/plan-created.json)
+          test -n "$PLAN_ID"
+          test ${#PLAN_HASH} -eq 64
+
+          jq -n \
+            --arg plan_hash "$PLAN_HASH" \
+            '{approver:"github-actions-persistence-probe",plan_hash:$plan_hash,approval_note:"Automated production persistence proof"}' \
+            > /tmp/approve-request.json
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/api/v1/plans/$PLAN_ID/approve" \
+            --header "X-DSG-API-Key: $API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/approve-request.json > /tmp/plan-approved.json
+
+          EVIDENCE_CONTENT=$(jq -nc --arg run_id "$GITHUB_RUN_ID" '{run_id:$run_id,status:"ok",persistence_probe:true}')
+          OUTPUT_SHA256=$(printf '%s' "$EVIDENCE_CONTENT" | sha256sum | awk '{print $1}')
+          jq -n \
+            --arg plan_id "$PLAN_ID" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg output_sha256 "$OUTPUT_SHA256" \
+            '{plan_id:$plan_id,agent_identity:"github-persistence-probe",environment:"production",channel:"github",trace_id:("persistence-"+$run_id),actions:[{step_id:"persist",action:"persist_probe",target:"dsg/v1-record-store",parameters:{run_id:$run_id},status:"succeeded",output_sha256:$output_sha256}]}' \
+            > /tmp/execution-request.json
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/api/v1/executions" \
+            --header "X-DSG-API-Key: $API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/execution-request.json > /tmp/execution-created.json
+          EXECUTION_ID=$(jq -r '.execution_id' /tmp/execution-created.json)
+          test -n "$EXECUTION_ID"
+
+          jq -n \
+            --arg content "$EVIDENCE_CONTENT" \
+            '{artifacts:[{artifact_id:"persist-log",source:"github-actions",step_id:"persist",media_type:"application/json",content:$content}]}' \
+            > /tmp/evidence-request.json
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/api/v1/executions/$EXECUTION_ID/evidence" \
+            --header "X-DSG-API-Key: $API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/evidence-request.json > /tmp/evidence-submitted.json
+
+          printf '{}' > /tmp/verify-request.json
+          curl --fail-with-body --silent --show-error \
+            --request POST "$CINEMA_URL/api/v1/executions/$EXECUTION_ID/verify" \
+            --header "X-DSG-API-Key: $API_KEY" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/verify-request.json > /tmp/proof-before.json
+
+          jq -e '.decision == "ALLOW" and .verified == true and .verification == "VERIFIED_GLOBAL_OPTIMUM" and (.receipt_hash | length == 64)' /tmp/proof-before.json >/dev/null
+          PROOF_ID=$(jq -r '.proof_id' /tmp/proof-before.json)
+          RECEIPT_HASH=$(jq -r '.receipt_hash' /tmp/proof-before.json)
+          test -n "$PROOF_ID"
+          test ${#RECEIPT_HASH} -eq 64
+
+          echo "PLAN_ID=$PLAN_ID" >> "$GITHUB_ENV"
+          echo "EXECUTION_ID=$EXECUTION_ID" >> "$GITHUB_ENV"
+          echo "PROOF_ID=$PROOF_ID" >> "$GITHUB_ENV"
+          echo "RECEIPT_HASH=$RECEIPT_HASH" >> "$GITHUB_ENV"
+
+      - name: Force a new Cinema revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROBE_REVISION="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --set-env-vars \
+              DSG_V1_STORE_PATH="$V1_STORE_PATH" \
+              DSG_V1_SINGLE_WRITER=1 \
+              DSG_V1_PERSISTENCE_PROBE="$PROBE_REVISION" \
+            --min-replicas 1 \
+            --max-replicas 1 \
+            --output none
+
+      - name: Prove plan, execution and proof survive the revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 72); do
+            CODE=$(curl --silent --show-error --output /tmp/v1-status-after.json --write-out '%{http_code}' "$CINEMA_URL/api/v1/status" || true)
+            if [[ "$CODE" == "200" ]] && jq -e '.status == "READY" and .storage.mode == "file" and .storage.durable == true' /tmp/v1-status-after.json >/dev/null 2>&1; then
+              break
+            fi
+            [[ "$attempt" == "72" ]] && exit 1
+            sleep 5
+          done
+
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/plans/$PLAN_ID" > /tmp/plan-after.json
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/executions/$EXECUTION_ID" > /tmp/execution-after.json
+          curl --fail-with-body --silent --show-error "$CINEMA_URL/api/v1/proofs/$PROOF_ID" > /tmp/proof-after.json
+
+          jq -e --arg plan_id "$PLAN_ID" '.plan_id == $plan_id and .plan_hash_verified == true' /tmp/plan-after.json >/dev/null
+          jq -e --arg execution_id "$EXECUTION_ID" '.execution_id == $execution_id and .status == "VERIFIED"' /tmp/execution-after.json >/dev/null
+          jq -e --arg proof_id "$PROOF_ID" --arg receipt_hash "$RECEIPT_HASH" '.proof_id == $proof_id and .receipt_hash == $receipt_hash and .receipt_hash_verified == true' /tmp/proof-after.json >/dev/null
+
+          jq -n \
+            --arg commit "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            --arg plan_id "$PLAN_ID" \
+            --arg execution_id "$EXECUTION_ID" \
+            --arg proof_id "$PROOF_ID" \
+            --arg receipt_hash "$RECEIPT_HASH" \
+            --arg store_path "$V1_STORE_PATH" \
+            --slurpfile before /tmp/v1-status-before.json \
+            --slurpfile after /tmp/v1-status-after.json \
+            '{result:"PASS",commit:$commit,storage:{path:$store_path,mode:$after[0].storage.mode,durable:$after[0].storage.durable,single_writer:true},records:{plan_id:$plan_id,execution_id:$execution_id,proof_id:$proof_id,receipt_hash:$receipt_hash,receipt_hash_verified:true},status_before_revision:$before[0].storage,status_after_revision:$after[0].storage}' \
+            > /tmp/v1-persistence-evidence.json
+          cat /tmp/v1-persistence-evidence.json
+
+      - name: Upload persistence evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1-persistent-proof-store-${{ github.run_id }}
+          path: /tmp/v1-persistence-evidence.json
+          if-no-files-found: error
+          retention-days: 30
