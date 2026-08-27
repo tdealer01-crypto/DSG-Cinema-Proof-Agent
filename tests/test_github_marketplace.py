@@ -39,6 +39,8 @@ def marketplace(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_MARKETPLACE_WEBHOOK_SECRET", WEBHOOK_SECRET)
     monkeypatch.setenv("GITHUB_MARKETPLACE_OAUTH_CLIENT_ID", "Iv1.test-client")
     monkeypatch.setenv("GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET", OAUTH_SECRET)
+    monkeypatch.setenv("DSG_REVENUE_ADMIN_SECRET", "a" * 48)
+    monkeypatch.delenv("DSG_REVENUE_WRITE_FROZEN", raising=False)
 
     engine = RevenueEngine(
         accounts=AccountStore(str(account_path)),
@@ -143,8 +145,9 @@ def test_purchase_creates_paid_entitlement_and_duplicate_is_idempotent(marketpla
     assert store.link_for(4242)["account_id"] == account.account_id
 
 
-def test_invalid_signature_changes_nothing(marketplace):
+def test_invalid_signature_changes_nothing(marketplace, monkeypatch):
     _engine, store = marketplace
+    monkeypatch.setenv("DSG_REVENUE_WRITE_FROZEN", "1")
     payload = json.dumps(purchase_body(), separators=(",", ":")).encode()
     response = client.post(
         "/marketplace/github/webhook",
@@ -158,6 +161,72 @@ def test_invalid_signature_changes_nothing(marketplace):
     )
     assert response.status_code == 401
     assert store.link_for(4242) is None
+
+
+def test_frozen_marketplace_delivery_is_durably_queued_then_replayed(
+    marketplace, monkeypatch
+):
+    engine, store = marketplace
+    monkeypatch.setenv("DSG_REVENUE_WRITE_FROZEN", "1")
+
+    queued = post_purchase("purchased", "Pro", "frozen-delivery")
+    assert queued.status_code == 202
+    assert queued.json() == {
+        "accepted": True,
+        "event": "marketplace_purchase",
+        "action": "purchased",
+        "applied": False,
+        "queued": True,
+        "duplicate": False,
+        "pending_deliveries": 1,
+    }
+    assert store.link_for(4242) is None
+    pending = store.snapshot()["pending_deliveries"]
+    assert len(pending) == 1
+    assert pending[0]["delivery_id"] == "frozen-delivery"
+    assert len(pending[0]["payload_sha256"]) == 64
+    status = client.get("/marketplace/github/status").json()
+    assert status["status"] == "ACTION_REQUIRED"
+    assert status["checks"]["pending_deliveries"] == "PENDING_REPLAY"
+
+    duplicate = post_purchase("purchased", "Pro", "frozen-delivery")
+    assert duplicate.status_code == 202
+    assert duplicate.json()["duplicate"] is True
+    assert duplicate.json()["pending_deliveries"] == 1
+
+    replayed = client.post(
+        "/marketplace/github/replay-pending",
+        headers={"Authorization": f"Bearer {'a' * 48}"},
+    )
+    assert replayed.status_code == 200
+    assert replayed.json() == {
+        "status": "PASS",
+        "replayed": 1,
+        "duplicates": 0,
+        "pending": 0,
+    }
+    link = store.link_for(4242)
+    assert link is not None
+    account = engine.accounts.get(link["account_id"])
+    assert account is not None
+    assert account.plan == "github_pro"
+    assert store.snapshot()["pending_deliveries"] == []
+
+
+def test_frozen_marketplace_delivery_refuses_a_nondurable_queue(
+    marketplace, monkeypatch
+):
+    _engine, _store = marketplace
+    monkeypatch.delenv("DSG_GITHUB_MARKETPLACE_STORE", raising=False)
+    monkeypatch.delenv("DSG_REVENUE_ACCOUNT_STORE", raising=False)
+    reset_store(GithubMarketplaceStore())
+    monkeypatch.setenv("DSG_REVENUE_WRITE_FROZEN", "1")
+
+    response = post_purchase("purchased", "Pro", "no-durable-queue")
+
+    assert response.status_code == 503
+    assert response.json()["accepted"] is False
+    assert response.json()["queued"] is False
 
 
 def test_unknown_plan_falls_to_free_instead_of_over_entitling(marketplace):
@@ -306,6 +375,7 @@ def test_marketplace_status_says_exactly_what_is_missing(marketplace):
         "webhook_secret": "PASS",
         "oauth_client_id": "PASS",
         "oauth_client_secret": "PASS",
+        "pending_deliveries": "PASS",
     }
     assert body["truth_boundary"]["github_collects_subscription_payment"] is True
     assert body["truth_boundary"]["cinema_stripe_rebilling"] is False

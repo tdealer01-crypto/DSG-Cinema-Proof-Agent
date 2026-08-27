@@ -36,6 +36,28 @@ def test_health_is_fail_closed_without_config(monkeypatch):
     assert response.json()["status"] == "blocked"
 
 
+def test_revenue_cutover_freeze_blocks_writes_but_not_reads(monkeypatch):
+    monkeypatch.setenv("DSG_REVENUE_WRITE_FROZEN", "1")
+
+    blocked = client.post("/solve", json={"problem_type": "qubo"})
+    assert blocked.status_code == 503
+    assert blocked.headers["retry-after"] == "60"
+    assert blocked.json() == {
+        "error": "REVENUE_WRITE_FROZEN",
+        "message": "writes are temporarily paused for a revenue storage cutover",
+        "retryable": True,
+    }
+
+    readable = client.get("/app")
+    assert readable.status_code == 200
+
+
+def test_revenue_cutover_freeze_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("DSG_REVENUE_WRITE_FROZEN", raising=False)
+    configure(monkeypatch)
+    assert client.post("/solve", json={"problem_type": "qubo"}).status_code == 401
+
+
 def test_health_passes_only_when_backend_ready(monkeypatch):
     configure(monkeypatch)
 

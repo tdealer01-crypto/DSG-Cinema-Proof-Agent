@@ -32,6 +32,30 @@ STATUS_CLOSED = "closed"
 
 _VALID_STATUSES = {STATUS_ACTIVE, STATUS_SUSPENDED, STATUS_CLOSED}
 
+ACCOUNT_UPDATE_FIELDS = frozenset(
+    {
+        "plan",
+        "status",
+        "stripe_customer_id",
+        "stripe_subscription_id",
+        "payment_linked",
+        "unit_price_micros",
+        "hard_cap_units",
+        "display_name",
+    }
+)
+
+
+def validate_account_changes(changes: dict[str, object]) -> None:
+    """Apply the same bounded account-update contract to every backend."""
+    unknown = set(changes) - ACCOUNT_UPDATE_FIELDS
+    if unknown:
+        raise ValueError(f"cannot update fields: {sorted(unknown)}")
+    if "plan" in changes:
+        get_plan(changes["plan"])
+    if "status" in changes and changes["status"] not in _VALID_STATUSES:
+        raise ValueError(f"invalid status: {changes['status']}")
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -99,6 +123,7 @@ class AccountStore:
         self._accounts: dict[str, Account] = {}
         self._by_key_id: dict[str, str] = {}
         self._path = Path(path) if path else None
+        self.backend = "file" if self._path else "memory"
         self._loaded_signature: Optional[tuple[int, int]] = None
         if self._path and self._path.exists():
             self._load()
@@ -382,23 +407,7 @@ class AccountStore:
         return account, api_key
 
     def update(self, account_id: str, **changes) -> Account:
-        allowed = {
-            "plan",
-            "status",
-            "stripe_customer_id",
-            "stripe_subscription_id",
-            "payment_linked",
-            "unit_price_micros",
-            "hard_cap_units",
-            "display_name",
-        }
-        unknown = set(changes) - allowed
-        if unknown:
-            raise ValueError(f"cannot update fields: {sorted(unknown)}")
-        if "plan" in changes:
-            get_plan(changes["plan"])
-        if "status" in changes and changes["status"] not in _VALID_STATUSES:
-            raise ValueError(f"invalid status: {changes['status']}")
+        validate_account_changes(changes)
 
         with self._critical_section():
             account = self._accounts.get(account_id)

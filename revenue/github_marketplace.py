@@ -31,6 +31,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import api as billing
+from .cutover import writes_frozen
 from .pricing import get_plan
 
 router = APIRouter(prefix="/marketplace/github", tags=["github-marketplace"])
@@ -40,6 +41,7 @@ GITHUB_OAUTH_AUTHORIZE = "https://github.com/login/oauth/authorize"
 GITHUB_OAUTH_TOKEN = "https://github.com/login/oauth/access_token"
 STORE_VERSION = 1
 MAX_DELIVERIES = 4096
+MAX_PENDING_DELIVERIES = 4096
 STATE_TTL_SECONDS = 10 * 60
 
 
@@ -107,7 +109,12 @@ def map_github_plan(plan_name: Any) -> str:
 
 
 def _empty_state() -> dict[str, Any]:
-    return {"version": STORE_VERSION, "links": {}, "deliveries": []}
+    return {
+        "version": STORE_VERSION,
+        "links": {},
+        "deliveries": [],
+        "pending_deliveries": [],
+    }
 
 
 class GithubMarketplaceStore:
@@ -141,6 +148,11 @@ class GithubMarketplaceStore:
             raise ValueError("unsupported GitHub Marketplace store")
         if not isinstance(raw.get("links"), dict) or not isinstance(raw.get("deliveries"), list):
             raise ValueError("invalid GitHub Marketplace store")
+        # Version 1 stores created before cutover queuing did not have this key.
+        # Add it in memory so the existing durable file remains compatible.
+        raw.setdefault("pending_deliveries", [])
+        if not isinstance(raw["pending_deliveries"], list):
+            raise ValueError("invalid GitHub Marketplace pending-delivery queue")
         self._state = raw
         self._loaded_signature = self._signature()
 
@@ -169,7 +181,11 @@ class GithubMarketplaceStore:
     def _critical(self):
         with self._thread_lock:
             with self._file_lock():
-                self._reload_if_changed()
+                # Azure Files metadata can be cached across replicas. Reload
+                # unconditionally after the inter-process lock so a stale
+                # process cannot overwrite another replica's queued delivery.
+                if self.path is not None and self.path.exists():
+                    self._load()
                 yield
 
     def _persist(self) -> None:
@@ -195,6 +211,88 @@ class GithubMarketplaceStore:
         deliveries.append(delivery_id)
         if len(deliveries) > MAX_DELIVERIES:
             del deliveries[: len(deliveries) - MAX_DELIVERIES]
+
+    def pending_count(self) -> int:
+        with self._critical():
+            return len(self._state["pending_deliveries"])
+
+    def queue_purchase(
+        self,
+        *,
+        delivery_id: str,
+        action: str,
+        github_account_id: int,
+        github_login: str,
+        plan_name: str,
+        billing_cycle: str,
+        effective_date: Optional[str],
+        payload_sha256: str,
+    ) -> dict[str, Any]:
+        """Durably accept a verified delivery while revenue writes are frozen."""
+        if not self.durable:
+            raise RuntimeError("GitHub Marketplace queue is not durable")
+        with self._critical():
+            if delivery_id in self._state["deliveries"]:
+                return {"queued": False, "duplicate": True}
+            pending = self._state["pending_deliveries"]
+            if any(item.get("delivery_id") == delivery_id for item in pending):
+                return {"queued": True, "duplicate": True}
+            if len(pending) >= MAX_PENDING_DELIVERIES:
+                raise RuntimeError("GitHub Marketplace pending-delivery queue is full")
+            pending.append(
+                {
+                    "delivery_id": delivery_id,
+                    "action": action,
+                    "github_account_id": github_account_id,
+                    "github_login": github_login,
+                    "plan_name": plan_name,
+                    "billing_cycle": billing_cycle,
+                    "effective_date": effective_date,
+                    "payload_sha256": payload_sha256,
+                    "queued_at": _utc_epoch(),
+                }
+            )
+            self._persist()
+            return {"queued": True, "duplicate": False}
+
+    def replay_pending(self) -> dict[str, int]:
+        """Apply queued purchases idempotently and delete only committed items."""
+        if not self.durable:
+            raise RuntimeError("GitHub Marketplace queue is not durable")
+        replayed = 0
+        duplicates = 0
+        while True:
+            with self._critical():
+                pending = self._state["pending_deliveries"]
+                if not pending:
+                    break
+                item = dict(pending[0])
+
+            result = self.apply_purchase(
+                delivery_id=str(item["delivery_id"]),
+                action=str(item["action"]),
+                github_account_id=int(item["github_account_id"]),
+                github_login=str(item["github_login"]),
+                plan_name=str(item["plan_name"]),
+                billing_cycle=str(item["billing_cycle"]),
+                effective_date=(
+                    str(item["effective_date"])
+                    if item.get("effective_date") is not None
+                    else None
+                ),
+            )
+
+            with self._critical():
+                self._state["pending_deliveries"] = [
+                    candidate
+                    for candidate in self._state["pending_deliveries"]
+                    if candidate.get("delivery_id") != item["delivery_id"]
+                ]
+                self._persist()
+            replayed += int(not result.get("duplicate"))
+            duplicates += int(bool(result.get("duplicate")))
+
+        return {"replayed": replayed, "duplicates": duplicates, "pending": 0}
 
     def apply_purchase(
         self,
@@ -437,14 +535,17 @@ async def _verified_installation(token: str, installation_id: int) -> tuple[int,
 @router.get("/status")
 def marketplace_status() -> dict[str, Any]:
     store = get_store()
+    snapshot = store.snapshot()
     checks = {
         "durable_store": "PASS" if store.durable else "MISSING",
         "webhook_secret": "PASS" if len((os.getenv("GITHUB_MARKETPLACE_WEBHOOK_SECRET") or "").strip()) >= 32 else "MISSING",
         "oauth_client_id": "PASS" if (os.getenv("GITHUB_MARKETPLACE_OAUTH_CLIENT_ID") or "").strip() else "MISSING",
         "oauth_client_secret": "PASS" if len((os.getenv("GITHUB_MARKETPLACE_OAUTH_CLIENT_SECRET") or "").strip()) >= 32 else "MISSING",
+        "pending_deliveries": (
+            "PASS" if not snapshot["pending_deliveries"] else "PENDING_REPLAY"
+        ),
     }
     ready = all(value == "PASS" for value in checks.values())
-    snapshot = store.snapshot()
     return {
         "product": "DSG Verified Execution",
         "billing_channel": "github_marketplace",
@@ -452,6 +553,7 @@ def marketplace_status() -> dict[str, Any]:
         "checks": checks,
         "linked_accounts": len(snapshot["links"]),
         "processed_deliveries": len(snapshot["deliveries"]),
+        "pending_deliveries": len(snapshot["pending_deliveries"]),
         "webhook": "/marketplace/github/webhook",
         "callback": "/marketplace/github/callback",
         "setup": "/marketplace/github/setup",
@@ -504,15 +606,41 @@ async def marketplace_webhook(
     if not isinstance(action, str) or not isinstance(account_id, int) or not isinstance(login, str):
         return JSONResponse(status_code=422, content={"accepted": False, "error": "marketplace_purchase identity is incomplete"})
 
-    result = get_store().apply_purchase(
-        delivery_id=x_github_delivery,
-        action=action,
-        github_account_id=account_id,
-        github_login=login,
-        plan_name=str(plan_name or ""),
-        billing_cycle=str(billing_cycle or ""),
-        effective_date=str(effective_date) if effective_date is not None else None,
-    )
+    purchase_args = {
+        "delivery_id": x_github_delivery,
+        "action": action,
+        "github_account_id": account_id,
+        "github_login": login,
+        "plan_name": str(plan_name or ""),
+        "billing_cycle": str(billing_cycle or ""),
+        "effective_date": str(effective_date) if effective_date is not None else None,
+    }
+    store = get_store()
+    if writes_frozen():
+        try:
+            queued = store.queue_purchase(
+                **purchase_args,
+                payload_sha256=hashlib.sha256(raw).hexdigest(),
+            )
+        except RuntimeError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={"accepted": False, "queued": False, "error": str(exc)},
+            )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "accepted": True,
+                "event": "marketplace_purchase",
+                "action": action,
+                "applied": False,
+                "queued": bool(queued["queued"]),
+                "duplicate": bool(queued["duplicate"]),
+                "pending_deliveries": store.pending_count(),
+            },
+        )
+
+    result = store.apply_purchase(**purchase_args)
     public_link = result.get("link")
     if isinstance(public_link, dict):
         public_link = {
@@ -533,6 +661,25 @@ async def marketplace_webhook(
             "entitlement": public_link,
         },
     )
+
+
+@router.post("/replay-pending")
+def replay_pending_marketplace_deliveries(
+    authorization: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    """Apply the durable freeze queue before the cutover opens normal writes."""
+    billing._require_admin(authorization)
+    try:
+        result = get_store().replay_pending()
+    except (KeyError, TypeError, ValueError, RuntimeError):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "BLOCKED",
+                "error": "GitHub Marketplace pending-delivery replay failed",
+            },
+        )
+    return JSONResponse(status_code=200, content={"status": "PASS", **result})
 
 
 @router.get("/setup")

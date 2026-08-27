@@ -15,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: stripe-production-configuration-${{ github.event_name }}-${{ github.ref }}
+  group: cinema-z3-production
   cancel-in-progress: false
 
 jobs:

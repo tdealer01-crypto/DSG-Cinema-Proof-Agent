@@ -92,6 +92,7 @@ class LedgerStore:
         self._entries: list[LedgerEntry] = []
         self._by_idempotency: dict[str, LedgerEntry] = {}
         self._path = Path(path) if path else None
+        self.backend = "file" if self._path else "memory"
         self._loaded_signature: Optional[tuple[int, int]] = None
         if self._path and self._path.exists():
             self._load()

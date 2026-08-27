@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from revenue.accounts import Account
+from revenue.accounts import Account, utc_now, validate_account_changes
 
 
 SCHEMA_VERSION = 1
@@ -229,6 +229,9 @@ def _account_from_row(row: tuple) -> Account:
 class PostgresLedgerStore:
     """Proof-bound ledger with PostgreSQL row locks and idempotency uniqueness."""
 
+    backend = "postgres"
+    durable = True
+
     #: Read order for a ledger row. `_entry` depends on it, so both live together.
     _LEDGER_COLUMNS = (
         "sequence, period, account_id, channel, sku, quantity, units_before, "
@@ -384,6 +387,9 @@ class PostgresLedgerStore:
 class PostgresAccountStore:
     """Tenant account registry backed by Supabase/PostgreSQL transactions."""
 
+    backend = "postgres"
+    durable = True
+
     def __init__(self, database_url: str) -> None:
         self._database_url = validate_database_url(database_url)
 
@@ -443,28 +449,47 @@ class PostgresAccountStore:
         return _account_from_row(row) if row else None
 
     def update(self, account_id: str, **changes) -> Account:
-        allowed = {
-            "plan", "status", "display_name", "stripe_customer_id",
-            "stripe_subscription_id", "payment_linked", "stripe_paid_amounts_micros",
-            "stripe_paid_invoice_ids", "stripe_processed_event_ids",
-            "stripe_field_event_created", "activation_ref", "unit_price_micros",
-            "hard_cap_units", "channel", "updated_at",
-        }
-        unknown = set(changes) - allowed
-        if unknown:
-            raise ValueError(f"unsupported account fields: {sorted(unknown)}")
-        current = self.get(account_id)
-        if current is None:
-            raise KeyError(account_id)
-        data = current.to_dict()
-        data.update(changes)
-        updated = Account(**data)
-        self.import_account(updated)
-        return updated
+        """Update only requested columns in one short atomic transaction.
+
+        A full-row read followed by an upsert loses unrelated concurrent changes
+        when two replicas start from the same snapshot. PostgreSQL serializes
+        these partial UPDATE statements on the account row, so each caller keeps
+        fields changed by another request.
+        """
+        validate_account_changes(changes)
+        updated_at = utc_now()
+        assignments = [f"{column} = %s" for column in changes]
+        assignments.append("updated_at = %s")
+        params = (*changes.values(), updated_at, account_id)
+
+        with self._connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE dsg_revenue_accounts SET {', '.join(assignments)} "
+                f"WHERE account_id = %s RETURNING {_ACCOUNT_COLUMNS}",
+                params,
+            )
+            row = cursor.fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(account_id)
+            connection.commit()
+        return _account_from_row(row)
 
     def apply_stripe_event(self, **kwargs):
         """Apply webhook idempotency/order changes while locking the account row."""
         customer_id = kwargs["customer_id"]
+        supplied_changes = dict(kwargs["changes"])
+        allowed = {
+            "plan",
+            "status",
+            "stripe_subscription_id",
+            "payment_linked",
+        }
+        unknown = set(supplied_changes) - allowed
+        if unknown:
+            raise ValueError(f"cannot apply Stripe fields: {sorted(unknown)}")
+        validate_account_changes(supplied_changes)
+
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(
                 f"SELECT {_ACCOUNT_COLUMNS} FROM dsg_revenue_accounts "
@@ -486,20 +511,49 @@ class PostgresAccountStore:
                 connection.rollback(); return account, "subscription_mismatch"
             if not account.stripe_subscription_id and not kwargs["allow_subscription_binding"]:
                 connection.rollback(); return account, "subscription_not_bound"
-            changes = dict(kwargs["changes"])
+
+            changes = supplied_changes
             if not account.stripe_subscription_id:
                 changes.setdefault("stripe_subscription_id", subscription_id)
+
+            cursor_for = {
+                "plan": "plan",
+                "status": "entitlement",
+                "payment_linked": "entitlement",
+                "stripe_subscription_id": "subscription_binding",
+            }
+            cursors = dict(account.stripe_field_event_created)
+            current_changes = {}
+            for field_name, value in changes.items():
+                cursor_name = cursor_for[field_name]
+                event_created = kwargs["event_created"]
+                if event_created < cursors.get(cursor_name, 0):
+                    continue
+                current_changes[field_name] = value
+                cursors[cursor_name] = max(cursors.get(cursor_name, 0), event_created)
+
             paid = dict(account.stripe_paid_amounts_micros)
             period, amount = kwargs.get("paid_period"), kwargs.get("paid_amount_micros")
+            paid_recorded = False
             if period and amount is not None:
-                if amount < 0: raise ValueError("paid Stripe amount must not be negative")
+                if amount < 0:
+                    raise ValueError("paid Stripe amount must not be negative")
                 paid[period] = paid.get(period, 0) + amount
-            changes.update(
+                paid_recorded = True
+
+            if not current_changes and not paid_recorded:
+                connection.rollback()
+                return account, "stale"
+
+            current_changes.update(
                 stripe_processed_event_ids=[*account.stripe_processed_event_ids, event_id],
                 stripe_paid_invoice_ids=[*account.stripe_paid_invoice_ids, *([invoice] if invoice else [])],
                 stripe_paid_amounts_micros=paid,
+                stripe_field_event_created=cursors,
+                updated_at=utc_now(),
             )
-            data = account.to_dict(); data.update(changes)
+            data = account.to_dict()
+            data.update(current_changes)
             updated = Account(**data)
             placeholders = ", ".join(["%s"] * 20)
             updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in _ACCOUNT_COLUMNS.split(", ") if c not in {"account_id", "created_at"})

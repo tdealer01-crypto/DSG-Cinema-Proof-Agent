@@ -514,6 +514,95 @@ def test_postgres_account_store_uses_parameterized_tenant_queries(monkeypatch):
     assert any("VALUES (%s" in statement and params[0] == "tenant-a" for statement, params in statements)
 
 
+def test_postgres_account_update_validates_before_database_access(monkeypatch):
+    from revenue.postgres import PostgresAccountStore
+
+    store = PostgresAccountStore(
+        "postgresql://user:secret@db.example/dsg?sslmode=require"
+    )
+    monkeypatch.setattr(
+        store,
+        "_connection",
+        lambda: pytest.fail("invalid fields must be rejected before database access"),
+    )
+
+    with pytest.raises(ValueError):
+        store.update("tenant-a", plan="typo")
+    with pytest.raises(ValueError, match="invalid status"):
+        store.update("tenant-a", status="unknown")
+
+
+def test_postgres_account_update_is_one_atomic_partial_update(monkeypatch):
+    from dataclasses import replace
+
+    from revenue.accounts import Account, hash_secret
+    from revenue.postgres import PostgresAccountStore, _account_values
+
+    original = Account(
+        account_id="tenant-a",
+        display_name="Tenant A",
+        plan="free",
+        key_id="key-a",
+        secret_hash=hash_secret("secret"),
+        hard_cap_units=1_000,
+    )
+    returned = replace(original, plan="metered")
+    statements = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params=()):
+            statements.append((statement, params))
+
+        def fetchone(self):
+            return _account_values(returned)
+
+    class Connection:
+        def __init__(self):
+            self.commits = 0
+            self.rollbacks = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    connection = Connection()
+    store = PostgresAccountStore(
+        "postgresql://user:secret@db.example/dsg?sslmode=require"
+    )
+    monkeypatch.setattr(store, "_connection", lambda: connection)
+
+    updated = store.update("tenant-a", plan="metered")
+
+    assert updated.plan == "metered"
+    assert len(statements) == 1
+    statement, params = statements[0]
+    assert statement.startswith("UPDATE dsg_revenue_accounts SET plan = %s")
+    assert "updated_at = %s" in statement
+    assert "hard_cap_units = %s" not in statement
+    assert " RETURNING account_id, display_name" in statement
+    assert params[0] == "metered"
+    assert params[-1] == "tenant-a"
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+
+
 def test_postgres_database_url_activates_store_contract(monkeypatch):
     from revenue.engine import RevenueEngine
     monkeypatch.setattr("revenue.engine.PostgresAccountStore", lambda url: ("accounts", url))
@@ -1451,6 +1540,13 @@ def test_billing_status_is_public_and_declares_the_checkout_truth(engine):
     assert body["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
     assert body["stripe"]["charges_enabled"] is False
     assert body["metering_enforced"] is False
+    assert body["storage"] == {
+        "backend": "memory",
+        "accounts_backend": "memory",
+        "ledger_backend": "memory",
+        "durable": False,
+        "writes_frozen": False,
+    }
     assert {plan["plan"] for plan in body["catalog"]["plans"]} == {
         "free",
         "metered",
