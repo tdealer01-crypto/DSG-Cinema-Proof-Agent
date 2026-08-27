@@ -1,0 +1,512 @@
+name: Cut over revenue storage to PostgreSQL
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type CUTOVER_REVENUE_TO_POSTGRES'
+        required: true
+        type: string
+      archive_divergent_target:
+        description: 'Archive and replace existing divergent PostgreSQL rows'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cinema-z3-production
+  cancel-in-progress: false
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
+      REVENUE_SHARE_NAME: revenue
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      ARCHIVE_DIVERGENT_TARGET: ${{ inputs.archive_divergent_target }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Refuse an implicit or non-main cutover
+        env:
+          DSG_REVENUE_DATABASE_URL: ${{ secrets.DSG_REVENUE_DATABASE_URL }}
+          CUTOVER_CONFIRMATION: ${{ inputs.confirmation }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo 'Revenue cutover must run from the reviewed main branch.' >&2
+            exit 1
+          fi
+          if [[ "$CUTOVER_CONFIRMATION" != "CUTOVER_REVENUE_TO_POSTGRES" ]]; then
+            echo 'Confirmation did not exactly match CUTOVER_REVENUE_TO_POSTGRES.' >&2
+            exit 1
+          fi
+          if [[ -z "$DSG_REVENUE_DATABASE_URL" ]]; then
+            echo 'The production DSG_REVENUE_DATABASE_URL secret is not configured.' >&2
+            exit 1
+          fi
+          echo 'Explicit production cutover confirmation accepted; database URI not printed.'
+
+      - name: Set up migration runner
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install and test migration code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet -r requirements.txt
+          python -m pytest -q \
+            tests/test_revenue_migration.py \
+            tests/test_cinema_main.py \
+            tests/test_revenue.py \
+            tests/test_guarded_mutation.py
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Freeze, migrate, prove parity, and unfreeze
+        env:
+          DSG_REVENUE_DATABASE_URL: ${{ secrets.DSG_REVENUE_DATABASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+
+          retry() {
+            local attempt=1
+            while (( attempt <= 6 )); do
+              if "$@"; then return 0; fi
+              sleep $((attempt * 10))
+              ((attempt++))
+            done
+            return 1
+          }
+
+          wait_for_revision() {
+            local expected_revision="$1"
+            local expected_marker="$2"
+            local expected_freeze="$3"
+            for attempt in $(seq 1 60); do
+              local active state marker freeze
+              active=$(az containerapp revision list \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --query "[?properties.active].name | [0]" \
+                --output tsv 2>/dev/null || true)
+              state=$(az containerapp revision list \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --query "[?name=='$expected_revision'].properties.runningState | [0]" \
+                --output tsv 2>/dev/null || true)
+              marker=$(az containerapp show \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --query "properties.template.containers[0].env[?name=='DSG_REVENUE_POSTGRES_ENABLED'].value | [0]" \
+                --output tsv 2>/dev/null || true)
+              freeze=$(az containerapp show \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --query "properties.template.containers[0].env[?name=='DSG_REVENUE_WRITE_FROZEN'].value | [0]" \
+                --output tsv 2>/dev/null || true)
+              if [[ "$active" == "$expected_revision" && "$state" == "Running" && "${marker:-0}" == "$expected_marker" && "${freeze:-0}" == "$expected_freeze" ]]; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo 'Container App revision did not converge to the requested cutover state.' >&2
+            return 1
+          }
+
+          CINEMA_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn --output tsv)
+          test -n "$CINEMA_FQDN"
+          CINEMA_URL="https://$CINEMA_FQDN"
+          ORIGINAL_MAX_REPLICAS=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query properties.template.scale.maxReplicas --output tsv)
+          test -n "$ORIGINAL_MAX_REPLICAS"
+          REVISION_MODE=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query properties.configuration.activeRevisionsMode --output tsv)
+          if [[ "$REVISION_MODE" != "Single" ]]; then
+            echo "Cutover requires single-revision mode; live mode is ${REVISION_MODE:-unknown}." >&2
+            exit 1
+          fi
+          CURRENT_POSTGRES_MARKER=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query "properties.template.containers[0].env[?name=='DSG_REVENUE_POSTGRES_ENABLED'].value | [0]" \
+            --output tsv 2>/dev/null || true)
+          if [[ "$CURRENT_POSTGRES_MARKER" == "1" ]]; then
+            # The marker is written only after a frozen PostgreSQL runtime has
+            # proved exact parity. A retry therefore resumes/validates unfreeze;
+            # it must never replay the file replacement over a live database.
+            CURRENT_FREEZE_MARKER=$(az containerapp show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query "properties.template.containers[0].env[?name=='DSG_REVENUE_WRITE_FROZEN'].value | [0]" \
+              --output tsv 2>/dev/null || true)
+            EXPECTED_FROZEN=false
+            [[ "$CURRENT_FREEZE_MARKER" == "1" ]] && EXPECTED_FROZEN=true
+
+            retry az containerapp ingress enable \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --type external --target-port 8000 --transport http \
+              --allow-insecure false --output none
+            for attempt in $(seq 1 60); do
+              if curl --silent --fail --show-error "$CINEMA_URL/billing/status" \
+                > /tmp/billing-resume.json 2>/dev/null \
+                && curl --silent --fail --show-error "$CINEMA_URL/api/v1/status" \
+                > /tmp/v1-resume.json 2>/dev/null \
+                && jq -e --argjson frozen "$EXPECTED_FROZEN" '
+                  .storage.backend == "postgres" and
+                  .storage.durable == true and
+                  .storage.writes_frozen == $frozen
+                ' /tmp/billing-resume.json >/dev/null \
+                && jq -e --argjson frozen "$EXPECTED_FROZEN" '
+                  .guarded_mutation_storage.backend == "postgres" and
+                  .guarded_mutation_storage.durable == true and
+                  .revenue_writes_frozen == $frozen
+                ' /tmp/v1-resume.json >/dev/null; then
+                break
+              fi
+              [[ "$attempt" == "60" ]] && { echo 'Marked PostgreSQL runtime is not healthy; leaving its write state unchanged.' >&2; exit 1; }
+              sleep 5
+            done
+
+            python scripts/migrate_revenue_store.py inspect > /tmp/postgres-resume.json
+            jq -e '.verified == true and .target.ledger.verified == true' \
+              /tmp/postgres-resume.json >/dev/null
+
+            if [[ "$CURRENT_FREEZE_MARKER" == "1" ]]; then
+              # A frozen runtime cannot race this independent DB read.
+              test "$(jq -r '.target.ledger.entries' /tmp/postgres-resume.json)" = \
+                "$(jq -r '.ledger.entries' /tmp/billing-resume.json)"
+              test "$(jq -r '.target.ledger.head_hash' /tmp/postgres-resume.json)" = \
+                "$(jq -r '.ledger.head_hash' /tmp/billing-resume.json)"
+              retry az containerapp secret set \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --secrets "revenue-database-url=$DSG_REVENUE_DATABASE_URL" --output none
+              RESUME_SUFFIX="resume-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
+              retry az containerapp update \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --set-env-vars DSG_REVENUE_WRITE_FROZEN=0 DSG_REVENUE_POSTGRES_ENABLED=1 \
+                --revision-suffix "$RESUME_SUFFIX" --output none
+              wait_for_revision "$CINEMA_APP--$RESUME_SUFFIX" 1 0
+            fi
+
+            for attempt in $(seq 1 60); do
+              if curl --silent --fail --show-error "$CINEMA_URL/billing/status" \
+                > /tmp/billing-final.json 2>/dev/null \
+                && curl --silent --fail --show-error "$CINEMA_URL/api/v1/status" \
+                > /tmp/v1-final.json 2>/dev/null \
+                && jq -e '.storage.backend == "postgres" and .storage.writes_frozen == false' \
+                  /tmp/billing-final.json >/dev/null \
+                && jq -e '.guarded_mutation_storage.backend == "postgres" and .revenue_writes_frozen == false' \
+                  /tmp/v1-final.json >/dev/null; then
+                break
+              fi
+              [[ "$attempt" == "60" ]] && { echo 'PostgreSQL resume did not become writable; no file rollback attempted.' >&2; exit 1; }
+              sleep 5
+            done
+            UNFROZEN_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --request POST "$CINEMA_URL/solve" \
+              --header 'Content-Type: application/json' --data '{}')
+            test "$UNFROZEN_CODE" = '401'
+            python scripts/migrate_revenue_store.py inspect > /tmp/postgres-final.json
+            jq -e '.verified == true and .target.ledger.verified == true' \
+              /tmp/postgres-final.json >/dev/null
+            jq -n \
+              --slurpfile final /tmp/billing-final.json \
+              --slurpfile database /tmp/postgres-final.json \
+              '{cutover:"VERIFIED_RESUME",storage:$final[0].storage,ledger:$final[0].ledger,database:$database[0].target,source:null,migration_action:"resume",archive_id:null,archived:{}}' \
+              > /tmp/cutover-evidence.json
+            cat /tmp/cutover-evidence.json
+            exit 0
+          fi
+
+          curl --fail-with-body --silent --show-error \
+            "$CINEMA_URL/billing/status" > /tmp/billing-before.json
+          curl --fail-with-body --silent --show-error \
+            "$CINEMA_URL/api/v1/status" > /tmp/v1-before.json
+          jq -e '
+            .storage.backend == "file" and
+            .storage.durable == true and
+            .storage.writes_frozen == false
+          ' /tmp/billing-before.json >/dev/null
+          jq -e '
+            .guarded_mutation_storage.backend == "memory" and
+            .guarded_mutation_storage.durable == false and
+            .guarded_mutation_storage.rows == 0 and
+            .revenue_writes_frozen == false
+          ' /tmp/v1-before.json >/dev/null
+
+          ROLLBACK_REQUIRED=1
+          rollback() {
+            local status=$?
+            if [[ "$ROLLBACK_REQUIRED" == "1" ]]; then
+              set +e
+              echo 'Cutover did not complete; restoring the unchanged file stores.' >&2
+              az containerapp update \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --set-env-vars \
+                  DSG_REVENUE_DATABASE_URL= \
+                  DSG_REVENUE_POSTGRES_ENABLED=0 \
+                  DSG_REVENUE_WRITE_FROZEN=0 \
+                --max-replicas "$ORIGINAL_MAX_REPLICAS" \
+                --revision-suffix "rollback-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}" \
+                --output none
+              az containerapp ingress enable \
+                --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+                --type external --target-port 8000 --transport http \
+                --allow-insecure false --output none
+              echo 'Rollback requested. PostgreSQL/archive rows were retained for diagnosis.' >&2
+            fi
+            exit "$status"
+          }
+          trap rollback EXIT
+
+          # First make the file-backed revision read-only while it is still
+          # observable. Stripe receives 503 during this short window and retries
+          # signed webhook deliveries instead of having them accepted and lost.
+          FREEZE_SUFFIX="freeze-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
+          retry az containerapp update \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --set-env-vars DSG_REVENUE_WRITE_FROZEN=1 DSG_REVENUE_POSTGRES_ENABLED=0 \
+            --revision-suffix "$FREEZE_SUFFIX" \
+            --output none
+          wait_for_revision "$CINEMA_APP--$FREEZE_SUFFIX" 0 1
+
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail --show-error "$CINEMA_URL/billing/status" \
+              > /tmp/billing-frozen.json 2>/dev/null \
+              && curl --silent --fail --show-error "$CINEMA_URL/api/v1/status" \
+              > /tmp/v1-frozen.json 2>/dev/null \
+              && jq -e '.storage.backend == "file" and .storage.writes_frozen == true' \
+                /tmp/billing-frozen.json >/dev/null \
+              && jq -e '.revenue_writes_frozen == true and .guarded_mutation_storage.rows == 0' \
+                /tmp/v1-frozen.json >/dev/null; then
+              break
+            fi
+            [[ "$attempt" == "60" ]] && { echo 'Read-only file revision never became observable.' >&2; exit 1; }
+            sleep 5
+          done
+
+          FREEZE_CODE=$(curl --silent --output /tmp/freeze-probe.json --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/solve" \
+            --header 'Content-Type: application/json' \
+            --data '{}')
+          test "$FREEZE_CODE" = '503'
+          jq -e '.error == "REVENUE_WRITE_FROZEN" and .retryable == true' \
+            /tmp/freeze-probe.json >/dev/null
+
+          # The longest revenue-producing Z3 call has a 45-second transport
+          # timeout. Drain beyond that bound, then require the chain to remain
+          # stable before ingress is closed and the files are copied.
+          sleep 60
+          curl --fail-with-body --silent --show-error \
+            "$CINEMA_URL/billing/status" > /tmp/billing-stable.json
+          test "$(jq -r '.ledger.entries' /tmp/billing-frozen.json)" = \
+            "$(jq -r '.ledger.entries' /tmp/billing-stable.json)"
+          test "$(jq -r '.ledger.head_hash' /tmp/billing-frozen.json)" = \
+            "$(jq -r '.ledger.head_hash' /tmp/billing-stable.json)"
+
+          retry az containerapp ingress disable \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" --output none
+
+          STORAGE_KEY=$(az storage account keys list \
+            --resource-group "$RESOURCE_GROUP" --account-name "$REVENUE_STORAGE_ACCOUNT" \
+            --query '[0].value' --output tsv)
+          test -n "$STORAGE_KEY"
+          echo "::add-mask::$STORAGE_KEY"
+          SNAPSHOT_DIR=$(mktemp -d)
+          az storage file download \
+            --account-name "$REVENUE_STORAGE_ACCOUNT" --account-key "$STORAGE_KEY" \
+            --share-name "$REVENUE_SHARE_NAME" --path accounts.json \
+            --dest "$SNAPSHOT_DIR/accounts.json" --only-show-errors
+          az storage file download \
+            --account-name "$REVENUE_STORAGE_ACCOUNT" --account-key "$STORAGE_KEY" \
+            --share-name "$REVENUE_SHARE_NAME" --path ledger.json \
+            --dest "$SNAPSHOT_DIR/ledger.json" --only-show-errors
+          sleep 5
+          az storage file download \
+            --account-name "$REVENUE_STORAGE_ACCOUNT" --account-key "$STORAGE_KEY" \
+            --share-name "$REVENUE_SHARE_NAME" --path accounts.json \
+            --dest "$SNAPSHOT_DIR/accounts-second.json" --only-show-errors
+          az storage file download \
+            --account-name "$REVENUE_STORAGE_ACCOUNT" --account-key "$STORAGE_KEY" \
+            --share-name "$REVENUE_SHARE_NAME" --path ledger.json \
+            --dest "$SNAPSHOT_DIR/ledger-second.json" --only-show-errors
+          cmp "$SNAPSHOT_DIR/accounts.json" "$SNAPSHOT_DIR/accounts-second.json"
+          cmp "$SNAPSHOT_DIR/ledger.json" "$SNAPSHOT_DIR/ledger-second.json"
+
+          python scripts/migrate_revenue_store.py summarize \
+            --accounts "$SNAPSHOT_DIR/accounts.json" \
+            --ledger "$SNAPSHOT_DIR/ledger.json" > /tmp/source-summary.json
+          test "$(jq -r '.source.ledger.entries' /tmp/source-summary.json)" = \
+            "$(jq -r '.ledger.entries' /tmp/billing-stable.json)"
+          test "$(jq -r '.source.ledger.head_hash' /tmp/source-summary.json)" = \
+            "$(jq -r '.ledger.head_hash' /tmp/billing-stable.json)"
+
+          APPLY_ARGS=()
+          if [[ "$ARCHIVE_DIVERGENT_TARGET" == "true" ]]; then
+            APPLY_ARGS+=(
+              --archive-divergent-target
+              --archive-id "cutover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              --confirmation ARCHIVE_AND_REPLACE_DIVERGENT_TARGET
+            )
+          fi
+          python scripts/migrate_revenue_store.py apply \
+            --accounts "$SNAPSHOT_DIR/accounts.json" \
+            --ledger "$SNAPSHOT_DIR/ledger.json" \
+            "${APPLY_ARGS[@]}" > /tmp/migration-result.json
+          python scripts/migrate_revenue_store.py verify \
+            --accounts "$SNAPSHOT_DIR/accounts.json" \
+            --ledger "$SNAPSHOT_DIR/ledger.json" > /tmp/migration-verify.json
+          jq -e '
+            .verified == true and
+            .source.accounts == .target.accounts and
+            .source.accounts_fingerprint == .target.accounts_fingerprint and
+            .source.ledger == .target.ledger and
+            .target.guarded_rows == 0
+          ' /tmp/migration-verify.json >/dev/null
+
+          # Switch only after the independent verify process observed exact DB
+          # parity. Keep writes frozen while ingress returns for runtime probes.
+          retry az containerapp secret set \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --secrets "revenue-database-url=$DSG_REVENUE_DATABASE_URL" --output none
+          POSTGRES_SUFFIX="postgres-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
+          retry az containerapp update \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --set-env-vars \
+              DSG_REVENUE_DATABASE_URL=secretref:revenue-database-url \
+              DSG_REVENUE_POSTGRES_ENABLED=0 \
+              DSG_REVENUE_WRITE_FROZEN=1 \
+            --max-replicas 2 \
+            --revision-suffix "$POSTGRES_SUFFIX" \
+            --output none
+          wait_for_revision "$CINEMA_APP--$POSTGRES_SUFFIX" 0 1
+          retry az containerapp ingress enable \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --type external --target-port 8000 --transport http \
+            --allow-insecure false --output none
+
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail --show-error "$CINEMA_URL/billing/status" \
+              > /tmp/billing-postgres-frozen.json 2>/dev/null \
+              && curl --silent --fail --show-error "$CINEMA_URL/api/v1/status" \
+              > /tmp/v1-postgres-frozen.json 2>/dev/null \
+              && jq -e '.storage.backend == "postgres" and .storage.durable == true and .storage.writes_frozen == true' \
+                /tmp/billing-postgres-frozen.json >/dev/null \
+              && jq -e '.guarded_mutation_storage.backend == "postgres" and .guarded_mutation_storage.durable == true and .revenue_writes_frozen == true' \
+                /tmp/v1-postgres-frozen.json >/dev/null; then
+              break
+            fi
+            [[ "$attempt" == "60" ]] && { echo 'Frozen PostgreSQL revision failed runtime storage probes.' >&2; exit 1; }
+            sleep 5
+          done
+          test "$(jq -r '.ledger.entries' /tmp/billing-postgres-frozen.json)" = \
+            "$(jq -r '.source.ledger.entries' /tmp/source-summary.json)"
+          test "$(jq -r '.ledger.head_hash' /tmp/billing-postgres-frozen.json)" = \
+            "$(jq -r '.source.ledger.head_hash' /tmp/source-summary.json)"
+
+          # Persist the deployment marker only after the running PostgreSQL
+          # revision itself has proved exact parity. This marker is the recovery
+          # boundary used by future deploys and by a resumed unfreeze.
+          COMMIT_SUFFIX="commit-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
+          retry az containerapp update \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --set-env-vars DSG_REVENUE_WRITE_FROZEN=1 DSG_REVENUE_POSTGRES_ENABLED=1 \
+            --revision-suffix "$COMMIT_SUFFIX" \
+            --output none
+          wait_for_revision "$CINEMA_APP--$COMMIT_SUFFIX" 1 1
+          curl --fail-with-body --silent --show-error \
+            "$CINEMA_URL/billing/status" > /tmp/billing-postgres-committed.json
+          jq -e '.storage.backend == "postgres" and .storage.writes_frozen == true' \
+            /tmp/billing-postgres-committed.json >/dev/null
+          test "$(jq -r '.ledger.entries' /tmp/billing-postgres-committed.json)" = \
+            "$(jq -r '.source.ledger.entries' /tmp/source-summary.json)"
+          test "$(jq -r '.ledger.head_hash' /tmp/billing-postgres-committed.json)" = \
+            "$(jq -r '.source.ledger.head_hash' /tmp/source-summary.json)"
+
+          # PostgreSQL is now the authority: an exact frozen runtime has read the
+          # committed snapshot. Never roll back to the file after this point,
+          # because a successful unfreeze could accept a new PostgreSQL write
+          # before a later probe fails.
+          ROLLBACK_REQUIRED=0
+          UNFREEZE_SUFFIX="unfreeze-${GITHUB_RUN_ATTEMPT}-${GITHUB_RUN_ID}"
+          retry az containerapp update \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --set-env-vars DSG_REVENUE_WRITE_FROZEN=0 DSG_REVENUE_POSTGRES_ENABLED=1 \
+            --revision-suffix "$UNFREEZE_SUFFIX" \
+            --output none
+          wait_for_revision "$CINEMA_APP--$UNFREEZE_SUFFIX" 1 0
+
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail --show-error "$CINEMA_URL/billing/status" \
+              > /tmp/billing-final.json 2>/dev/null \
+              && curl --silent --fail --show-error "$CINEMA_URL/api/v1/status" \
+              > /tmp/v1-final.json 2>/dev/null \
+              && jq -e '.storage.backend == "postgres" and .storage.writes_frozen == false' \
+                /tmp/billing-final.json >/dev/null \
+              && jq -e '.guarded_mutation_storage.backend == "postgres" and .revenue_writes_frozen == false' \
+                /tmp/v1-final.json >/dev/null; then
+              break
+            fi
+            [[ "$attempt" == "60" ]] && { echo 'PostgreSQL revision did not unfreeze cleanly.' >&2; exit 1; }
+            sleep 5
+          done
+          SOURCE_ENTRIES=$(jq -r '.source.ledger.entries' /tmp/source-summary.json)
+          SOURCE_ACCOUNTS=$(jq -r '.source.accounts' /tmp/source-summary.json)
+          FINAL_ENTRIES=$(jq -r '.ledger.entries' /tmp/billing-final.json)
+          (( FINAL_ENTRIES >= SOURCE_ENTRIES ))
+          UNFROZEN_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/solve" \
+            --header 'Content-Type: application/json' --data '{}')
+          test "$UNFROZEN_CODE" = '401'
+
+          # Writes are live now, so exact equality with the frozen source is no
+          # longer a valid assertion. Verify the current complete chain and
+          # require it to contain at least every migrated account/entry.
+          python scripts/migrate_revenue_store.py inspect > /tmp/postgres-final.json
+          jq -e \
+            --argjson source_entries "$SOURCE_ENTRIES" \
+            --argjson source_accounts "$SOURCE_ACCOUNTS" '
+              .verified == true and
+              .target.ledger.verified == true and
+              .target.ledger.entries >= $source_entries and
+              .target.accounts >= $source_accounts
+            ' /tmp/postgres-final.json >/dev/null
+
+          jq -n \
+            --slurpfile source /tmp/source-summary.json \
+            --slurpfile migration /tmp/migration-result.json \
+            --slurpfile final /tmp/billing-final.json \
+            --slurpfile database /tmp/postgres-final.json \
+            '{cutover:"VERIFIED",storage:$final[0].storage,ledger:$final[0].ledger,database:$database[0].target,source:$source[0].source,migration_action:$migration[0].action,archive_id:$migration[0].archive_id,archived:$migration[0].archived}' \
+            > /tmp/cutover-evidence.json
+          cat /tmp/cutover-evidence.json
+
+      - name: Upload non-secret cutover evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: revenue-postgres-cutover-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/cutover-evidence.json
+          retention-days: 30

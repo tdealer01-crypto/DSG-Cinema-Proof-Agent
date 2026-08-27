@@ -233,6 +233,45 @@ file rewritten per append is fine at current volume and becomes the bottleneck
 long before it becomes wrong. Postgres remains the answer for concurrency across
 many writers.
 
+### PostgreSQL cutover contract
+
+`DSG_REVENUE_DATABASE_URL` selects the PostgreSQL account registry **and** the
+PostgreSQL ledger, as well as guarded evidence. Adding that secret is therefore
+not a guarded-evidence-only change and must never switch a populated deployment
+by itself.
+
+The production switch is owned by the manual
+`cutover-revenue-postgres.yml` workflow. It runs only from `main` after the
+operator types `CUTOVER_REVENUE_TO_POSTGRES`, and performs this fail-closed
+sequence:
+
+1. Confirm the live backend is the durable file store, guarded memory contains
+   zero rows, and the app uses single-revision mode.
+2. Deploy a read-only revision, prove mutations return retryable HTTP 503, and
+   require the ledger count and chain head to stop changing.
+3. Disable ingress and download the authoritative `accounts.json` and
+   `ledger.json` directly from the mounted Azure Files share.
+4. Validate every source row and the complete ledger chain. If PostgreSQL
+   already contains divergent rows, replacement is refused unless the operator
+   explicitly enables archival. The displaced account, ledger, and guarded
+   rows are retained in `dsg_revenue_cutover_archive`.
+5. Replace the target inside one advisory-locked transaction, read every row
+   back, and commit only when account fingerprint, ledger count, chain head, and
+   every stored field match.
+6. Start PostgreSQL in read-only mode, verify the running service reports the
+   PostgreSQL backends and the exact frozen ledger head, then unfreeze writes.
+
+Any failure before the frozen PostgreSQL runtime proves exact parity updates the
+Container App back to the unchanged file stores and re-enables ingress. Once
+that runtime passes, PostgreSQL becomes authoritative before writes are
+unfrozen; a later unfreeze/probe failure deliberately leaves PostgreSQL
+read-only instead of risking loss of a newly accepted database write. A
+successful cutover writes `DSG_REVENUE_POSTGRES_ENABLED=1` to the live Container
+App; later deployments preserve PostgreSQL only when that marker is present and
+refuse to fall back if the database secret is unavailable. Re-running the
+cutover workflow with that marker present verifies the current database chain
+and safely resumes an interrupted unfreeze; it never imports the files again.
+
 ## Truth boundary
 
 **Supported and verified by tests in `tests/test_revenue.py`:**

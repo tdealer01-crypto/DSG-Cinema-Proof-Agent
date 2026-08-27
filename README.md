@@ -519,6 +519,7 @@ SENTRY_TRACES_SAMPLE_RATE=0.1        # Sample 10% of transactions
 | `revenue-autopilot.yml` | Daily @ 00:00 UTC | Reconcile usage ledger, verify Stripe webhooks, detect mismatches | ✅ Automated |
 | `api-v1-verify.yml` | Every commit | API contract tests, error handling, regression suite | ✅ Automated |
 | `apply-guarded-migration.yml` | On demand | Schema bootstrap, migration, live-database verification | ✅ Ready |
+| `cutover-revenue-postgres.yml` | Explicit manual confirmation | Freeze writes, archive divergent target rows, migrate accounts/ledger, prove exact parity, switch or roll back | ✅ Fail-closed |
 
 ### Safety Guardrails
 

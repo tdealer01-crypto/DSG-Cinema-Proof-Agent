@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: post-deploy-v1-persistence-audit
+  group: cinema-z3-production
   cancel-in-progress: false
 
 jobs:

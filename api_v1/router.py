@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from marketplace_verification import POLICY_VERSION, RECEIPT_VERSION
 from revenue import api as billing
+from revenue.cutover import writes_frozen
 
 from . import API_VERSION, ENGINE_VERSION
 from .errors import AGENT_ASSERTED_VERDICT_REJECTED, ApiError
@@ -103,6 +104,7 @@ async def status() -> dict[str, Any]:
         "verification_backend": backend,
         "storage": storage,
         "guarded_mutation_storage": get_guarded_store().summary(),
+        "revenue_writes_frozen": writes_frozen(),
         "independent_verification": service.INDEPENDENT_VERIFICATION,
         "flow": service.flow_definition(),
         "mcp": {

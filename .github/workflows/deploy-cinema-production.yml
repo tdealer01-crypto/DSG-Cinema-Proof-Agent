@@ -327,6 +327,10 @@ jobs:
           test "$(jq -r .request_hash /tmp/z3-proof-1.json)" = "$(jq -r .request_hash /tmp/z3-proof-2.json)"
 
       - name: Deploy Cinema production
+        env:
+          # This secret is inert until the manual cutover workflow proves exact
+          # parity and writes DSG_REVENUE_POSTGRES_ENABLED=1 to the live app.
+          CONFIGURED_REVENUE_DATABASE_URL: ${{ secrets.DSG_REVENUE_DATABASE_URL }}
         shell: bash
         run: |
           set -euo pipefail
@@ -359,6 +363,20 @@ jobs:
           test -n "$CINEMA_FQDN"
           CINEMA_URL="https://$CINEMA_FQDN"
 
+          # The live app is the durable cutover marker. Merely adding the GitHub
+          # secret or merging this workflow must never switch a populated ledger.
+          # Only cutover-revenue-postgres.yml writes this marker after parity.
+          REVENUE_POSTGRES_ENABLED=0
+          if az containerapp show --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" >/dev/null 2>&1; then
+            CURRENT_POSTGRES_MARKER=$(az containerapp show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query "properties.template.containers[0].env[?name=='DSG_REVENUE_POSTGRES_ENABLED'].value | [0]" \
+              --output tsv 2>/dev/null || true)
+            if [[ "$CURRENT_POSTGRES_MARKER" == "1" ]]; then
+              REVENUE_POSTGRES_ENABLED=1
+            fi
+          fi
+
           # Secret and env sets are assembled once, so an optional credential adds
           # one array entry instead of another copy of the whole deployment call.
           CINEMA_SECRET_ARGS=("backend-secret=$Z3_SECRET" "cinema-secret=$CINEMA_SECRET")
@@ -367,8 +385,29 @@ jobs:
             DSG_BACKEND_API_KEY=secretref:backend-secret
             CINEMA_API_SECRET=secretref:cinema-secret
             DSG_REVENUE_ENFORCE="$REVENUE_ENFORCE"
+            DSG_REVENUE_WRITE_FROZEN=0
             PORT=8000
           )
+
+          if [[ "$REVENUE_POSTGRES_ENABLED" == "1" ]]; then
+            if [[ -z "$CONFIGURED_REVENUE_DATABASE_URL" ]]; then
+              echo 'Live app is marked for PostgreSQL but DSG_REVENUE_DATABASE_URL is unavailable.' >&2
+              echo 'Refusing to fall back to the file ledger after cutover.' >&2
+              exit 1
+            fi
+            CINEMA_SECRET_ARGS+=("revenue-database-url=$CONFIGURED_REVENUE_DATABASE_URL")
+            CINEMA_ENV_ARGS+=(
+              DSG_REVENUE_DATABASE_URL=secretref:revenue-database-url
+              DSG_REVENUE_POSTGRES_ENABLED=1
+            )
+            REVENUE_STORE_EXPECTED=postgres
+          else
+            # Empty is intentional: it also clears a stale secret reference if a
+            # failed manual cutover rolled the live marker back to zero.
+            CINEMA_ENV_ARGS+=(DSG_REVENUE_DATABASE_URL= DSG_REVENUE_POSTGRES_ENABLED=0)
+            REVENUE_STORE_EXPECTED=file
+          fi
+          echo "REVENUE_STORE_EXPECTED=$REVENUE_STORE_EXPECTED" >> "$GITHUB_ENV"
 
           if [[ "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
             CINEMA_SECRET_ARGS+=("revenue-admin-secret=$REVENUE_ADMIN_SECRET")
@@ -554,7 +593,7 @@ jobs:
               DSG_REVENUE_LEDGER_STORE="$REVENUE_MOUNT_PATH/ledger.json"
               DSG_REVENUE_STORAGE_DURABLE=1
             )
-            if [[ "$REVENUE_ENFORCE" == "1" ]]; then
+            if [[ "$REVENUE_ENFORCE" == "1" && "$REVENUE_POSTGRES_ENABLED" != "1" ]]; then
               # Paid gating runs on exactly one writer.
               CINEMA_MAX_REPLICAS=1
               CINEMA_ENV_ARGS+=(DSG_REVENUE_SINGLE_WRITER=1)
@@ -908,14 +947,33 @@ jobs:
 
           # Checkout state must match whether Stripe is actually linked, and
           # enforcement must match what this deployment configured.
-          jq -e --arg enforce "$REVENUE_ENFORCE" '
+          jq -e --arg enforce "$REVENUE_ENFORCE" --arg store "$REVENUE_STORE_EXPECTED" '
             .billing_version == "dsg-revenue-1.1.0" and
             .metering_enabled == true and
             .enforcement_requested == ($enforce == "1") and
             .metering_enforced == (($enforce == "1") and .enforcement_ready) and
+            .storage.backend == $store and
+            .storage.durable == true and
+            .storage.writes_frozen == false and
             (.checkout_status == (if .stripe.charges_enabled then "LINKED" else "NOT_VERIFIED_NOT_LINKED" end)) and
             ([.catalog.plans[].plan] | sort == ["enterprise","free","metered","team"])
           ' /tmp/billing-status.json >/dev/null
+
+          curl --fail-with-body --silent --show-error \
+            "$CINEMA_URL/api/v1/status" > /tmp/v1-storage-status.json
+          if [[ "$REVENUE_STORE_EXPECTED" == "postgres" ]]; then
+            jq -e '
+              .revenue_writes_frozen == false and
+              .guarded_mutation_storage.backend == "postgres" and
+              .guarded_mutation_storage.durable == true
+            ' /tmp/v1-storage-status.json >/dev/null
+          else
+            jq -e '
+              .revenue_writes_frozen == false and
+              .guarded_mutation_storage.backend == "memory" and
+              .guarded_mutation_storage.durable == false
+            ' /tmp/v1-storage-status.json >/dev/null
+          fi
 
           # A provisioned Stripe signing secret must actually have reached the
           # running app, and an absent one must leave webhooks refused rather
@@ -1004,8 +1062,8 @@ jobs:
             echo 'Free public path verified: an unauthenticated evaluation is still served.'
           fi
 
-          # The ledger must live on the mounted share, not the container
-          # filesystem, or it is lost on the next restart.
+          # The active ledger backend must preserve the exact chain head across
+          # a revision restart, whether it is Azure Files or PostgreSQL.
           if [[ "${REVENUE_STORAGE_READY:-0}" == "1" && "$REVENUE_ADMIN_CONFIGURED" == "true" ]]; then
             curl --fail-with-body --silent --show-error \
               --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \

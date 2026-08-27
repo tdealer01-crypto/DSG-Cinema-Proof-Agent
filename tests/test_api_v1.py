@@ -165,6 +165,7 @@ def test_status_reports_degraded_when_the_verifier_is_not_ready(monkeypatch):
     body = client.get("/api/v1/status").json()
     assert body["status"] == "DEGRADED"
     assert body["verification_backend"]["ready"] is False
+    assert body["revenue_writes_frozen"] is False
 
 
 def test_status_advertises_the_flow_and_the_mcp_endpoint(monkeypatch):

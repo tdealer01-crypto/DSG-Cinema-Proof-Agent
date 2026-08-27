@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from .accounts import Account
 from .activation import ActivationService, activation_ref
+from .cutover import storage_summary
 from .engine import (
     Authorization,
     EntitlementChangedError,
@@ -436,6 +437,7 @@ async def billing_status() -> dict:
         "enforcement_requested": engine.enforcement_requested,
         "enforcement_ready": engine.enforcement_ready,
         "enforcement_blockers": list(engine.enforcement_blockers),
+        "storage": storage_summary(engine),
         "checkout_status": (
             CHECKOUT_STATUS_LINKED
             if stripe_status["charges_enabled"]

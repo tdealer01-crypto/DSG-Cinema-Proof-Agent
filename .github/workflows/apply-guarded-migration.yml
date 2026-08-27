@@ -17,7 +17,8 @@ on:
         default: false
 
 concurrency:
-  group: guarded-migration
+  # Direct database writes must not overlap a Cinema deploy or revenue cutover.
+  group: cinema-z3-production
   cancel-in-progress: false
 
 jobs:

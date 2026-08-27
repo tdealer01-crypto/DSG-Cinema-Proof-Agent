@@ -99,6 +99,7 @@ class AccountStore:
         self._accounts: dict[str, Account] = {}
         self._by_key_id: dict[str, str] = {}
         self._path = Path(path) if path else None
+        self.backend = "file" if self._path else "memory"
         self._loaded_signature: Optional[tuple[int, int]] = None
         if self._path and self._path.exists():
             self._load()

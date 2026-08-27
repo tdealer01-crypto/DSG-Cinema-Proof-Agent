@@ -1451,6 +1451,13 @@ def test_billing_status_is_public_and_declares_the_checkout_truth(engine):
     assert body["checkout_status"] == "NOT_VERIFIED_NOT_LINKED"
     assert body["stripe"]["charges_enabled"] is False
     assert body["metering_enforced"] is False
+    assert body["storage"] == {
+        "backend": "memory",
+        "accounts_backend": "memory",
+        "ledger_backend": "memory",
+        "durable": False,
+        "writes_frozen": False,
+    }
     assert {plan["plan"] for plan in body["catalog"]["plans"]} == {
         "free",
         "metered",

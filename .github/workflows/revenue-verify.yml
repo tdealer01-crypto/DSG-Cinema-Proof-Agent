@@ -17,22 +17,27 @@ on:
       - 'z3_main.py'
       - 'AZURE_BOOTSTRAP_KEY_VAULT.sh'
       - '.github/workflows/deploy-cinema-production.yml'
+      - '.github/workflows/cutover-revenue-postgres.yml'
       - 'marketplace/github-action-v2/**'
       - 'marketplace/openai-plugin/**'
       - 'stripe-app/src/**'
       - 'landing/**'
       - 'azure-landing/**'
       - '.github/workflows/revenue-verify.yml'
+      - 'tests/test_revenue_migration.py'
   push:
     branches: [main]
     paths:
       - 'revenue/**'
       - 'cinema_main.py'
       - 'scripts/revenue_report.py'
+      - 'scripts/migrate_revenue_store.py'
       - 'tests/test_revenue.py'
+      - 'tests/test_revenue_migration.py'
       - 'tests/test_channel_delivery.py'
       - 'marketplace/**'
       - '.github/workflows/revenue-verify.yml'
+      - '.github/workflows/cutover-revenue-postgres.yml'
   workflow_dispatch:
 
 permissions:
@@ -65,12 +70,15 @@ jobs:
           python -m py_compile \
             cinema_main.py \
             marketplace_verification.py \
+            scripts/migrate_revenue_store.py \
             scripts/revenue_report.py \
             revenue/__init__.py \
             revenue/accounts.py \
             revenue/api.py \
+            revenue/cutover.py \
             revenue/engine.py \
             revenue/ledger.py \
+            revenue/migration.py \
             revenue/pricing.py \
             z3_main.py \
             revenue/remediation.py \
@@ -81,6 +89,7 @@ jobs:
         run: |
           python -m pytest -q \
             tests/test_revenue.py \
+            tests/test_revenue_migration.py \
             tests/test_channel_delivery.py \
             tests/test_cinema_main.py \
             tests/test_z3_main.py \

@@ -229,6 +229,9 @@ def _account_from_row(row: tuple) -> Account:
 class PostgresLedgerStore:
     """Proof-bound ledger with PostgreSQL row locks and idempotency uniqueness."""
 
+    backend = "postgres"
+    durable = True
+
     #: Read order for a ledger row. `_entry` depends on it, so both live together.
     _LEDGER_COLUMNS = (
         "sequence, period, account_id, channel, sku, quantity, units_before, "
@@ -383,6 +386,9 @@ class PostgresLedgerStore:
 
 class PostgresAccountStore:
     """Tenant account registry backed by Supabase/PostgreSQL transactions."""
+
+    backend = "postgres"
+    durable = True
 
     def __init__(self, database_url: str) -> None:
         self._database_url = validate_database_url(database_url)
