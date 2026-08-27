@@ -19,6 +19,7 @@ on:
 concurrency:
   # Direct database writes must not overlap a Cinema deploy or revenue cutover.
   group: cinema-z3-production
+  queue: max
   cancel-in-progress: false
 
 jobs:

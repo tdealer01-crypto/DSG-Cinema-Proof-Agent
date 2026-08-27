@@ -343,6 +343,7 @@ def test_workflows_require_manual_parity_before_deploy_can_keep_postgres_enabled
         "bind-browserbase-production.yml",
         "configure-github-marketplace-production.yml",
         "configure-stripe-production.yml",
+        "cutover-revenue-postgres.yml",
         "deploy-cinema-production.yml",
         "enforce-v1-persistent-store.yml",
         "post-deploy-v1-persistence-audit.yml",
@@ -350,3 +351,4 @@ def test_workflows_require_manual_parity_before_deploy_can_keep_postgres_enabled
     for name in production_mutators:
         workflow = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
         assert "  group: cinema-z3-production" in workflow, name
+        assert "  queue: max" in workflow, name
