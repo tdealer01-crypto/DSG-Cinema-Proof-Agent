@@ -1,6 +1,12 @@
 name: Enforce V1 Persistent Proof Store
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'api_v1/store.py'
+      - 'api_v1/service.py'
+      - '.github/workflows/enforce-v1-persistent-store.yml'
   workflow_run:
     workflows: ["Deploy Cinema + Z3 Production"]
     types: [completed]
@@ -16,7 +22,7 @@ concurrency:
 
 jobs:
   enforce-and-prove:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment: production
