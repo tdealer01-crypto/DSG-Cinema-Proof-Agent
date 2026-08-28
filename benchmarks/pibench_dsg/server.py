@@ -55,23 +55,52 @@ are actually correct.
 """
 
 
+def _agent_card_payload(card_url: str) -> dict[str, Any]:
+    """Return an A2A 0.3-compatible card plus PI-Bench's raw bootstrap marker."""
+    return {
+        "name": "DSG Proof-Governed Agent",
+        "description": "PI-Bench purple agent with deterministic fail-closed tool-contract validation and hash-chained proof receipts.",
+        "url": card_url,
+        "version": "1.0.0",
+        "protocolVersion": "0.3.0",
+        "preferredTransport": "JSONRPC",
+        # PI-Bench currently discovers its benchmark-specific extension from this
+        # raw top-level field before sending the bootstrap handshake.
+        "extensions": [POLICY_BOOTSTRAP_EXTENSION],
+        # A2A 0.3.22 models protocol extensions under capabilities.extensions.
+        # Keep both representations: the SDK ignores the benchmark-specific
+        # top-level field while PI-Bench consumes it directly.
+        "capabilities": {
+            "extensions": [
+                {
+                    "uri": POLICY_BOOTSTRAP_EXTENSION,
+                    "description": "Receive PI-Bench policy context and tool schemas once per scenario.",
+                    "required": False,
+                }
+            ]
+        },
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "skills": [
+            {
+                "id": "pi-bench-policy-execution",
+                "name": "PI-Bench governed policy execution",
+                "description": "Interpret benchmark policy and emit fail-closed, proof-gated tool actions.",
+                "tags": ["pi-bench", "policy", "governance", "proof"],
+            }
+        ],
+    }
+
+
 @app.get("/.well-known/agent.json")
-async def agent_card() -> JSONResponse:
-    return JSONResponse(
-        {
-            "name": "DSG Proof-Governed Agent",
-            "description": "PI-Bench purple agent with deterministic fail-closed tool-contract validation and hash-chained proof receipts.",
-            "url": _card_url,
-            "version": "1.0.0",
-            "extensions": [POLICY_BOOTSTRAP_EXTENSION],
-            "capabilities": {"message": True},
-        }
-    )
+async def agent_card(request: Request) -> JSONResponse:
+    card_url = _card_url or str(request.base_url).rstrip("/")
+    return JSONResponse(_agent_card_payload(card_url))
 
 
 @app.get("/.well-known/agent-card.json")
-async def agent_card_alias() -> JSONResponse:
-    return await agent_card()
+async def agent_card_alias(request: Request) -> JSONResponse:
+    return await agent_card(request)
 
 
 @app.get("/health")
@@ -339,9 +368,9 @@ def main() -> None:
 
     _model = args.model
     _reasoning_effort = args.reasoning_effort
-    # AgentBeats discovers this container by its provided A2A endpoint. Keep the
-    # card URL empty unless the runtime supplies an externally resolvable URL;
-    # never advertise 0.0.0.0 as a public destination.
+    # AgentBeats discovers this container by its provided A2A endpoint. When no
+    # explicit public URL is configured, the card handler derives the reachable
+    # runtime base URL from the incoming request rather than advertising 0.0.0.0.
     _card_url = args.card_url
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     logger.info("starting model=%s host=%s port=%d", _model, args.host, args.port)
