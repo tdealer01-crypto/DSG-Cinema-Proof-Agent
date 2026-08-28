@@ -3,6 +3,9 @@ import json
 import pathlib
 import sys
 
+import httpx
+from a2a.client import A2ACardResolver
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -13,17 +16,51 @@ def body_json(response):
     return json.loads(response.body.decode("utf-8"))
 
 
-def test_agent_card_advertises_pibench_bootstrap_without_fake_public_url():
-    original = server._card_url
-    try:
-        server._card_url = ""
-        card = body_json(asyncio.run(server.agent_card()))
-    finally:
-        server._card_url = original
+async def resolve_agent_card():
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resolver = A2ACardResolver(httpx_client=client, base_url="http://testserver")
+        return await resolver.get_agent_card()
+
+
+async def fetch_raw_agent_card(path="/.well-known/agent-card.json"):
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(path)
+        response.raise_for_status()
+        return response.json()
+
+
+def test_agent_card_resolves_with_agentbeats_a2a_sdk_0_3_22():
+    card = asyncio.run(resolve_agent_card())
+
+    assert card.name == "DSG Proof-Governed Agent"
+    assert card.url == "http://testserver"
+    assert card.protocol_version == "0.3.0"
+    assert card.preferred_transport == "JSONRPC"
+    assert card.default_input_modes == ["application/json"]
+    assert card.default_output_modes == ["application/json"]
+    assert len(card.skills) == 1
+    assert card.skills[0].id == "pi-bench-policy-execution"
+    assert card.capabilities.extensions is not None
+    assert card.capabilities.extensions[0].uri == server.POLICY_BOOTSTRAP_EXTENSION
+
+
+def test_agent_card_keeps_pibench_bootstrap_extension_and_runtime_url():
+    card = asyncio.run(fetch_raw_agent_card())
 
     assert server.POLICY_BOOTSTRAP_EXTENSION in card["extensions"]
-    assert card["capabilities"]["message"] is True
-    assert card["url"] == ""
+    assert card["capabilities"]["extensions"][0]["uri"] == server.POLICY_BOOTSTRAP_EXTENSION
+    assert card["url"] == "http://testserver"
+    assert card["defaultInputModes"] == ["application/json"]
+    assert card["defaultOutputModes"] == ["application/json"]
+    assert card["skills"][0]["id"] == "pi-bench-policy-execution"
+
+
+def test_legacy_agent_card_alias_matches_current_card():
+    current = asyncio.run(fetch_raw_agent_card("/.well-known/agent-card.json"))
+    legacy = asyncio.run(fetch_raw_agent_card("/.well-known/agent.json"))
+    assert legacy == current
 
 
 def test_system_prompt_preserves_benchmark_context_metadata():
