@@ -1,4 +1,8 @@
 # 🎬 DSG ONE — Verified Execution
+> [!IMPORTANT]
+> **Production platform authority — Azure only.** Vercel, Render, Railway, AWS, and Google Cloud are retired for DSG production; legacy URLs, checks, and statuses are not deployment or health evidence.
+> Runtime secrets belong in Azure Key Vault and are resolved by the Azure service Managed Identity. GitHub OIDC may bootstrap or rotate them; `.env.example` is documentation only. Any unresolved Key Vault reference is `BLOCK`.
+> Canonical secret-manager contract: [Control Plane Azure Key Vault operations](https://github.com/tdealer01-crypto/tdealer01-crypto-dsg-control-plane/blob/main/docs/ops/azure-runtime-env-sync.md).
 
 **Prove your automation decisions. Mathematically. Cryptographically. Permanently.**
 
