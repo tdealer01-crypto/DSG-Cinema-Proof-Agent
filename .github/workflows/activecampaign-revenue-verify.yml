@@ -96,8 +96,18 @@ jobs:
 
           with open('.github/workflows/activecampaign-revenue-reconcile.yml', encoding='utf-8') as handle:
               workflow = yaml.safe_load(handle)
-          steps = workflow['jobs']['reconcile']['steps']
+
+          assert workflow.get('permissions', {}).get('id-token') == 'write'
+          reconcile = workflow['jobs']['reconcile']
+          assert reconcile.get('permissions', {}).get('id-token') == 'write'
+          assert reconcile.get('permissions', {}).get('contents') == 'read'
+
+          steps = reconcile['steps']
           shell = '\n'.join(str(step.get('run', '')) for step in steps)
+          action_refs = [str(step.get('uses', '')) for step in steps]
+          assert 'azure/login@v3.0.2' in action_refs
+          assert 'ACTIONS_ID_TOKEN_REQUEST_URL' in shell
+          assert 'ACTIONS_ID_TOKEN_REQUEST_TOKEN' in shell
           assert 'ACTIVECAMPAIGN_API_TOKEN' in shell
           assert 'secretref:activecampaign-api-token' in shell
           assert 'DSG_MARKETING_PROFILE_STORE=/revenue/marketing-profiles.json' in shell
