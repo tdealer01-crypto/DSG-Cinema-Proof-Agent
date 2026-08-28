@@ -352,3 +352,25 @@ def test_workflows_require_manual_parity_before_deploy_can_keep_postgres_enabled
         workflow = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
         assert "  group: cinema-z3-production" in workflow, name
         assert "  queue: max" in workflow, name
+
+
+def test_deploy_enforcement_readiness_probe_has_a_payload_and_fails_closed():
+    workflow = (ROOT / ".github/workflows/deploy-cinema-production.yml").read_text(
+        encoding="utf-8"
+    )
+    start = workflow.index(
+        "      - name: Wait for Cinema app to be fully ready with enforcement configuration"
+    )
+    end = workflow.index(
+        "      - name: Verify marketplace adapters and Azure browser CORS", start
+    )
+    readiness = workflow[start:end]
+    payload = "/tmp/enforcement-readiness-request.json"
+
+    assert readiness.index(f"> {payload}") < readiness.index(f"--data @{payload}")
+    assert "/tmp/marketplace-request.json" not in readiness
+    assert "GATE_READY=false" in readiness
+    assert readiness.count("GATE_READY=true") == 2
+    guard = 'if [[ "$GATE_READY" != "true" ]]; then'
+    assert guard in readiness
+    assert "exit 1" in readiness[readiness.index(guard) :]
