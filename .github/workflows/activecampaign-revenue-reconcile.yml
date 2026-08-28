@@ -23,6 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
       CINEMA_APP: dsg-cinema-production
@@ -53,9 +56,21 @@ jobs:
           echo "::add-mask::$ACTIVE_CAMPAIGN_API_TOKEN"
           echo "::add-mask::$REVENUE_ADMIN_SECRET"
 
+      - name: Verify GitHub OIDC token availability
+        if: steps.config.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo 'GitHub OIDC token request variables are unavailable despite id-token: write.' >&2
+            echo 'Check repository/organization Actions policy before retrying Azure login.' >&2
+            exit 1
+          fi
+          echo 'GitHub OIDC token request capability is available.'
+
       - name: Azure login with OIDC
         if: steps.config.outputs.ready == 'true'
-        uses: azure/login@v2
+        uses: azure/login@v3.0.2
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
