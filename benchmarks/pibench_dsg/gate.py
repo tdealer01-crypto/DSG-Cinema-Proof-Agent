@@ -9,7 +9,7 @@ from jsonschema import ValidationError
 from jsonschema.validators import validator_for
 
 _ALLOWED_DECISIONS = {"ALLOW", "ALLOW-CONDITIONAL", "DENY", "ESCALATE"}
-_RECEIPT_VERSION = "dsg-pibench-proof/v1"
+_RECEIPT_VERSION = "dsg-pibench-proof/v2"
 
 
 def canonical_json(value: Any) -> str:
@@ -64,12 +64,12 @@ def gate_tool_calls(
     turn_index: int,
     previous_receipt_hash: str | None = None,
 ) -> GateResult:
-    """Validate and deterministically shape model-proposed benchmark tool calls.
+    """Validate model-proposed benchmark tool calls without repairing semantics.
 
     This gate verifies the execution contract, not the semantic correctness of the
     underlying policy decision. PI-Bench remains the independent semantic/state
-    evaluator. Any malformed/unknown tool request is fail-closed and no tool call
-    is emitted for that turn.
+    evaluator. Malformed, unknown, or invalidly ordered requests fail closed and
+    emit zero tool calls for the turn.
     """
 
     registry, reasons = _tool_registry(tools)
@@ -140,21 +140,23 @@ def gate_tool_calls(
             }
         )
 
+    names = [call["function"]["name"] for call in accepted]
+    decision_indexes = [i for i, name in enumerate(names) if name == "record_decision"]
+    if len(decision_indexes) > 1:
+        reasons.append("MULTIPLE_FINAL_DECISIONS")
+    if decision_indexes and decision_indexes[0] != len(accepted) - 1:
+        reasons.append("ACTION_AFTER_FINAL_DECISION")
+
     proposed_hash = sha256_json(proposed_tool_calls)
     content_hash = hashlib.sha256((content or "").encode("utf-8")).hexdigest()
 
     if reasons:
         status = "BLOCKED"
         emitted: list[dict[str, Any]] = []
-        shaped = False
     else:
-        # PI-Bench treats record_decision as the canonical terminal decision. Keep
-        # all non-decision calls in model order and deterministically place decision
-        # calls last so no operational action is emitted after the decision.
-        non_decisions = [c for c in accepted if c["function"]["name"] != "record_decision"]
-        decisions = [c for c in accepted if c["function"]["name"] == "record_decision"]
-        emitted = [*non_decisions, *decisions]
-        shaped = emitted != accepted
+        # Preserve semantic order. The gate canonicalizes representation only;
+        # it never repairs an invalid action sequence by reordering tool calls.
+        emitted = accepted
         status = "PASSED"
 
     receipt_core = {
@@ -167,7 +169,7 @@ def gate_tool_calls(
         "contentHash": content_hash,
         "proposedToolCallsHash": proposed_hash,
         "emittedToolCallsHash": sha256_json(emitted),
-        "deterministicallyShaped": shaped,
+        "deterministicallyNormalized": bool(accepted != proposed_tool_calls),
         "previousReceiptHash": previous_receipt_hash,
     }
     receipt = {**receipt_core, "receiptHash": sha256_json(receipt_core)}
