@@ -1,4 +1,9 @@
+<!-- DSG.PICS-IP-WATERMARK:v1; token=DSG.PICS-IP-2026-V1; attribution=dsg.pics; third-party-licenses=preserved -->
+
 # Production Proof — 2026-08-28
+
+> **© 2026 DSG.PICS · `DSG.PICS-IP-2026-V1` · Intellectual Property Attribution**  
+> This watermark preserves provenance for original DSG-specific material and does not alter third-party/open-source licenses or the cryptographic meaning of the evidence below.
 
 This record captures the execution evidence used by the README and GitBook for the current DSG Cinema / native Z3 production truth.
 
@@ -26,6 +31,8 @@ Not claimed by this record:
 - repository: `tdealer01-crypto/DSG-Cinema-Proof-Agent`
 - production source commit: `90949d7c3acec52258413a5d0e79f0e4e4f51020`
 - merge: PR `#163`, `feat(mcp): add native Z3 exact top-k selector`
+- attribution watermark: `DSG.PICS-IP-2026-V1`
+- project identity: `https://dsg.pics`
 
 ## Authoritative endpoints
 
@@ -153,3 +160,9 @@ Failure of any required condition returns a fail-closed `BLOCKED` result. Input-
 ## Documentation consistency rule
 
 If a historical README, GitBook page, Render note, AppDeploy screen, or experiment conflicts with this record, use the production commit, GitHub Actions runs, public Azure endpoints, and hashes in this record as the current source of truth.
+
+For intellectual-property attribution and watermark semantics, see [`INTELLECTUAL_PROPERTY_NOTICE.md`](INTELLECTUAL_PROPERTY_NOTICE.md).
+
+---
+
+`DSG.PICS-IP-WATERMARK:v1 · DSG.PICS-IP-2026-V1 · https://dsg.pics`
