@@ -813,6 +813,11 @@ jobs:
           # enforcement gate behavior, not just the status endpoint. Also verify
           # that /billing/status is ready (it initializes the revenue ledger, which
           # may take time if mounted from Azure Files).
+          jq -n \
+            '{channel:"api",approved_plan_hash:("1"*64),proposed_action_hash:("2"*64),execution_id:"production-readiness-e2e",trace_id:"production-readiness-trace",agent_identity:"github-actions-production-readiness",authorized:true,plan_aligned:true,constraints_pass:true,execution_succeeded:true,replay_match:true,evidence_complete:true,cost_microunits:0}' \
+            > /tmp/enforcement-readiness-request.json
+          GATE_READY=false
+          GATE_CODE=not-run
           for attempt in $(seq 1 72); do
             CODE=$(curl --silent --show-error --output /tmp/cinema-health-2.json --write-out '%{http_code}' "$CINEMA_URL/health" || true)
             if [[ "$CODE" == "200" ]]; then
@@ -833,13 +838,14 @@ jobs:
                 GATE_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
                   --request POST "$CINEMA_URL/verify/evaluate" \
                   --header 'Content-Type: application/json' \
-                  --data @/tmp/marketplace-request.json || true)
+                  --data @/tmp/enforcement-readiness-request.json || true)
 
                 if [[ "$REVENUE_ENFORCE" == "1" ]]; then
                   # When enforcement is on, unauthenticated requests must return 401
                   if [[ "$GATE_CODE" == "401" ]]; then
                     echo "Cinema enforcement gate is active and working (returns 401 for unauthenticated requests)"
                     echo "Cinema billing status endpoint is ready and reporting correctly"
+                    GATE_READY=true
                     break
                   fi
                 else
@@ -847,6 +853,7 @@ jobs:
                   if [[ "$GATE_CODE" == "200" ]]; then
                     echo "Cinema enforcement is off and gate allows unauthenticated access (returns 200)"
                     echo "Cinema billing status endpoint is ready and reporting correctly"
+                    GATE_READY=true
                     break
                   fi
                 fi
@@ -859,6 +866,10 @@ jobs:
             fi
             sleep 5
           done
+          if [[ "$GATE_READY" != "true" ]]; then
+            echo "Cinema enforcement gate did not reach the expected state; last response code: $GATE_CODE" >&2
+            exit 1
+          fi
 
       - name: Verify marketplace adapters and Azure browser CORS
         shell: bash
