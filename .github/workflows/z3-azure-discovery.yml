@@ -1,0 +1,58 @@
+name: Z3 Azure Discovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/z3-azure-discovery
+    paths:
+      - '.github/workflows/z3-azure-discovery.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+
+    steps:
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Discover existing resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az group show --name "$RESOURCE_GROUP" --output json > evidence/resource-group.json
+          az containerapp env list --resource-group "$RESOURCE_GROUP" --output json > evidence/containerapp-environments.json
+          az containerapp list --resource-group "$RESOURCE_GROUP" --output json > evidence/containerapps.json
+          az acr list --resource-group "$RESOURCE_GROUP" --output json > evidence/acr.json
+          jq -n \
+            --arg group "$RESOURCE_GROUP" \
+            --argjson environments "$(cat evidence/containerapp-environments.json)" \
+            --argjson apps "$(cat evidence/containerapps.json)" \
+            --argjson registries "$(cat evidence/acr.json)" \
+            '{resourceGroup:$group,environments:[$environments[]|{name,location,defaultDomain,staticIp}],containerApps:[$apps[]|{name,location,environmentId:properties.environmentId,fqdn:properties.configuration.ingress.fqdn,external:properties.configuration.ingress.external,targetPort:properties.configuration.ingress.targetPort}],registries:[$registries[]|{name,location,loginServer,sku:.sku.name}]}' \
+            | tee evidence/summary.json
+
+      - name: Upload discovery evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: z3-azure-discovery-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
