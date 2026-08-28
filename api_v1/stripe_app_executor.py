@@ -1,11 +1,12 @@
 """Plan-gated Stripe App production configuration through a GitHub App.
 
-The endpoint in this module is intentionally narrow.  A caller supplies the
-six Stripe-issued values, but cannot choose the action, target, repository,
-environment, or destination names.  DSG re-runs the approved-plan preflight,
-then a server-side GitHub App writes five production environment secrets and
-one repository variable.  The response is built from GitHub read-back metadata
-and never contains a secret value.
+The endpoint in this module is intentionally narrow.  A caller supplies one or
+more values from a fixed allowlist, but cannot choose the action, target,
+repository, environment, or destination names.  DSG re-runs the approved-plan
+preflight, then a server-side GitHub App writes only the submitted production
+environment secrets or repository variable.  This incremental contract avoids
+collecting already-configured secrets again.  The response is built from
+GitHub read-back metadata and never contains a secret value.
 """
 
 from __future__ import annotations
@@ -73,34 +74,48 @@ def _https_url(value: str, label: str) -> str:
 
 
 class StripeAppProductionValues(Strict):
-    STRIPE_APP_SIGNING_SECRET: SecretStr
-    STRIPE_APP_OAUTH_TEST_SECRET_KEY: SecretStr
-    STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY: SecretStr
-    STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL: SecretStr
-    STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL: SecretStr
-    DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL: str = Field(min_length=8, max_length=2048)
+    """A non-empty subset of fixed Stripe production destinations."""
+
+    STRIPE_APP_SIGNING_SECRET: SecretStr | None = None
+    STRIPE_APP_OAUTH_TEST_SECRET_KEY: SecretStr | None = None
+    STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY: SecretStr | None = None
+    STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL: SecretStr | None = None
+    STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL: SecretStr | None = None
+    DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=2048,
+    )
 
     def validate_for_execution(self) -> None:
         """Validate without attaching raw secret inputs to a Pydantic 422 body."""
-        signing = self.STRIPE_APP_SIGNING_SECRET.get_secret_value()
-        test_key = self.STRIPE_APP_OAUTH_TEST_SECRET_KEY.get_secret_value()
-        sandbox_key = self.STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY.get_secret_value()
-        if not signing.startswith("absec_"):
+        secret_values = self.secret_values()
+        live_url = self.live_authorize_url()
+        if not secret_values and live_url is None:
+            raise StripeAppValueError(
+                "values",
+                "provide at least one fixed Stripe App production value",
+            )
+
+        signing = secret_values.get("STRIPE_APP_SIGNING_SECRET")
+        test_key = secret_values.get("STRIPE_APP_OAUTH_TEST_SECRET_KEY")
+        sandbox_key = secret_values.get("STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY")
+        if signing is not None and not signing.startswith("absec_"):
             raise StripeAppValueError(
                 "STRIPE_APP_SIGNING_SECRET",
                 "Stripe App signing secret must start with absec_",
             )
-        if not test_key.startswith("sk_test_"):
+        if test_key is not None and not test_key.startswith("sk_test_"):
             raise StripeAppValueError(
                 "STRIPE_APP_OAUTH_TEST_SECRET_KEY",
                 "Stripe test secret key must start with sk_test_",
             )
-        if not sandbox_key.startswith("sk_test_"):
+        if sandbox_key is not None and not sandbox_key.startswith("sk_test_"):
             raise StripeAppValueError(
                 "STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY",
                 "Stripe managed-sandbox secret key must start with sk_test_",
             )
-        if test_key == sandbox_key:
+        if test_key is not None and sandbox_key is not None and test_key == sandbox_key:
             raise StripeAppValueError(
                 "STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY",
                 "test and managed-sandbox secret keys must be different",
@@ -108,22 +123,24 @@ class StripeAppProductionValues(Strict):
         for field_name, value in (
             (
                 "STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL",
-                self.STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL.get_secret_value(),
+                secret_values.get("STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL"),
             ),
             (
                 "STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL",
-                self.STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL.get_secret_value(),
+                secret_values.get("STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL"),
             ),
             (
                 "DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL",
-                self.DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL,
+                live_url,
             ),
         ):
+            if value is None:
+                continue
             try:
                 _https_url(value, field_name)
             except ValueError as exc:
                 raise StripeAppValueError(field_name, str(exc)) from exc
-        for field_name, value in self.secret_values().items():
+        for field_name, value in secret_values.items():
             if not value or len(value) > 4096:
                 raise StripeAppValueError(
                     field_name,
@@ -131,12 +148,14 @@ class StripeAppProductionValues(Strict):
                 )
 
     def secret_values(self) -> dict[str, str]:
-        return {
-            name: getattr(self, name).get_secret_value()
-            for name in SECRET_NAMES
-        }
+        values: dict[str, str] = {}
+        for name in SECRET_NAMES:
+            value = getattr(self, name)
+            if value is not None:
+                values[name] = value.get_secret_value()
+        return values
 
-    def live_authorize_url(self) -> str:
+    def live_authorize_url(self) -> str | None:
         return self.DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL
 
 
@@ -311,7 +330,12 @@ class GitHubActionsConfigurator:
             )
         raise GitHubExecutionError(operation=operation, status_code=response.status_code)
 
-    def _installation_token(self) -> tuple[str, dict[str, Any]]:
+    def _installation_token(
+        self,
+        *,
+        needs_secrets: bool,
+        needs_variable: bool,
+    ) -> tuple[str, dict[str, Any]]:
         jwt = github_app_jwt(self.config)
         repo_path = f"/repos/{quote(self.config.owner)}/{quote(self.config.repository)}/installation"
         installation_response = self._request(
@@ -326,9 +350,9 @@ class GitHubActionsConfigurator:
         permissions = installation.get("permissions") if isinstance(installation, dict) else None
         permissions = permissions if isinstance(permissions, dict) else {}
         missing: list[str] = []
-        if permissions.get("environments") != "write":
+        if needs_secrets and permissions.get("environments") != "write":
             missing.append("GitHub App repository permission: Environments (write)")
-        if permissions.get("variables") != "write":
+        if needs_variable and permissions.get("variables") != "write":
             missing.append("GitHub App repository permission: Variables (write)")
         if missing:
             raise GitHubPermissionError(
@@ -355,72 +379,79 @@ class GitHubActionsConfigurator:
         return installation_token, installation
 
     def configure(self, values: StripeAppProductionValues) -> dict[str, Any]:
-        token, installation = self._installation_token()
+        submitted_secrets = values.secret_values()
+        submitted_live_url = values.live_authorize_url()
+        token, installation = self._installation_token(
+            needs_secrets=bool(submitted_secrets),
+            needs_variable=submitted_live_url is not None,
+        )
         owner = quote(self.config.owner)
         repository = quote(self.config.repository)
         environment = quote(self.config.environment, safe="")
         environment_base = f"/repos/{owner}/{repository}/environments/{environment}/secrets"
 
-        public_key_response = self._request(
-            "GET",
-            environment_base + "/public-key",
-            token=token,
-            operation="read production environment public key",
-            expected={200},
-            permission_failure=["GitHub App repository permission: Environments (write)"],
-        )
-        public_key_body = public_key_response.json()
-        key_id = public_key_body.get("key_id") if isinstance(public_key_body, dict) else None
-        public_key = public_key_body.get("key") if isinstance(public_key_body, dict) else None
-        if not isinstance(key_id, str) or not isinstance(public_key, str):
-            raise GitHubExecutionError(operation="read production environment public key")
-
-        for name, secret in values.secret_values().items():
-            self._request(
-                "PUT",
-                environment_base + "/" + quote(name),
+        if submitted_secrets:
+            public_key_response = self._request(
+                "GET",
+                environment_base + "/public-key",
                 token=token,
-                operation=f"write environment secret {name}",
-                expected={201, 204},
-                payload={
-                    "encrypted_value": encrypt_github_secret(public_key, secret),
-                    "key_id": key_id,
-                },
+                operation="read production environment public key",
+                expected={200},
                 permission_failure=["GitHub App repository permission: Environments (write)"],
             )
+            public_key_body = public_key_response.json()
+            key_id = public_key_body.get("key_id") if isinstance(public_key_body, dict) else None
+            public_key = public_key_body.get("key") if isinstance(public_key_body, dict) else None
+            if not isinstance(key_id, str) or not isinstance(public_key, str):
+                raise GitHubExecutionError(operation="read production environment public key")
+
+            for name, secret in submitted_secrets.items():
+                self._request(
+                    "PUT",
+                    environment_base + "/" + quote(name),
+                    token=token,
+                    operation=f"write environment secret {name}",
+                    expected={201, 204},
+                    payload={
+                        "encrypted_value": encrypt_github_secret(public_key, secret),
+                        "key_id": key_id,
+                    },
+                    permission_failure=["GitHub App repository permission: Environments (write)"],
+                )
 
         variable_path = f"/repos/{owner}/{repository}/actions/variables/{quote(VARIABLE_NAME)}"
-        variable_response = self._request(
-            "GET",
-            variable_path,
-            token=token,
-            operation="read repository variable",
-            expected={200, 404},
-            permission_failure=["GitHub App repository permission: Variables (write)"],
-        )
-        if variable_response.status_code == 404:
-            self._request(
-                "POST",
-                f"/repos/{owner}/{repository}/actions/variables",
-                token=token,
-                operation="create repository variable",
-                expected={201},
-                payload={"name": VARIABLE_NAME, "value": values.live_authorize_url()},
-                permission_failure=["GitHub App repository permission: Variables (write)"],
-            )
-        else:
-            self._request(
-                "PATCH",
+        if submitted_live_url is not None:
+            variable_response = self._request(
+                "GET",
                 variable_path,
                 token=token,
-                operation="update repository variable",
-                expected={204},
-                payload={"name": VARIABLE_NAME, "value": values.live_authorize_url()},
+                operation="read repository variable",
+                expected={200, 404},
                 permission_failure=["GitHub App repository permission: Variables (write)"],
             )
+            if variable_response.status_code == 404:
+                self._request(
+                    "POST",
+                    f"/repos/{owner}/{repository}/actions/variables",
+                    token=token,
+                    operation="create repository variable",
+                    expected={201},
+                    payload={"name": VARIABLE_NAME, "value": submitted_live_url},
+                    permission_failure=["GitHub App repository permission: Variables (write)"],
+                )
+            else:
+                self._request(
+                    "PATCH",
+                    variable_path,
+                    token=token,
+                    operation="update repository variable",
+                    expected={204},
+                    payload={"name": VARIABLE_NAME, "value": submitted_live_url},
+                    permission_failure=["GitHub App repository permission: Variables (write)"],
+                )
 
         secret_evidence: list[dict[str, Any]] = []
-        for name in SECRET_NAMES:
+        for name in submitted_secrets:
             response = self._request(
                 "GET",
                 environment_base + "/" + quote(name),
@@ -439,18 +470,30 @@ class GitHubActionsConfigurator:
                 }
             )
 
-        variable_readback = self._request(
-            "GET",
-            variable_path,
-            token=token,
-            operation="read back repository variable",
-            expected={200},
-            permission_failure=["GitHub App repository permission: Variables (read)"],
-        ).json()
-        submitted_live_url = values.live_authorize_url()
-        readback_value = variable_readback.get("value") if isinstance(variable_readback, dict) else None
-        if readback_value != submitted_live_url:
-            raise GitHubExecutionError(operation="verify repository variable read-back")
+        variable_evidence: dict[str, Any] | None = None
+        if submitted_live_url is not None:
+            variable_readback = self._request(
+                "GET",
+                variable_path,
+                token=token,
+                operation="read back repository variable",
+                expected={200},
+                permission_failure=["GitHub App repository permission: Variables (read)"],
+            ).json()
+            readback_value = (
+                variable_readback.get("value")
+                if isinstance(variable_readback, dict)
+                else None
+            )
+            if readback_value != submitted_live_url:
+                raise GitHubExecutionError(operation="verify repository variable read-back")
+            variable_evidence = {
+                "name": variable_readback.get("name"),
+                "created_at": variable_readback.get("created_at"),
+                "updated_at": variable_readback.get("updated_at"),
+                "value_matches_submitted": True,
+                "value_sha256": sha256(submitted_live_url.encode()).hexdigest(),
+            }
 
         return {
             "source": "github-rest-read-back",
@@ -460,14 +503,11 @@ class GitHubActionsConfigurator:
                 "id": installation.get("id"),
                 "app_slug": installation.get("app_slug"),
             },
+            "configured_value_names": sorted(
+                [*submitted_secrets, *([VARIABLE_NAME] if submitted_live_url is not None else [])]
+            ),
             "environment_secrets": secret_evidence,
-            "repository_variable": {
-                "name": variable_readback.get("name"),
-                "created_at": variable_readback.get("created_at"),
-                "updated_at": variable_readback.get("updated_at"),
-                "value_matches_submitted": True,
-                "value_sha256": sha256(submitted_live_url.encode()).hexdigest(),
-            },
+            "repository_variable": variable_evidence,
             "secret_values_exposed": False,
             "read_back_at": utc_now(),
         }
@@ -600,7 +640,11 @@ def execute_configure_stripe_app(
                     "repository": github_evidence["repository"],
                     "environment": github_evidence["environment"],
                     "environment_secret_count": len(github_evidence["environment_secrets"]),
-                    "repository_variable": VARIABLE_NAME,
+                    "repository_variable": (
+                        VARIABLE_NAME
+                        if github_evidence["repository_variable"] is not None
+                        else "not_submitted"
+                    ),
                     "github_read_back": "confirmed",
                 },
             ),

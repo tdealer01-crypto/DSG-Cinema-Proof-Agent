@@ -157,12 +157,24 @@ def _oauth_exchange_secret(link_type: OAuthLinkType) -> str:
                 )
             return override
         return _developer_key("STRIPE_SECRET_KEY", prefix=LIVE_SECRET_PREFIX)
-    if link_type == "test":
-        return _developer_key("STRIPE_APP_OAUTH_TEST_SECRET_KEY", prefix=TEST_SECRET_PREFIX)
-    if link_type == "sandbox":
-        return _developer_key(
-            "STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY", prefix=TEST_SECRET_PREFIX
+    if link_type in {"test", "sandbox"}:
+        selected_name = (
+            "STRIPE_APP_OAUTH_TEST_SECRET_KEY"
+            if link_type == "test"
+            else "STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY"
         )
+        peer_name = (
+            "STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY"
+            if link_type == "test"
+            else "STRIPE_APP_OAUTH_TEST_SECRET_KEY"
+        )
+        selected_key = _developer_key(selected_name, prefix=TEST_SECRET_PREFIX)
+        peer_key = (os.getenv(peer_name) or "").strip()
+        if peer_key and hmac.compare_digest(selected_key, peer_key):
+            raise StripeMarketplaceConfigurationError(
+                "test-mode and managed-sandbox OAuth keys must be different"
+            )
+        return selected_key
     raise StripeMarketplaceConfigurationError("unsupported Stripe OAuth link type")
 
 
@@ -538,6 +550,19 @@ def stripe_marketplace_status() -> dict[str, Any]:
             key_ready[link_type] = True
         except StripeMarketplaceConfigurationError:
             key_ready[link_type] = False
+    non_live_keys_reused = False
+    try:
+        test_key = _developer_key(
+            "STRIPE_APP_OAUTH_TEST_SECRET_KEY",
+            prefix=TEST_SECRET_PREFIX,
+        )
+        sandbox_key = _developer_key(
+            "STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY",
+            prefix=TEST_SECRET_PREFIX,
+        )
+        non_live_keys_reused = hmac.compare_digest(test_key, sandbox_key)
+    except StripeMarketplaceConfigurationError:
+        pass
     redirect_ready: dict[OAuthLinkType, bool] = {}
     authorize_url_ready: dict[OAuthLinkType, bool] = {}
     for link_type in ("live", "test", "sandbox"):
@@ -568,8 +593,16 @@ def stripe_marketplace_status() -> dict[str, Any]:
             "PASS" if authorize_url_ready["sandbox"] else "MISSING"
         ),
         "oauth_live_secret_key": "PASS" if key_ready["live"] else "MISSING",
-        "oauth_test_secret_key": "PASS" if key_ready["test"] else "MISSING",
-        "oauth_sandbox_secret_key": "PASS" if key_ready["sandbox"] else "MISSING",
+        "oauth_test_secret_key": (
+            "REUSED"
+            if non_live_keys_reused
+            else "PASS" if key_ready["test"] else "MISSING"
+        ),
+        "oauth_sandbox_secret_key": (
+            "REUSED"
+            if non_live_keys_reused
+            else "PASS" if key_ready["sandbox"] else "MISSING"
+        ),
         "app_signing_secret": (
             "PASS"
             if (os.getenv("STRIPE_APP_SIGNING_SECRET") or "").strip().startswith("absec_")
@@ -617,6 +650,7 @@ def stripe_marketplace_setup(
     try:
         authorize = urlparse(_oauth_authorize_url(link_type))
         redirect_uri = _redirect_uri(link_type)
+        _oauth_exchange_secret(link_type)
     except StripeMarketplaceConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

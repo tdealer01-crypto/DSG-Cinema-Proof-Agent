@@ -184,6 +184,21 @@ def test_status_requires_test_mode_key_and_authorize_url(marketplace, monkeypatc
     assert body["checks"]["oauth_test_authorize_url"] == "MISSING"
 
 
+def test_status_rejects_a_reused_test_and_sandbox_key(marketplace, monkeypatch):
+    monkeypatch.setenv("STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY", TEST_OAUTH_SECRET)
+
+    body = client.get("/marketplace/stripe/status").json()
+
+    assert body["status"] == "ACTION_REQUIRED"
+    assert body["checks"]["oauth_test_secret_key"] == "REUSED"
+    assert body["checks"]["oauth_sandbox_secret_key"] == "REUSED"
+    response = client.get(
+        "/marketplace/stripe/setup?link_type=sandbox",
+        follow_redirects=False,
+    )
+    assert response.status_code == 503
+
+
 def test_status_requires_app_signing_secret(marketplace, monkeypatch):
     monkeypatch.delenv("STRIPE_APP_SIGNING_SECRET")
     body = client.get("/marketplace/stripe/status").json()

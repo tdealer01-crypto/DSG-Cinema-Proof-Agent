@@ -29,6 +29,23 @@ Do not submit until every required item is checked with current evidence.
       copied from the app's **Settings** tab; no generic or External Test URL is
       accepted as a fallback.
 
+## Foundry-assisted configuration
+
+- [x] The Foundry OpenAPI tool exposes only production health, live OpenAPI,
+      and Stripe readiness `GET` operations.
+- [x] The configuration function accepts no arguments; Stripe-issued values
+      remain in the trusted local process and never enter a prompt or URL.
+- [x] The local host checks the deployed OpenAPI contract before reading any
+      Stripe value and sends only fixed names whose live check is not `PASS`.
+- [x] Equal test-mode and managed-sandbox developer keys are reported as
+      `REUSED` and cannot produce `READY`.
+- [ ] Production OpenAPI has the incremental `StripeAppProductionValues`
+      contract (all fixed properties present, no all-six `required` list).
+- [ ] An owner-approved `configure_stripe_app` plan is used with the exact
+      `stripe-production-setup` step and `pics.dsg.governance` target.
+- [ ] The post-write production deploy succeeds and a fresh live probe records
+      every readiness check as `PASS`.
+
 ## Publisher eligibility
 
 - [ ] The Stripe account is activated and its email and business verification

@@ -180,8 +180,35 @@ the screenshot placeholders. Only then open **DSG Governance Gate** and use
 **Submit for review**.
 
 Production billing already reports a verified Stripe catalog and metering. That
-does not remove the remaining app gates: v2.7.1 upload, app signing secret,
-external test, real screenshots, listing verification, and Stripe review.
+does not remove the remaining app gates: verified v2.7.1 upload state, separate
+test/sandbox configuration, exact install links, External Test, real
+screenshots, listing verification, and Stripe review.
+
+### Foundry-assisted remediation — guarded, not yet a vendor submission
+
+The Microsoft Foundry helper under
+`integrations/microsoft_foundry/stripe_fix_agent/` can inspect readiness and
+request the existing plan-gated GitHub configuration executor. It is not a
+Stripe uploader or Marketplace reviewer.
+
+Its public OpenAPI tool is read-only. The only mutation function accepts no
+arguments; a trusted local host reads values outside the Foundry conversation,
+after confirming that production exposes the incremental executor contract.
+The host submits only fixed names whose readiness checks are not `PASS`.
+
+The `2026-08-28T00:40:56Z` pre-deployment probe observed service version
+`1.3.0`, `ACTION_REQUIRED`, zero linked accounts, nine passing checks, and five
+missing values: the three authorize URLs plus the separate test and managed-
+sandbox developer keys. `app_signing_secret` already passed. Production still
+advertised all six fields as required, so the host correctly returns
+`WAITING_DEPLOYMENT` without reading any value until this change is deployed.
+See `docs/evidence/stripe-foundry-remediation-2026-08-27.md`.
+
+After deployment, verify the live schema no longer lists all six fields in
+`required`, create/approve the exact fixed-action DSG plan, and load only the
+five Stripe-issued values into the local host. A successful write still needs a
+new production deploy and status probe. Continue to External Test only after
+every check is `PASS` and status is `READY`.
 
 ---
 

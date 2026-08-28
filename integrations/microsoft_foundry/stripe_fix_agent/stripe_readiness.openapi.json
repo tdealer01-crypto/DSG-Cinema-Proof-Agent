@@ -1,0 +1,89 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "DSG Stripe Marketplace Readiness",
+    "version": "1.0.0",
+    "description": "Read-only production probes for the DSG Stripe remediation agent. This tool contains no mutation route and accepts no credential."
+  },
+  "servers": [
+    {
+      "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "read_health",
+        "summary": "Read Cinema production health",
+        "responses": {
+          "200": {
+            "description": "Current service health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "read_live_openapi",
+        "summary": "Read the deployed Cinema API contract",
+        "responses": {
+          "200": {
+            "description": "The live OpenAPI document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/marketplace/stripe/status": {
+      "get": {
+        "operationId": "read_stripe_marketplace_status",
+        "summary": "Read fixed-name Stripe Marketplace readiness checks",
+        "responses": {
+          "200": {
+            "description": "Current Stripe Marketplace readiness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["status", "checks"],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["READY", "ACTION_REQUIRED"]
+                    },
+                    "checks": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "linked_accounts": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
