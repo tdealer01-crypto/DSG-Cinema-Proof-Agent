@@ -1,0 +1,168 @@
+name: Deploy Mirrored AIMO Simulation Runtime
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '_proof/simulation-runtime/**'
+      - '.github/workflows/deploy-mirrored-aimo-simulation.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  verify-deploy-prove:
+    name: Verify snapshot then deploy simulation authority runtime
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    env:
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      SIMULATION_APP: dsg-agi-simulation
+      SIMULATION_URL: https://dsg-agi-simulation.azurewebsites.net
+      EXPECTED_SOURCE_SHA: 8a1a603a31aa65780b6e57762589ab19a0e76b68
+
+    steps:
+      - name: Checkout exact proof head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify mirrored source Git blob identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd _proof/simulation-runtime
+          manifest_sha=$(jq -r '.sourceCommit' SOURCE_MANIFEST.json)
+          test "$manifest_sha" = "$EXPECTED_SOURCE_SHA" || { echo 'BLOCK: source commit mismatch'; exit 1; }
+          jq -r '.files[] | [.path,.originalBlobSha] | @tsv' SOURCE_MANIFEST.json | while IFS=$'\t' read -r path expected; do
+            test -f "$path" || { echo "BLOCK: missing mirrored file $path"; exit 1; }
+            actual=$(git hash-object "$path")
+            if [ "$actual" != "$expected" ]; then
+              echo "BLOCK: mirrored source drift path=$path expected=$expected actual=$actual"
+              exit 1
+            fi
+            echo "SOURCE_BLOB_PASS path=$path sha=$actual"
+          done
+          grep -q 'solveGovernedAimoShard' src/http-server.ts
+          grep -q 'encodingProofAuthorityConfigured' src/http-server.ts
+          echo 'MIRRORED_SOURCE_PROOF=PASS'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build minimal pinned runtime and local production smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd _proof/simulation-runtime
+          npm install --omit=dev --ignore-scripts=false --no-audit --no-fund
+          PORT=18080 \
+          NODE_ENV=production \
+          DSG_AGI_SIMULATION_API_KEY=local-smoke-key \
+          DSG_CONTROL_PLANE_URL=https://control-plane.invalid \
+          DSG_CONTROL_PLANE_API_KEY=local-proof-key \
+          npm run serve > "$RUNNER_TEMP/simulation-local.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in $(seq 1 20); do
+            if curl --silent --fail http://127.0.0.1:18080/health > "$RUNNER_TEMP/local-health.json"; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = true || { cat "$RUNNER_TEMP/simulation-local.log"; exit 1; }
+          jq -e '.ok == true and .authConfigured == true and .encodingProofAuthorityConfigured == true and .productionAuthFailClosed == true' "$RUNNER_TEMP/local-health.json" >/dev/null
+          kill "$pid" 2>/dev/null || true
+          trap - EXIT
+          echo 'LOCAL_PRODUCTION_RUNTIME_PROOF=PASS'
+
+      - name: Azure login with Cinema production OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Capture pre-deploy Azure state and verify authority bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/simulation-evidence"
+          az webapp show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --query '{name:name,state:state,host:defaultHostName,enabled:enabled,kind:kind}' -o json \
+            > "$RUNNER_TEMP/simulation-evidence/before.json"
+          names=$(az webapp config appsettings list --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" --query '[].name' -o tsv)
+          for required in DSG_AGI_SIMULATION_API_KEY DSG_CONTROL_PLANE_URL DSG_CONTROL_PLANE_API_KEY; do
+            grep -qx "$required" <<<"$names" || { echo "BLOCK: missing Azure runtime binding $required"; exit 1; }
+          done
+          echo 'AZURE_PREDEPLOY_BINDINGS=PASS'
+
+      - name: Package and deploy verified runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd _proof/simulation-runtime
+          zip -qr "$RUNNER_TEMP/simulation-runtime.zip" . -x '*.log'
+          sha256sum "$RUNNER_TEMP/simulation-runtime.zip" | tee "$RUNNER_TEMP/simulation-evidence/package.sha256"
+          printf '%s\n' "$EXPECTED_SOURCE_SHA" > "$RUNNER_TEMP/simulation-evidence/source-commit.txt"
+
+          az webapp config appsettings set \
+            --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --settings NODE_ENV=production SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+            --only-show-errors --output none
+          az webapp config set \
+            --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --startup-file 'npm run serve' \
+            --only-show-errors --output none
+          az webapp deploy \
+            --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --src-path "$RUNNER_TEMP/simulation-runtime.zip" \
+            --type zip --clean true --restart true --track-status true \
+            --only-show-errors --output json \
+            > "$RUNNER_TEMP/simulation-evidence/deploy.json"
+          echo 'AZURE_SIMULATION_DEPLOY=COMPLETE'
+
+      - name: Prove deployed authority boundary and fail-closed auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/simulation-evidence/health.json"
+          ready=false
+          for attempt in $(seq 1 48); do
+            code=$(curl --silent --show-error --max-time 15 --output "$body" --write-out '%{http_code}' "$SIMULATION_URL/health" || true)
+            if [ "$code" = 200 ] && jq -e '.ok == true and .service == "dsg-agi-simulation" and .authConfigured == true and .encodingProofAuthorityConfigured == true and .productionAuthFailClosed == true' "$body" >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 5
+          done
+          jq '{ok,service,aimoShardEndpoint,authConfigured,encodingProofAuthorityConfigured,authMode,productionAuthFailClosed,truthBoundary}' "$body" || cat "$body"
+          test "$ready" = true || { echo 'SIMULATION_DEPLOYMENT_PROOF=BLOCK'; exit 1; }
+
+          unauth_code=$(curl --silent --show-error --max-time 15 \
+            --output "$RUNNER_TEMP/simulation-evidence/unauthenticated-solve.json" \
+            --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --data '{}' \
+            "$SIMULATION_URL/v1/aimo/solve-shard" || true)
+          test "$unauth_code" = 401 || { echo "BLOCK: expected unauthenticated solve HTTP 401, got $unauth_code"; exit 1; }
+          jq -e '.status == "BLOCKED" and .error == "unauthorized"' "$RUNNER_TEMP/simulation-evidence/unauthenticated-solve.json" >/dev/null
+          echo 'SIMULATION_DEPLOYMENT_PROOF=PASS'
+
+      - name: Upload safe deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-authority-runtime-${{ github.run_id }}
+          path: ${{ runner.temp }}/simulation-evidence
+          if-no-files-found: warn
+          retention-days: 30

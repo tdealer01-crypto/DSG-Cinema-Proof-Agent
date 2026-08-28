@@ -1,0 +1,15 @@
+{
+  "name": "dsg-agi-simulation-azure-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "tsx src/http-server.ts"
+  },
+  "dependencies": {
+    "tsx": "4.22.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
