@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from .canonical import canonical_json
 from .models import Strict
@@ -51,7 +51,10 @@ class ExactSelectArgs(Strict):
     def unique_ids(self):
         ids = [candidate.id for candidate in self.candidates]
         if len(ids) != len(set(ids)):
-            raise ValueError("candidate ids must be unique")
+            raise PydanticCustomError(
+                "duplicate_candidate_id",
+                "candidate ids must be unique",
+            )
         return self
 
 
@@ -59,7 +62,11 @@ def _validate_exponent(raw: str) -> None:
     match = EXP_RE.search(raw)
     exponent = int(match.group(1)) if match else 0
     if abs(exponent) > MAX_Z3_EXPONENT:
-        raise ValueError(f"absolute decimal exponent must be <= {MAX_Z3_EXPONENT}")
+        raise PydanticCustomError(
+            "z3_exponent_limit",
+            "absolute decimal exponent must be <= {max_exponent}",
+            {"max_exponent": MAX_Z3_EXPONENT},
+        )
 
 
 def _decimal(raw: str) -> Decimal:
@@ -267,3 +274,17 @@ def install_mcp_tool() -> None:
     )
     mcp.TOOLS = (*mcp.TOOLS, tool)
     mcp._BY_NAME[tool.name] = tool
+
+    if not getattr(mcp, "_dsg_exact_select_error_wrapper_installed", False):
+        original_call_tool = mcp._call_tool
+
+        async def exact_aware_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            result = await original_call_tool(name, arguments)
+            if name == "dsg_exact_select" and isinstance(result, dict):
+                structured = result.get("structuredContent")
+                if isinstance(structured, dict) and structured.get("status") == "BLOCKED":
+                    result["isError"] = True
+            return result
+
+        mcp._call_tool = exact_aware_call_tool
+        mcp._dsg_exact_select_error_wrapper_installed = True
