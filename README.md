@@ -1,600 +1,303 @@
-# 🎬 DSG ONE — Verified Execution
-> [!IMPORTANT]
-> **Production platform authority — Azure only.** Vercel, Render, Railway, AWS, and Google Cloud are retired for DSG production; legacy URLs, checks, and statuses are not deployment or health evidence.
-> Runtime secrets belong in Azure Key Vault and are resolved by the Azure service Managed Identity. GitHub OIDC may bootstrap or rotate them; `.env.example` is documentation only. Any unresolved Key Vault reference is `BLOCK`.
-> Canonical secret-manager contract: [Control Plane Azure Key Vault operations](https://github.com/tdealer01-crypto/tdealer01-crypto-dsg-control-plane/blob/main/docs/ops/azure-runtime-env-sync.md).
+# DSG ONE / Cinema Proof Agent
 
-**Prove your automation decisions. Mathematically. Cryptographically. Permanently.**
+<!-- DSG.PICS-IP-WATERMARK:v1; token=DSG.PICS-IP-2026-V1; attribution=dsg.pics; third-party-licenses=preserved -->
 
-DSG ONE transforms automated decisions into **deterministic, auditable Proof Receipts** that never lie. When your system makes a critical call—approve a payment, deploy to production, grant access—DSG ONE creates an unforgeable record that proves the decision was made correctly, can be replayed perfectly, and is bound to the exact context that justified it.
+> **© 2026 DSG.PICS · `DSG.PICS-IP-2026-V1` · Intellectual Property Attribution**  
+> Original DSG-specific material is attributed to DSG.PICS. Third-party and open-source components remain under their respective licenses. See [`docs/INTELLECTUAL_PROPERTY_NOTICE.md`](docs/INTELLECTUAL_PROPERTY_NOTICE.md).
 
-## Why It Matters
+Deterministic verification and governance runtime for AI-agent and automation execution.
 
-Every automated decision in production carries risk. When something goes wrong, you need to prove:
-- ✅ **The decision was made correctly** — not by accident, not by malice
-- ✅ **It wasn't tampered with after the fact** — immutable, hash-verified
-- ✅ **It can be replayed and audited** — deterministic, not random
-- ✅ **It bound the exact inputs and outputs** — no moving goalposts
+> **Source of truth:** production is the Azure Cinema + native Z3 deployment described below. GitHub Actions execution evidence is authoritative for deployment/proof claims. The AppDeploy exact-selector app is a reference/demo surface, not the production Z3 runtime.
 
-DSG ONE is verification that can't be faked. It uses the Z3 Theorem Prover to create mathematical proofs of your automation logic, then chains them cryptographically so that auditors, regulators, and customers can verify every decision independently.
+## Current production truth — 28 August 2026
 
-### Who Uses This?
+| Item | Verified state |
+|---|---|
+| Production source commit | `90949d7c3acec52258413a5d0e79f0e4e4f51020` (`feat(mcp): add native Z3 exact top-k selector (#163)`) |
+| Production deploy | GitHub Actions run `33189890939` — **PASS** |
+| External production MCP proof | GitHub Actions run `33198810484` — **PASS** |
+| Cinema production | `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io` |
+| Production MCP | `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp` |
+| Native Z3 backend | `https://dsg-z3-verifier-production.nicetree-a005fe99.westus3.azurecontainerapps.io` |
+| MCP protocol | `2025-06-18`, HTTP JSON-RPC 2.0 |
+| AppDeploy | Reference/demo only: `https://dsg-exact-mcp-runtime-wniyu0.v2.appdeploy.ai/` |
+| GitBook | `https://dsg-cinema.gitbook.io/cinema-proof-agent` |
 
-- **Fintech & Payments**: Approve wire transfers, subscriptions, fraud decisions with cryptographic proof
-- **DevOps & Deployment**: Gate production deploys with verified safety checks
-- **Compliance Teams**: Generate audit trails that satisfy SOC 2, ISO, and regulatory requirements
-- **Risk Management**: Prove that high-stakes decisions followed the exact policy you intended
-- **API Platforms**: Issue API keys and permissions with verifiable entitlement chains
+The production deployment ran the pre-deploy regression gate (**164 passed**), built immutable Cinema/Z3 images, deployed both services, verified direct native-Z3 proof, verified Cinema → Z3 E2E replay, exercised marketplace adapters and billing/enforcement gates, and uploaded production evidence.
 
----
+### Production proof snapshot
 
-## Get Started in 60 Seconds
+**Native Z3 / Cinema proof** — run `33189890939`
 
-### 1. Activate a Free API Key
-```bash
-curl -X POST https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/activate \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "channel": "api",
-    "activation_id": "my-first-verification",
-    "display_name": "My App"
-  }'
-# Returns: { "api_key": "sk_live_..." }
-```
+- `verification`: `VERIFIED_GLOBAL_OPTIMUM`
+- witness: `[1,0,0]`
+- exact energy: `-4`
+- replay match: `true`
+- direct Z3 proof == Cinema proof: `true`
+- proof hash: `9d096c91291b1cc91543e9191a5f1ab0df89fda284a86a807b79114866b97b8e`
+- request hash: `ff293f56b354a7815c52dc6f1c9f28a4d001d4bab81b6a1cb323c86b3a714241`
+- production artifact ID: `9693455960`
+- production artifact ZIP SHA-256: `d6ee2109053a5b5283f2011128de29f159c40271345c7e42598cf474adc0ca59`
 
-### 2. Submit a Bounded Decision
-```bash
-curl -X POST https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate \
-  -H "X-DSG-API-Key: sk_live_..." \
-  -H 'Content-Type: application/json' \
-  --data '{
-    "channel": "payment_approval",
-    "plan_id": "deploy_step_123",
-    "decision": "ALLOW",
-    "plan_hash": "abc123...",
-    "constraints_pass": true,
-    "plan_aligned": true,
-    "evidence_complete": true
-  }'
-```
+**External production MCP exact-select proof** — run `33198810484`
 
-### 3. Get Your Proof Receipt
+A GitHub-hosted Ubuntu runner called the public production MCP endpoint twice with `useZ3:true` using:
+
 ```json
 {
-  "verified": true,
-  "verification": "VERIFIED_GLOBAL_OPTIMUM",
-  "decision": "ALLOW",
-  "proof_hash": "4fc3e9a...",
-  "request_hash": "e2b4c7d...",
-  "context_hash": "7d8f2a1...",
-  "proof": { /* Z3 formal verification */ }
+  "candidates": [
+    {"id": "a", "composite": "0.50003"},
+    {"id": "b", "composite": "0.50004"},
+    {"id": "c", "composite": "0.50004"}
+  ],
+  "k": 2,
+  "minComposite": "0",
+  "useZ3": true
 }
 ```
 
-**That proof is unforgeable.** Download it, share it, audit it—it will always verify.
+Both calls returned:
 
----
+- `status`: `PASSED`
+- `mode`: `verified-exact`
+- `solverResult`: `sat`
+- selected IDs: `b`, `c`
+- identical evidence/request/proof hashes across replay
+- duplicate candidate IDs rejected with `isError:true` / `INVALID_ARGUMENTS`
 
-## What You Get
+External proof hashes:
 
-| Capability | What It Does | Why It Matters |
-|---|---|---|
-| **Exact Proof Generation** | Z3 Theorem Prover generates a mathematical proof that your decision was optimal and valid | Proves "this was the right call" with mathematical certainty, not just an opinion |
-| **Deterministic Replay** | Same inputs → same proof every time. No randomness. No surprises. | Auditors can verify the decision was reproducible; customers can verify it was fair |
-| **Cryptographic Binding** | Request hash + context hash + proof hash = one immutable chain | Tamper-proof. If anything changes, the hash breaks immediately |
-| **Tenant Isolation** | Every proof is bound to exactly one account. Cross-tenant reads are impossible. | Enterprise-grade security. Your decisions stay yours. |
-| **Revenue Ledger** | Every verified decision is recorded. Usage is metered, not guessed. | Transparent billing. No surprises. Auditable from day one. |
-| **Fail-Closed by Default** | If the backend is down, verification returns `502`. No "ALLOW" when unreachable. | Safety first. An absent verification is never treated as approval |
+- evidence: `f7b464892eb60556cff2605948ad2a76b9532724e34f4a0cd9b7383afcb3d42c`
+- Z3 proof: `a5c7b2ee5f1bbd3010cb48f7463ca46d18c61d2672b902e06b6697a41ca45855`
+- Z3 request: `b0e2a1abc52bac0e85ab69b0adbf6cf450ce2bfc0cbaa939398a686fc38b5d23`
+- artifact ID: `9696882174`
+- artifact ZIP SHA-256: `957663623be4b0b6a86edf1a3213fd121d43c1501e1c6d00a24164fdf1132b27`
 
----
+See [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) for the compact evidence record.
 
-## This Repository
+## What DSG verifies
 
-## Try It Live
+The runtime separates caller intent from verifier judgment. Callers submit plans, actions, execution facts, and evidence; DSG computes the result.
 
-No setup required. No credit card. No waiting.
+Core control flow:
 
-| Channel | URL | What You'll Find |
-|---|---|---|
-| **Web Console** | [3D Interactive Demo](https://dsgoneverifiedweb.z1.web.core.windows.net/) | Submit synthetic verification scenarios, see proof generation, download receipts |
-| **API Docs** | [OpenAPI Explorer](https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs) | Full bounded verification API with examples you can run immediately |
-| **GitHub Action** | [Marketplace](https://github.com/marketplace/actions/dsg-secure-deploy-gate) | Gate your CI/CD deployments with verified proof checks (v1.1.0 live, v2 in beta) |
-
-The Azure web console is the official public endpoint and source of truth for deployment status.
-
-## Production Verification — August 25, 2026
-
-The current `main` production deployment is **verified green** for commit `55a29148049574f9e147fa59965865256c28eba7` (PR #120).
-
-GitHub Actions run **Deploy Cinema + Z3 Production #63** completed successfully and verified the production path before recording evidence. The run passed:
-
-- ✅ Cinema and marketplace contract verification before deployment
-- ✅ Azure OIDC login and production identity/secret resolution
-- ✅ Durable revenue storage check
-- ✅ Immutable production image build
-- ✅ Z3 production deployment
-- ✅ Direct production Z3 proof verification
-- ✅ Cinema production deployment
-- ✅ Cinema → Z3 production E2E verification and replay
-- ✅ Cinema readiness with enforcement configuration
-- ✅ Marketplace adapters and Azure browser CORS verification
-- ✅ Revenue state truthfulness check
-- ✅ Non-secret production evidence generation and artifact upload
-
-**Production evidence artifact:** `cinema-production-evidence-55a29148049574f9e147fa59965865256c28eba7`  
-**Artifact ID:** `9558136839`  
-**Artifact digest:** `sha256:c172905639a8afe8c86e0d7c51fe443e7abf2ed70a08aa495606563855448a32`
-
-### ChatGPT-Compatible MCP + Remote Browser
-
-Cinema now exposes two separate MCP surfaces with different responsibilities:
-
-| Surface | Endpoint | Purpose |
-|---|---|---|
-| **DSG Verification MCP** | `POST /api/v1/mcp` | Plans, approval, preflight, alignment, constraints, execution records, evidence, Z3 verification, proof readback |
-| **Cinema Remote Browser MCP** | `POST /mcp` | Plan-bound shared-browser execution for ChatGPT-compatible MCP clients |
-
-The Remote Browser MCP exposes:
-
-- `remote_contract`
-- `remote_status`
-- `remote_agent_connect`
-- `remote_action`
-- `remote_disconnect`
-
-Remote execution authority is bound to an **approved Cinema plan step**. Once the connection is accepted, ordinary actions inside that approved authority do not require a per-click approval cycle. Passwords, OTPs, CAPTCHA responses, passkeys, API keys, and other identity secrets remain direct-user-input only and are rejected from agent tool payloads.
-
-The dedicated **Verify Remote Browser Transport** workflow passed for PR #118 before the feature was merged to `main`, and PR #120 subsequently deployed the current `main` revision to production.
-
-> **Truth boundary:** this verifies the production deployment pipeline, Z3/Cinema verification path, MCP transport tests, and recorded production evidence. It does not claim that every possible external SaaS mutation has been exercised in production. Native upstream ActiveCampaign MCP proxy/client support is not currently claimed by this README.
-
-## How It Works: The Complete Verification Flow
-
-### The Three Decision Paths
-
-```
-Request submitted
+```text
+raw plan
   ↓
-[Entitlement check] → Fail-closed if no budget
+plan hash + approval lock
   ↓
-[Policy engine maps decision] → ALLOW | REVIEW | BLOCK
+preflight decision
+  ├─ ALLOW
+  ├─ WAITING_PERMISSION
+  └─ BLOCK
   ↓
-[Z3 theorem prover validates] → Generates formal proof
+execution trace + evidence
   ↓
-[Proof receipt created] → Hashes bound, signature verified
+deterministic checks
   ↓
-Caller receives immutable proof receipt
+native Z3 proof
+  ↓
+verified receipt / fail-closed error
 ```
 
-### The API: DSG ONE v1 — Independent Verification
+No caller-supplied verdict is accepted as proof. Proof failure is not silently downgraded to an unverified success path.
 
-You provide raw material. DSG verifies it all.
+## MCP surface
 
-Instead of you saying "I checked this and it's correct," **you send DSG the actual evidence** and let it compute the verdict:
+Production endpoint:
 
-| Endpoint | What You Send | What You Get Back |
-|---|---|---|
-| `POST /api/v1/plans` | Your plan structure (JSON) | `plan_hash` computed and saved by DSG |
-| `POST /api/v1/plans/{id}/approve` | The same hash (proves you saw it) | Approval timestamp |
-| `POST /api/v1/verify/plan-alignment` | Plan + execution trace | Per-action alignment findings |
-| `POST /api/v1/verify/constraints` | Plan + constraints + evidence | Z3 proof that constraints are satisfied |
-| `POST /api/v1/executions` | Raw execution trace (what your code did) | Execution record with `execution_hash` |
-| `POST /api/v1/executions/{id}/evidence` | Artifacts (logs, metrics, etc.) | Evidence chain with hashes |
-| `POST /api/v1/executions/{id}/verify` | Raw evidence | Proof receipt + formal verification |
-| `GET /api/v1/proofs/{id}` | Just the proof ID | Full receipt with re-verified hashes |
+```text
+POST https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp
+```
 
-**Key principle:** If you try to assert a verdict yourself (by sending `execution_succeeded: true`), DSG rejects it with `AGENT_ASSERTED_VERDICT_REJECTED`. The machine verifies. You don't get to fake it.
+Transport is stateless HTTP JSON-RPC 2.0. Supported protocol version: `2025-06-18`.
 
-### Safety by Default
-
-- ❌ Backend unreachable? Returns `502`. No silent "ALLOW."
-- ❌ Entitlement exhausted? Verification fails before solver work begins.
-- ❌ Evidence incomplete? Proof receipt is not issued.
-- ✅ All checks pass and Z3 confirms? You get the receipt.
-
-### Full API Reference
-
-- **OpenAPI Contract:** [`openapi/dsg-one-v1.yaml`](openapi/dsg-one-v1.yaml) (3.1, executable)
-- **Reasoning & Errors:** [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md)
-- **Web Console:** [`web/dsg-one-3d/index.html`](web/dsg-one-3d/index.html) (also served at `GET /app`)
-
-## What DSG ONE Proves (And What It Doesn't)
-
-### ✅ DSG ONE Proves
-- Your decision logic was applied correctly
-- The proof is mathematically sound (Z3 verified)
-- The exact inputs and outputs are bound together
-- The receipt is tamper-proof (cryptographic hashing)
-- The decision can be replayed identically
-- This specific tenant made this specific decision
-
-### ⚠️ DSG ONE Does NOT Provide
-- SOC 2 or ISO certification
-- Regulatory compliance guarantees
-- Legal judgment or liability protection
-- Guarantee that your policy is *good* (only that it was applied *correctly*)
-- Compensation or insurance
-
-**It's a technical verification layer, not a legal one.** You still own the policy. DSG proves you followed it.
-
-## Running Your First Verification
-
-### Option A: Web Console (Easiest)
-
-Visit [**https://dsgoneverifiedweb.z1.web.core.windows.net/**](https://dsgoneverifiedweb.z1.web.core.windows.net/)
-
-You'll see:
-1. Pre-built scenarios (payment approval, deployment gate, access control)
-2. Click any scenario → live verification with proof generation
-3. See the proof receipt and download it as JSON
-4. Backend status shows green when connected
-
-### Option B: API (Full Control)
+Basic discovery:
 
 ```bash
-# 1. Activate a free key (one-time)
-curl -X POST https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/activate \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "channel": "api",
-    "activation_id": "dev-test-001",
-    "display_name": "My Dev Machine"
-  }'
-# Save the returned api_key
-
-# 2. Verify a decision
-curl -X POST https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/verify/evaluate \
-  -H "X-DSG-API-Key: $API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "channel": "test",
-    "plan_id": "deployment_gate_001",
-    "decision": "ALLOW",
-    "plan_hash": "abc123def456",
-    "constraints_pass": true,
-    "plan_aligned": true,
-    "evidence_complete": true
-  }'
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  'https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp' \
+  --header 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":"tools-1","method":"tools/list","params":{}}'
 ```
 
-You'll get back a proof receipt with:
-- `verified: true`
-- `verification: "VERIFIED_GLOBAL_OPTIMUM"`
-- `decision: "ALLOW"`
-- `proof_hash`, `request_hash`, `context_hash` (64-char hashes)
+The MCP registry includes governance tools plus the exact selector `dsg_exact_select`.
 
-## Where to Deploy DSG ONE
+### `dsg_exact_select`
 
-DSG ONE is available on multiple platforms—pick what fits your workflow.
+Bounded deterministic exact-decimal top-k selection:
 
-| Platform | Status | Use It For | Next Step |
-|---|---|---|---|
-| **Direct API** | 🟢 Live | Custom integrations, enterprise deployments | [Activate free key](#running-your-first-verification) |
-| **MCP / Agent Clients** | 🟢 Live | Verification MCP plus plan-bound Remote Browser actions | Use `/api/v1/mcp` or `/mcp` from a compatible client |
-| **GitHub Actions** | 🟢 Live (v1.1) | Gating CI/CD pipelines and deployments | [View on Marketplace](https://github.com/marketplace/actions/dsg-secure-deploy-gate) |
-| **Stripe** | 🟡 Upload ready | Payment-detail governance; Marketplace review not submitted | [Submission status](marketplace/SUBMISSION_QUEUE.md) |
-| **OpenAI** | 🟡 Ready | Skills, agent decision verification | [Coming Q3 2026](#) |
-| **AWS** | 🟡 In Progress | EC2, Lambda, SageMaker integrations | [Contact sales](mailto:sales@dsg.pics) |
-| **JetBrains** | 🟡 Planned | IDE plugins, security checks | [Contact sales](mailto:sales@dsg.pics) |
+| Constraint | Limit |
+|---|---:|
+| candidates | 1–24 |
+| `k` | 1–12 |
+| decimal string | max 240 chars |
+| decimal exponent | absolute value ≤ 1000 |
+| candidate IDs | unique |
 
-📋 **Detailed roadmap:** See [`marketplace/SUBMISSION_QUEUE.md`](marketplace/SUBMISSION_QUEUE.md)
+Modes:
 
-## Pricing: Simple, Transparent, Fail-Safe
+- `useZ3:false` — Python `Decimal` exact sorting, score descending then candidate ID ascending.
+- `useZ3:true` — native Z3 exact-real optimization plus independent optimality obligations. The result is accepted only if Z3 reports `VERIFIED_EXACT_TOP_K`, SAT, selected IDs match the independent Decimal oracle, request/proof hashes recompute exactly, and both `UNSAT_BETTER_SCORE` and `UNSAT_BETTER_TIE` obligations are present.
 
-**Free plan:** Start with 0 cost. Get proof receipts up to your quota. Upgrade anytime.
+Any backend failure, proof mismatch, result mismatch, invalid hash, invalid audit record, insufficient exact-k population, or invalid input is fail-closed.
 
-| Plan | Monthly Cost | Included Proofs | Per-Proof After | Best For |
-|---|---|---|---|---|
-| **Free** | $0 | 50 proofs/month | N/A | Trying it out, development |
-| **Professional** | $99 | 5,000 proofs/month | $0.02 | Small teams, startups |
-| **Enterprise** | Custom | Unlimited | Negotiated | Large-scale deployments |
-
-Every proof is one Z3 verification. If you go over quota, verification fails gracefully—never silently downgrades to unsafe mode.
-
-### Check Your Usage Anytime
+Example production call:
 
 ```bash
-# See current status
-curl https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/status
-
-# See your usage (requires API key)
-curl -H "X-DSG-API-Key: $API_KEY" \
-  https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/usage
-
-# Diagnose any issues
-curl -H "X-DSG-API-Key: $API_KEY" \
-  https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/support/diagnose
-```
-
-**No surprises. No hidden fees. Fail-closed if anything is wrong.**
-
-📖 **Technical details:** [`docs/REVENUE_AUTOMATION.md`](docs/REVENUE_AUTOMATION.md)
-
-## For Developers: Repository Guide
-
-### Core Services
-
-| Component | Files | Purpose |
-|---|---|---|
-| **Public API** | `cinema_main.py` | REST endpoints for proof verification, entitlement, and billing |
-| **Decision Logic** | `marketplace_verification.py` | Policy engine that maps requests to ALLOW/REVIEW/BLOCK |
-| **Z3 Prover** | `z3_main.py` | Theorem prover backend (authenticated, fail-closed) |
-| **Billing** | `revenue/` | Accounts, API keys, quotas, Stripe webhooks, usage ledger |
-| **Web UI** | `landing/`, `azure-landing/` | Interactive 3D proof explorer |
-| **Verification MCP** | `api_v1/mcp.py` | JSON-RPC MCP transport for the governed verification flow |
-| **Remote Browser MCP** | `api_v1/remote_mcp.py` | ChatGPT-compatible plan-bound remote browser tools |
-| **Remote Browser Runtime** | `api_v1/remote_browser.py` | Approved-plan session binding, remote actions, evidence and revocation |
-
-### Integration & Deployment
-
-| Component | Files | Purpose |
-|---|---|---|
-| **Marketplace** | `marketplace/` | Channel packages (GitHub, Stripe, OpenAI, AWS, etc.) |
-| **Stripe Plugin** | `stripe-app/` | Native Stripe UI extension for payment verification |
-| **CI/CD** | `.github/workflows/` | Automated testing, deployment, reconciliation |
-| **Tests** | `tests/` | Unit, integration, E2E, UI-contract, marketplace regressions |
-
-### Integrating DSG ONE Into Your Code
-
-**If you use GitHub Actions:**
-```yaml
-- uses: dsg-verified-execution/action@v1.1
-  with:
-    api-key: ${{ secrets.DSG_API_KEY }}
-    plan-id: deploy-step-${{ github.run_id }}
-```
-
-**If you use Python:**
-```python
-import requests
-
-response = requests.post(
-    f"{CINEMA_URL}/verify/evaluate",
-    headers={"X-DSG-API-Key": API_KEY},
-    json={
-        "channel": "deployment",
-        "plan_id": plan_id,
-        "decision": "ALLOW",
-        "plan_hash": plan_hash,
-        "constraints_pass": True,
-        "plan_aligned": True,
-        "evidence_complete": True,
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  'https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "jsonrpc":"2.0",
+    "id":"exact-1",
+    "method":"tools/call",
+    "params":{
+      "name":"dsg_exact_select",
+      "arguments":{
+        "candidates":[
+          {"id":"a","composite":"0.50003"},
+          {"id":"b","composite":"0.50004"},
+          {"id":"c","composite":"0.50004"}
+        ],
+        "k":2,
+        "minComposite":"0",
+        "useZ3":true
+      }
     }
-)
-proof = response.json()  # Contains proof_hash, verification status
+  }'
 ```
 
-**If you use Node.js/TypeScript:**
-```typescript
-const proof = await fetch(
-  `${CINEMA_URL}/verify/evaluate`,
-  {
-    method: "POST",
-    headers: {
-      "X-DSG-API-Key": API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      channel: "api",
-      plan_id: planId,
-      decision: "ALLOW",
-      plan_hash: planHash,
-      constraints_pass: true,
-      plan_aligned: true,
-      evidence_complete: true,
-    }),
-  }
-).then((r) => r.json());
-```
+The tool is advertised with:
 
-## Getting Help
+- `readOnlyHint: true`
+- `openWorldHint: false`
+- `destructiveHint: false`
+- `idempotentHint: true`
 
-| Need | Where to Go |
+## REST and operational surfaces
+
+| Surface | Path |
 |---|---|
-| API documentation | [OpenAPI explorer](https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs) |
-| Error codes & solutions | [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) |
-| Billing questions | [`docs/REVENUE_AUTOMATION.md`](docs/REVENUE_AUTOMATION.md) |
-| Deploy DSG One yourself | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
-| GitHub Actions integration | [Marketplace](https://github.com/marketplace/actions/dsg-secure-deploy-gate) |
-| Report a bug | [GitHub Issues](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues) |
-| Contact sales | [sales@dsg.pics](mailto:sales@dsg.pics) |
+| Health | `/health` |
+| DSG ONE status | `/api/v1/status` |
+| MCP | `/api/v1/mcp` |
+| OpenAPI / interactive docs | `/docs` |
+| Plans | `/api/v1/plans` |
+| Preflight | `/api/v1/control/preflight` |
+| Constraint verification | `/api/v1/verify/constraints` |
+| Executions | `/api/v1/executions` |
+| Proof receipts | `/api/v1/proofs/{proof_id}` |
+| Billing status | `/billing/status` |
 
----
+Some mutation, verification, and billing operations require an API key or server-side credential. Secrets are not accepted through the public exact-selector tool.
 
-## Local Development
+## Production architecture
 
-Verify everything works on your machine:
-
-```bash
-# Install dependencies
-python3 -m pip install -r requirements-cinema.txt pyyaml
-
-# Run all tests (unit, integration, E2E)
-python3 -m pytest -q
-
-# Validate UI
-bash landing/validate.sh
-
-# Validate marketplace packages
-bash marketplace/openai-plugin/scripts/validate.sh
-bash -n marketplace/github-action-v2/scripts/verified-execution.sh
+```text
+MCP / REST client
+      │
+      ▼
+Azure Container Apps
+DSG Cinema Proof Agent
+      │
+      │ authenticated server-to-server request
+      ▼
+Azure Container Apps
+Native Z3 Verifier
+      │
+      ├─ exact Real / Bool constraints
+      ├─ deterministic seed
+      ├─ optimizer / solver proof obligations
+      └─ request + proof hashes
+      │
+      ▼
+Cinema postconditions
+      │
+      ├─ independent deterministic oracle
+      ├─ hash recomputation
+      ├─ replay checks
+      └─ fail-closed decision
 ```
 
-**CI additionally:**
-- Type-checks the Stripe App package
-- Validates all marketplace manifests
-- Runs production smoke tests after merge
-- Reconciles billing ledgers daily
+Production images are built in Azure Container Registry from the exact source commit used by the deployment workflow.
 
-## Production Infrastructure
+For commit `90949d7c3acec52258413a5d0e79f0e4e4f51020`:
 
-DSG ONE is built for reliability, auditability, and transparency.
+- Z3 image digest: `sha256:84bd41effb5e27e99d8f337e1f9ed2bdcb213c95136ab3e79d7b0c70b8b562d4`
+- Cinema image digest: `sha256:2134f545266e6ad55e523273dd1a3156b8c8919d91441eb643d308b749f87c82`
 
-### Logging & Observability ✅
+## Deployment and CI
 
-Structured JSON logging with request tracking and health monitoring:
+Canonical production workflow:
 
-```bash
-# Check system health
-curl https://dsg-cinema-production.../health
-
-# View critical metrics
-curl https://dsg-cinema-production.../api/metrics/critical
-
-# Recent errors (only last 24h, no PII)
-curl https://dsg-cinema-production.../api/errors
-
-# Error statistics
-curl https://dsg-cinema-production.../api/errors/stats
+```text
+.github/workflows/deploy-cinema-production.yml
 ```
 
-**Features:**
-- Rotating file handlers (10MB error logs, 50MB combined)
-- JSON formatting for log aggregation
-- Unique request IDs for tracing
-- CPU, memory, Z3 backend monitoring
-- Request timing and performance tracking
+The workflow is fail-closed and coordinates Z3 + Cinema deployment. It verifies contracts before deployment, builds immutable images, deploys native Z3, proves Z3 directly, deploys Cinema, verifies Cinema → Z3 and deterministic replay, validates runtime/billing safety gates, and uploads non-secret evidence.
 
-📖 See [`PHASE_1_LOGGING_IMPLEMENTATION.md`](PHASE_1_LOGGING_IMPLEMENTATION.md)
+The external MCP proof is intentionally executed from a GitHub-hosted runner rather than from inside the Azure service, so it verifies the public production boundary a client actually reaches.
 
-### Error Tracking & Alerting ✅
+## Evidence boundary
 
-Sentry integration for production error tracking:
+The following claims are execution-verified as of 28 August 2026:
+
+- native Z3 production solve
+- Cinema → Z3 authenticated E2E
+- deterministic replay of the production proof
+- public production MCP initialize and tool discovery
+- `dsg_exact_select useZ3:true` from an external runner
+- exact selected result and deterministic hashes across replay
+- fail-closed duplicate-ID validation
+
+These statements do **not** mean that any external marketplace has approved or certified DSG. In particular, a DSG adapter result named `openai_plugin` verifies that DSG's adapter path passed its own production contract; it is **not** OpenAI Marketplace approval or submission status.
+
+## AppDeploy reference surface
+
+`https://dsg-exact-mcp-runtime-wniyu0.v2.appdeploy.ai/` is retained as a reference/demo for the bounded exact-selection contract. It is not the production Z3 authority.
+
+The authoritative native Z3 execution proof and public MCP proof are the Azure + GitHub Actions records above. Documentation and UI on the AppDeploy reference surface should point back to this production boundary instead of claiming AppDeploy itself is the production solver.
+
+## Local development
 
 ```bash
-# Sentry health status
-curl https://dsg-cinema-production.../api/errors/sentry/health
+git clone https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent.git
+cd DSG-Cinema-Proof-Agent
+python -m pip install -r requirements-cinema.txt pytest
+python -m pytest -q
 ```
 
-**Features:**
-- Automatic credential sanitization (API keys, secrets)
-- Smart filtering (health checks don't trigger alerts)
-- Cinema-specific error capture
-- Performance monitoring and request correlation
-- Configurable sampling rates
+For the native Z3 service, install the dependencies from `requirements.txt` and use the Z3 wrapper defined by the production Dockerfile.
 
-**Configuration:**
-```bash
-SENTRY_DSN=https://your-key@sentry.io/project-id
-SENTRY_ENVIRONMENT=production
-SENTRY_SAMPLE_RATE=1.0               # Capture all errors
-SENTRY_TRACES_SAMPLE_RATE=0.1        # Sample 10% of transactions
-```
+Do not place production secrets in source files or example commands.
 
-📖 See [`PHASE_2_SENTRY_INTEGRATION.md`](PHASE_2_SENTRY_INTEGRATION.md)
+## Documentation
 
-## System Status — Current Build
+- [`docs/`](docs/) — operational and technical documentation
+- [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) — current proof record
+- [`docs/INTELLECTUAL_PROPERTY_NOTICE.md`](docs/INTELLECTUAL_PROPERTY_NOTICE.md) — DSG.PICS attribution/watermark notice
+- [GitBook — Cinema Proof Agent](https://dsg-cinema.gitbook.io/cinema-proof-agent) — published documentation
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) — additional deployment notes
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution workflow
 
-✅ **Latest verified production deployment passed.** Last deployment verification: Aug 25, 2026 09:57 UTC (`Deploy Cinema + Z3 Production #63`, commit `55a2914`).
+Historical experiments and alternate-host deployment notes may remain in the repository for reproducibility. They are not authoritative when they conflict with the **Current production truth** section of this README.
 
-| Component | Status | Coverage |
-|---|---|---|
-| **API Contract & Tests** | ✅ PASS | Core v1 endpoints, error handling, edge cases |
-| **Revenue & Billing** | ✅ PASS | Activation, quotas, Stripe webhooks, ledger/revenue truth checks |
-| **Cinema E2E** | ✅ PASS | Production Cinema → Z3 verification and deterministic replay |
-| **Z3 Production Proof** | ✅ PASS | Direct production Z3 proof verified during deployment |
-| **Guarded Mutation Execution** | ✅ PASS | Idempotency, tenant isolation, digest verification |
-| **Remote Browser MCP** | ✅ PASS | MCP tool listing, plan-bound connect/action/disconnect, secret-input rejection |
-| **Stripe Integration** | ✅ PASS | Metered pricing, webhook signing, test/live modes |
-| **Marketplace Packages** | ✅ PASS | Marketplace adapter verification in production deployment workflow |
-| **Production Logging** | ✅ PASS | JSON logging, request tracking, metrics endpoints |
-| **Error Tracking** | ✅ PASS | Sentry integration and credential filtering |
-| **Deployment Pipeline** | ✅ PASS | Immutable images, Z3 + Cinema deploy, readiness, E2E, evidence artifact |
+## Intellectual property and support
 
-### Recent Improvements
+Canonical watermark: `DSG.PICS-IP-2026-V1`.
 
-- **Production deployment evidence (Aug 25):** Run #63 deployed commit `55a2914`, verified direct Z3 proof, Cinema → Z3 E2E/replay, marketplace adapters, revenue state, and uploaded a non-secret production evidence artifact.
-- **Remote Browser MCP (Aug 25):** ChatGPT-compatible `/mcp` endpoint exposes plan-bound remote browser tools while keeping identity secrets as direct-user-input only.
-- **Dashboard production trigger (Aug 25):** Dashboard changes on `main` dispatch the canonical Cinema + Z3 production workflow.
-- **Guarded Mutation Execution (Aug 23):** Deterministic, replay-safe state changes with database-enforced idempotency and tenant isolation.
-- **TLS Enforcement:** Connection pooler compatibility while maintaining encryption guarantees.
-- **Prepared Statement Optimization:** Works with Supabase transaction pooler without connection state pollution.
+© 2026 DSG.PICS. Original DSG-specific material is attributed to DSG.PICS, while third-party/open-source material remains governed by its respective licenses and notices. This attribution notice does not itself assert patent registration, trademark registration, external certification, or marketplace approval.
 
-## Deployment & Operations
-
-### Automated Deployment Pipeline
-
-| Workflow | Trigger | What It Does | Status |
-|---|---|---|---|
-| `deploy-cinema-production.yml` | Merge/dispatch on `main` | Build immutable images, deploy Z3 + Cinema, run production proof/E2E/readiness/marketplace/revenue checks, upload evidence | ✅ Verified |
-| `deploy-dashboard-production-trigger.yml` | Dashboard change on `main` | Dispatch canonical Cinema + Z3 production workflow | ✅ Verified |
-| `remote-browser-verify.yml` | Remote Browser/MCP changes | Compile and test remote transport, pairing, MCP and console regressions | ✅ Verified |
-| `deploy-azure-3d-landing.yml` | Merge to `main` | Publish web console to Azure, update public deployment receipt | ✅ Automated |
-| `revenue-autopilot.yml` | Daily @ 00:00 UTC | Reconcile usage ledger, verify Stripe webhooks, detect mismatches | ✅ Automated |
-| `api-v1-verify.yml` | Every commit | API contract tests, error handling, regression suite | ✅ Automated |
-| `apply-guarded-migration.yml` | On demand | Schema bootstrap, migration, live-database verification | ✅ Ready |
-| `cutover-revenue-postgres.yml` | Explicit manual confirmation | Freeze writes, durably queue GitHub Marketplace deliveries, archive divergent target rows, migrate accounts/ledger, prove exact parity, replay and switch or roll back | ✅ Fail-closed |
-
-### Safety Guardrails
-
-- **Plan authority:** Approved plan work is executable; missing capability is a provisioning/permission state rather than automatic revocation of the approved plan.
-- **Out-of-plan work:** Blocked by the DSG decision boundary.
-- **Identity secrets:** Passwords, OTPs, CAPTCHA responses, passkeys, API keys and equivalent identity material are direct-user-input only for Remote Browser sessions.
-- **Paid Enforcement:** Off by default. Only enables when all prerequisites (storage, ledger, Stripe linking) are verified.
-- **Free Plan:** Always available. Unaffected by billing state.
-- **Fail-Closed:** Proof verification never silently downgrades to unsafe mode. It fails loudly or succeeds cryptographically.
-
-### Monitoring
-
-**Status dashboard:**
-```bash
-curl https://dsg-cinema-production.../api/v1/status
-```
-
-Returns readiness, Z3 backend health, billing state, and ledger sync status.
+- Project identity: `https://dsg.pics`
+- Issues: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues
+- Support: `support@dsg.pics`
 
 ---
 
-## Contributing
+`DSG.PICS-IP-WATERMARK:v1 · DSG.PICS-IP-2026-V1 · https://dsg.pics`
 
-This is an active production system. To contribute:
-
-1. Create a feature branch from `main`
-2. Add tests for any new functionality
-3. Run local verification: `python3 -m pytest -q`
-4. Submit a PR with description of what changed and why
-5. CI runs automatically; approval required before merge
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed guidelines.
-
----
-
-## 🚀 Ready to Get Started?
-
-**Free tier, no credit card required.** Start proving your automation decisions today.
-
-| I want to... | I should... |
-|---|---|
-| Try it instantly | Visit [**dsgoneverifiedweb.z1.web.core.windows.net**](https://dsgoneverifiedweb.z1.web.core.windows.net/) and run a live scenario |
-| Build an integration | [Activate a free API key](https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/billing/activate) and follow the [quickstart](#get-started-in-60-seconds) |
-| Connect an MCP-capable agent | Use the production `/api/v1/mcp` verification surface or the `/mcp` Remote Browser surface |
-| Deploy to my GitHub workflow | Add the [GitHub Action](https://github.com/marketplace/actions/dsg-secure-deploy-gate) to your CI/CD |
-| Integrate with Stripe | Contact [sales@dsg.pics](mailto:sales@dsg.pics) for early access |
-| Deploy on-premise | See [`DEPLOYMENT.md`](DEPLOYMENT.md) for self-hosted options |
-| Report a bug or request a feature | [Open an issue](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues) |
-
----
-
-## About DSG ONE
-
-**DSG ONE** is a cryptographic proof engine for automated decisions. We believe every critical automation should be provable, auditable, and permanently verifiable.
-
-- **Headquarters:** San Francisco, CA
-- **Status:** Production-ready, powering verification at scale
-- **License:** See [`LICENSE`](LICENSE)
-- **Community:** Open issues, PRs, and discussions welcome
-
----
-
-## Questions? We're Here to Help
-
-- 📧 **Email:** [support@dsg.pics](mailto:support@dsg.pics)
-- 💬 **GitHub Discussions:** [Ask the community](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/discussions)
-- 📖 **Docs:** [`docs/`](docs/) directory covers everything
-- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues)
-
----
-
-**Last updated:** August 25, 2026 • [View latest changes](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/commits/main)
-
-**Verification status:** ✅ Latest production deployment verified • 🟢 Cinema + Z3 production active
+**Last updated:** 28 August 2026  
+**Verification status:** Production Azure Cinema + native Z3 + external MCP `useZ3:true` execution proof **VERIFIED** within the runtime/MCP/Z3/deterministic/fail-closed scope described above.
