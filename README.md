@@ -1,5 +1,10 @@
 # DSG ONE / Cinema Proof Agent
 
+<!-- DSG.PICS-IP-WATERMARK:v1; token=DSG.PICS-IP-2026-V1; attribution=dsg.pics; third-party-licenses=preserved -->
+
+> **© 2026 DSG.PICS · `DSG.PICS-IP-2026-V1` · Intellectual Property Attribution**  
+> Original DSG-specific material is attributed to DSG.PICS. Third-party and open-source components remain under their respective licenses. See [`docs/INTELLECTUAL_PROPERTY_NOTICE.md`](docs/INTELLECTUAL_PROPERTY_NOTICE.md).
+
 Deterministic verification and governance runtime for AI-agent and automation execution.
 
 > **Source of truth:** production is the Azure Cinema + native Z3 deployment described below. GitHub Actions execution evidence is authoritative for deployment/proof claims. The AppDeploy exact-selector app is a reference/demo surface, not the production Z3 runtime.
@@ -273,28 +278,26 @@ Do not place production secrets in source files or example commands.
 
 - [`docs/`](docs/) — operational and technical documentation
 - [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) — current proof record
+- [`docs/INTELLECTUAL_PROPERTY_NOTICE.md`](docs/INTELLECTUAL_PROPERTY_NOTICE.md) — DSG.PICS attribution/watermark notice
 - [GitBook — Cinema Proof Agent](https://dsg-cinema.gitbook.io/cinema-proof-agent) — published documentation
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — additional deployment notes
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution workflow
 
 Historical experiments and alternate-host deployment notes may remain in the repository for reproducibility. They are not authoritative when they conflict with the **Current production truth** section of this README.
 
-## Contributing
+## Intellectual property and support
 
-1. Branch from `main`.
-2. Add or update tests for behavior changes.
-3. Run the relevant local verification suite.
-4. Open a pull request.
-5. Merge only after required CI/proof gates pass.
+Canonical watermark: `DSG.PICS-IP-2026-V1`.
 
-## License and support
+© 2026 DSG.PICS. Original DSG-specific material is attributed to DSG.PICS, while third-party/open-source material remains governed by its respective licenses and notices. This attribution notice does not itself assert patent registration, trademark registration, external certification, or marketplace approval.
 
-See [`LICENSE`](LICENSE).
-
+- Project identity: `https://dsg.pics`
 - Issues: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues
 - Support: `support@dsg.pics`
 
 ---
+
+`DSG.PICS-IP-WATERMARK:v1 · DSG.PICS-IP-2026-V1 · https://dsg.pics`
 
 **Last updated:** 28 August 2026  
 **Verification status:** Production Azure Cinema + native Z3 + external MCP `useZ3:true` execution proof **VERIFIED** within the runtime/MCP/Z3/deterministic/fail-closed scope described above.
