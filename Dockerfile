@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY z3_main.py main.py
+COPY z3_exact_topk.py z3_exact_topk.py
+COPY z3_main_wrapper.py z3_main_wrapper.py
 
 # Z3 deterministic seed (reproducible verification)
 ENV Z3_DETERMINISTIC_SEED=42
@@ -18,6 +20,6 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import requests; requests.get('http://localhost:8080/health', timeout=2)" || exit 1
 
 # Run application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "z3_main_wrapper:app", "--host", "0.0.0.0", "--port", "8080"]
 
 # Production retry marker; no runtime effect.
