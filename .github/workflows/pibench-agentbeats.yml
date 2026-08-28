@@ -33,13 +33,30 @@ jobs:
       - name: Install benchmark dependencies
         run: python -m pip install -r benchmarks/pibench_dsg/requirements.txt
 
-      - name: Unit tests
+      - name: Unit tests and dependency evidence
         run: |
           mkdir -p benchmark-evidence
+          python -m pip freeze | sort > benchmark-evidence/pip-freeze.txt
           pytest -q benchmarks/pibench_dsg/tests | tee benchmark-evidence/pytest.txt
 
       - name: Compile check
         run: python -m compileall -q benchmarks/pibench_dsg
+
+      - name: AgentBeats manifest shape check
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          manifest = Path('benchmarks/pibench_dsg/amber-manifest.json5').read_text()
+          required = [
+              'manifest_version: "0.1.0"',
+              'entrypoint: [',
+              'provides:',
+              'a2a: { kind: "a2a"',
+              'exports: { a2a: "a2a" }',
+          ]
+          missing = [token for token in required if token not in manifest]
+          assert not missing, f'missing AgentBeats manifest shape tokens: {missing}'
+          PY
 
       - name: Build AgentBeats image for linux/amd64
         run: |
@@ -126,7 +143,10 @@ jobs:
         if: always()
         run: |
           if [ -d benchmark-evidence ]; then
-            find benchmark-evidence -type f -print0 | sort -z | xargs -0 sha256sum > benchmark-evidence/SHA256SUMS.txt || true
+            find benchmark-evidence -type f ! -name 'SHA256SUMS.txt' -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              > benchmark-evidence/SHA256SUMS.txt || true
           fi
 
       - name: Upload verification evidence
