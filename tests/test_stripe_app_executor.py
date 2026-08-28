@@ -254,6 +254,82 @@ def test_validation_error_does_not_echo_secret_input(tenant):
     assert invalid not in response.text
 
 
+def test_empty_incremental_values_are_rejected_before_github(tenant, monkeypatch):
+    _, api_key = tenant
+    plan = approved_plan()
+    called = False
+
+    def factory():
+        nonlocal called
+        called = True
+        return SuccessfulConfigurator()
+
+    monkeypatch.setattr(stripe_app_executor, "_configurator_factory", factory)
+    body = payload(plan["plan_id"])
+    body["values"] = {}
+    response = client.post(
+        "/api/v1/control/configure-stripe-app",
+        json=body,
+        headers={"X-DSG-API-Key": api_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["field"] == "values"
+    assert response.json()["executed"] is False
+    assert called is False
+
+
+def test_incremental_request_accepts_one_fixed_value(tenant, monkeypatch):
+    _, api_key = tenant
+    plan = approved_plan()
+
+    class IncrementalConfigurator:
+        received: StripeAppProductionValues | None = None
+
+        def configure(self, values: StripeAppProductionValues) -> dict:
+            self.received = values
+            return {
+                "source": "github-rest-read-back",
+                "repository": "tdealer01-crypto/DSG-Cinema-Proof-Agent",
+                "environment": "production",
+                "installation": {"id": 117736073, "app_slug": "dsg-governance"},
+                "configured_value_names": ["STRIPE_APP_SIGNING_SECRET"],
+                "environment_secrets": [
+                    {
+                        "name": "STRIPE_APP_SIGNING_SECRET",
+                        "created_at": "2026-08-27T00:00:00Z",
+                        "updated_at": "2026-08-27T00:00:01Z",
+                        "value_exposed": False,
+                    }
+                ],
+                "repository_variable": None,
+                "secret_values_exposed": False,
+                "read_back_at": "2026-08-27T00:00:02Z",
+            }
+
+    configurator = IncrementalConfigurator()
+    monkeypatch.setattr(stripe_app_executor, "_configurator_factory", lambda: configurator)
+    body = payload(plan["plan_id"])
+    body["values"] = {"STRIPE_APP_SIGNING_SECRET": "absec_incremental-value"}
+    response = client.post(
+        "/api/v1/control/configure-stripe-app",
+        json=body,
+        headers={"X-DSG-API-Key": api_key},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["decision"] == "ALLOW"
+    assert response.json()["evidence"]["configured_value_names"] == [
+        "STRIPE_APP_SIGNING_SECRET"
+    ]
+    assert configurator.received is not None
+    assert configurator.received.secret_values() == {
+        "STRIPE_APP_SIGNING_SECRET": "absec_incremental-value"
+    }
+    assert configurator.received.live_authorize_url() is None
+    assert "absec_incremental-value" not in response.text
+
+
 def test_github_configurator_encrypts_writes_and_reads_back_metadata():
     signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = signing_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
@@ -343,3 +419,114 @@ def test_github_configurator_encrypts_writes_and_reads_back_metadata():
         decrypted = SealedBox(secret_box_key).decrypt(base64.b64decode(encrypted[name])).decode()
         assert decrypted == production_values()[name]
 
+
+def test_github_configurator_secret_only_does_not_require_variable_permission():
+    signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = signing_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
+    secret_box_key = PrivateKey.generate()
+    public_key = base64.b64encode(bytes(secret_box_key.public_key)).decode()
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/installation"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": 117736073,
+                    "app_slug": "dsg-governance",
+                    "permissions": {"environments": "write", "variables": "read"},
+                },
+            )
+        if request.method == "POST" and path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_installation_token"})
+        if request.method == "GET" and path.endswith("/secrets/public-key"):
+            return httpx.Response(200, json={"key_id": "key-1", "key": public_key})
+        if request.method == "PUT" and path.endswith("/STRIPE_APP_SIGNING_SECRET"):
+            return httpx.Response(204)
+        if request.method == "GET" and path.endswith("/STRIPE_APP_SIGNING_SECRET"):
+            return httpx.Response(
+                200,
+                json={
+                    "name": "STRIPE_APP_SIGNING_SECRET",
+                    "created_at": "2026-08-27T00:00:00Z",
+                    "updated_at": "2026-08-27T00:00:01Z",
+                },
+            )
+        raise AssertionError(f"unexpected GitHub request: {request.method} {path}")
+
+    config = GitHubAppConfig(
+        client_id="Iv1.test-client-id",
+        private_key=pem,
+        owner="tdealer01-crypto",
+        repository="DSG-Cinema-Proof-Agent",
+    )
+    http_client = httpx.Client(
+        base_url="https://api.github.com",
+        transport=httpx.MockTransport(handler),
+    )
+    values = StripeAppProductionValues.model_validate(
+        {"STRIPE_APP_SIGNING_SECRET": "absec_incremental-value"}
+    )
+    evidence = GitHubActionsConfigurator(config, client=http_client).configure(values)
+
+    assert [row["name"] for row in evidence["environment_secrets"]] == [
+        "STRIPE_APP_SIGNING_SECRET"
+    ]
+    assert evidence["repository_variable"] is None
+    assert not any("/actions/variables" in path for _, path in seen)
+
+
+def test_github_configurator_variable_only_does_not_read_environment_key():
+    signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = signing_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
+    live_url = production_values()["DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL"]
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/installation"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": 117736073,
+                    "app_slug": "dsg-governance",
+                    "permissions": {"environments": "read", "variables": "write"},
+                },
+            )
+        if request.method == "POST" and path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_installation_token"})
+        if request.method == "GET" and "/actions/variables/" in path:
+            return httpx.Response(
+                200,
+                json={
+                    "name": stripe_app_executor.VARIABLE_NAME,
+                    "value": live_url,
+                    "created_at": "2026-08-27T00:00:00Z",
+                    "updated_at": "2026-08-27T00:00:01Z",
+                },
+            )
+        if request.method == "PATCH" and "/actions/variables/" in path:
+            return httpx.Response(204)
+        raise AssertionError(f"unexpected GitHub request: {request.method} {path}")
+
+    config = GitHubAppConfig(
+        client_id="Iv1.test-client-id",
+        private_key=pem,
+        owner="tdealer01-crypto",
+        repository="DSG-Cinema-Proof-Agent",
+    )
+    http_client = httpx.Client(
+        base_url="https://api.github.com",
+        transport=httpx.MockTransport(handler),
+    )
+    values = StripeAppProductionValues.model_validate(
+        {"DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL": live_url}
+    )
+    evidence = GitHubActionsConfigurator(config, client=http_client).configure(values)
+
+    assert evidence["environment_secrets"] == []
+    assert evidence["repository_variable"]["value_matches_submitted"] is True
+    assert not any(path.endswith("/secrets/public-key") for _, path in seen)

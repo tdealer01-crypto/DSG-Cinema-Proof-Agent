@@ -38,6 +38,7 @@ htmlcov/
 # Environment
 .env
 .env.local
+.venv/
 venv/
 env/
 
@@ -57,3 +58,6 @@ stripe-app/stripe-app.json
 
 # Stripe CLI build output from `stripe apps upload`
 stripe-app/.build/
+
+# Ephemeral Microsoft Foundry agent/session state
+integrations/microsoft_foundry/stripe_fix_agent/.foundry/

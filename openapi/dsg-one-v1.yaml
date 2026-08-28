@@ -262,11 +262,13 @@ paths:
         This executor has a fixed action (`configure_stripe_app`), target
         (`pics.dsg.governance`), step id (`stripe-production-setup`), empty
         parameters, repository, and production environment. DSG re-runs plan
-        preflight before the server-side GitHub App writes five environment
-        secrets and one repository variable. The response is based on GitHub
-        read-back metadata; encrypted or plaintext secret values are never
-        returned. Missing GitHub App inputs or permissions produce
-        `WAITING_PERMISSION`; out-of-plan work produces `BLOCK` and no write.
+        preflight before the server-side GitHub App writes only the submitted
+        fixed-name environment secrets or repository variable. At least one
+        value is required, but already-configured secrets do not need to be
+        submitted again. The response is based on GitHub read-back metadata;
+        encrypted or plaintext secret values are never returned. Missing
+        GitHub App inputs or permissions produce `WAITING_PERMISSION`;
+        out-of-plan work produces `BLOCK` and no write.
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -1093,13 +1095,11 @@ components:
     StripeAppProductionValues:
       type: object
       additionalProperties: false
-      required:
-        - STRIPE_APP_SIGNING_SECRET
-        - STRIPE_APP_OAUTH_TEST_SECRET_KEY
-        - STRIPE_APP_OAUTH_SANDBOX_SECRET_KEY
-        - STRIPE_APP_OAUTH_TEST_AUTHORIZE_URL
-        - STRIPE_APP_OAUTH_SANDBOX_AUTHORIZE_URL
-        - DSG_STRIPE_APP_OAUTH_LIVE_AUTHORIZE_URL
+      minProperties: 1
+      description: |
+        Non-empty incremental subset of fixed production destinations. Omit
+        values that already pass `/marketplace/stripe/status`; the caller
+        cannot choose arbitrary GitHub secret or variable names.
       properties:
         STRIPE_APP_SIGNING_SECRET:
           type: string
