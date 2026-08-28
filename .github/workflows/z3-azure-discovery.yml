@@ -46,7 +46,7 @@ jobs:
             --argjson environments "$(cat evidence/containerapp-environments.json)" \
             --argjson apps "$(cat evidence/containerapps.json)" \
             --argjson registries "$(cat evidence/acr.json)" \
-            '{resourceGroup:$group,environments:[$environments[]|{name,location,defaultDomain,staticIp}],containerApps:[$apps[]|{name,location,environmentId:properties.environmentId,fqdn:properties.configuration.ingress.fqdn,external:properties.configuration.ingress.external,targetPort:properties.configuration.ingress.targetPort}],registries:[$registries[]|{name,location,loginServer,sku:.sku.name}]}' \
+            '{resourceGroup:$group,environments:[$environments[]|{name,location,defaultDomain,staticIp}],containerApps:[$apps[]|{name,location,environmentId:.properties.environmentId,fqdn:.properties.configuration.ingress.fqdn,external:.properties.configuration.ingress.external,targetPort:.properties.configuration.ingress.targetPort}],registries:[$registries[]|{name,location,loginServer,sku:.sku.name}]}' \
             | tee evidence/summary.json
 
       - name: Upload discovery evidence
