@@ -16,7 +16,9 @@ def install(app) -> None:
     """Mount verification, control, evidence attestation, transport, billing, and Marketplace."""
     import importlib
 
-    importlib.import_module(f"{__name__}.router").install(app)
+    router_module = importlib.import_module(f"{__name__}.router")
+    importlib.import_module(f"{__name__}.exact_select").install_mcp_tool()
+    router_module.install(app)
     importlib.import_module(f"{__name__}.control").install(app)
     importlib.import_module(f"{__name__}.mutation").install(app)
     importlib.import_module(f"{__name__}.stripe_app_executor").install(app)
