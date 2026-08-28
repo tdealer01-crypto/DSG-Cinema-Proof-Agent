@@ -49,7 +49,7 @@ Rules:
 10. When uncertain between acting and violating a hard requirement, fail closed.
 
 The local DSG gate validates the emitted execution contract (tool identity, argument
-schema, decision vocabulary, deterministic ordering, and proof-chain integrity).
+schema, decision vocabulary, semantic call ordering, and proof-chain integrity).
 PI-Bench independently evaluates whether your policy reasoning and resulting state
 are actually correct.
 """
@@ -165,13 +165,16 @@ async def _handle_turn(request_id: str | None, data: dict[str, Any]) -> JSONResp
         "model": _model,
         "messages": _build_model_messages(session["system_prompt"], messages),
         "drop_params": True,
-        "num_retries": 1,
+        "num_retries": 2,
         "tool_choice": "auto",
     }
     if session["tools"]:
         kwargs["tools"] = session["tools"]
     if _reasoning_effort:
         kwargs["reasoning_effort"] = _reasoning_effort
+    seed = data.get("seed")
+    if isinstance(seed, int) and not isinstance(seed, bool):
+        kwargs["seed"] = seed
 
     try:
         response = await asyncio.to_thread(litellm.completion, **kwargs)
@@ -207,7 +210,7 @@ async def _handle_turn(request_id: str | None, data: dict[str, Any]) -> JSONResp
             {
                 "kind": "data",
                 "data": {
-                    "content": "I cannot execute that proposed action because it does not satisfy the required execution contract. I will reassess using the available policy and tools."
+                    "content": "I cannot execute that proposed action because it does not satisfy the required execution contract."
                 },
             },
         )
@@ -230,7 +233,12 @@ def _build_system_prompt(benchmark_context: list[dict[str, Any]], tools: list[di
             continue
         kind = str(node.get("kind", "context")).replace("_", " ").title()
         content = str(node.get("content", "")).strip()
-        if content:
+        if not content:
+            continue
+        metadata = _format_metadata(node.get("metadata"))
+        if metadata:
+            sections.append(f"\n### {kind}\nMetadata: {metadata}\n{content}")
+        else:
             sections.append(f"\n### {kind}\n{content}")
 
     if tools:
@@ -245,6 +253,16 @@ def _build_system_prompt(benchmark_context: list[dict[str, Any]], tools: list[di
                 sections.append(f"- {name}: {description}" if description else f"- {name}")
 
     return "\n".join(sections).strip()
+
+
+def _format_metadata(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    return ", ".join(
+        f"{key}={value}"
+        for key, value in metadata.items()
+        if value not in (None, "")
+    )
 
 
 def _build_model_messages(system_prompt: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -321,7 +339,10 @@ def main() -> None:
 
     _model = args.model
     _reasoning_effort = args.reasoning_effort
-    _card_url = args.card_url or f"http://{args.host}:{args.port}/"
+    # AgentBeats discovers this container by its provided A2A endpoint. Keep the
+    # card URL empty unless the runtime supplies an externally resolvable URL;
+    # never advertise 0.0.0.0 as a public destination.
+    _card_url = args.card_url
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     logger.info("starting model=%s host=%s port=%d", _model, args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

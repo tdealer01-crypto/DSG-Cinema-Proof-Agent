@@ -13,11 +13,11 @@ The benchmark adapter uses the model selected by the assessment operator, then a
 3. arguments must satisfy the benchmark-provided JSON Schema;
 4. duplicate tool-call IDs are blocked;
 5. `record_decision` values are restricted to `ALLOW`, `ALLOW-CONDITIONAL`, `DENY`, or `ESCALATE`;
-6. operational calls are kept in model order and `record_decision` is deterministically placed last;
-7. malformed or unknown actions fail closed and emit **zero** tool calls;
+6. tool-call semantic order is preserved; an operational call after `record_decision`, or multiple final decisions, fails closed rather than being reordered/repaired;
+7. malformed, unknown, or invalidly ordered actions fail closed and emit **zero** tool calls;
 8. every turn emits an internal SHA-256 proof receipt chained to the prior receipt.
 
-The proof receipt includes hashes of the benchmark context, tool inventory, assistant content, proposed tool calls, emitted tool calls, gate status, reason codes, and previous receipt hash.
+The proof receipt includes hashes of the benchmark context, tool inventory, assistant content, proposed tool calls, emitted tool calls, gate status, reason codes, and previous receipt hash. Receipt format `dsg-pibench-proof/v2` records deterministic representation normalization without claiming that the gate repairs semantic ordering.
 
 ### Evidence boundary
 
@@ -36,7 +36,7 @@ Endpoints:
 - `GET /health`
 - `POST /` using A2A `message/send`
 
-The benchmark image is built for `linux/amd64`, which is the AgentBeats GitHub-runner target.
+The benchmark image is built for `linux/amd64`, which is the AgentBeats GitHub-runner target. The Amber manifest uses the array-form `entrypoint` used by the current PI-Bench AgentBeats leaderboard reference manifest.
 
 ## Container
 
@@ -77,9 +77,11 @@ docker run --rm -p 9010:9010 dsg-pibench-agent:test \
 
 The health and bootstrap checks do not require an LLM key. A real PI-Bench turn does.
 
+CI evidence includes unit-test output, resolved Python dependency versions, Docker image inspection, agent card, bootstrap request/response, container log, and SHA-256 checksums. `SHA256SUMS.txt` intentionally excludes itself.
+
 ## Public submission path
 
-1. CI tests the gate, compiles the server, builds `linux/amd64`, and smoke-tests the A2A card/bootstrap contract.
+1. CI tests the gate, compiles the server, validates the manifest shape, builds `linux/amd64`, and smoke-tests the A2A card/bootstrap contract.
 2. Merge only after those checks pass.
 3. Main-branch CI publishes the GHCR image and immutable digest evidence.
 4. Make the GHCR package public.

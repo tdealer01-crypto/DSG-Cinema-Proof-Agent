@@ -72,6 +72,7 @@ def test_valid_call_passes_and_arguments_are_canonicalized():
     assert result.status == "PASSED"
     assert result.reason_codes == []
     assert result.tool_calls[0]["function"]["arguments"] == '{"account_id":"abc"}'
+    assert result.receipt["version"] == "dsg-pibench-proof/v2"
     assert len(result.receipt["receiptHash"]) == 64
 
 
@@ -122,7 +123,7 @@ def test_invalid_decision_fails_closed():
     assert result.tool_calls == []
 
 
-def test_record_decision_is_deterministically_moved_last():
+def test_action_after_final_decision_fails_closed_instead_of_reordering():
     result = run(
         [
             {
@@ -143,12 +144,63 @@ def test_record_decision_is_deterministically_moved_last():
             },
         ]
     )
+    assert result.status == "BLOCKED"
+    assert result.tool_calls == []
+    assert "ACTION_AFTER_FINAL_DECISION" in result.reason_codes
+
+
+def test_valid_final_decision_last_preserves_order():
+    result = run(
+        [
+            {
+                "id": "lookup",
+                "type": "function",
+                "function": {
+                    "name": "lookup_account",
+                    "arguments": '{"account_id":"abc"}',
+                },
+            },
+            {
+                "id": "decision",
+                "type": "function",
+                "function": {
+                    "name": "record_decision",
+                    "arguments": '{"decision":"ALLOW"}',
+                },
+            },
+        ]
+    )
     assert result.status == "PASSED"
     assert [c["function"]["name"] for c in result.tool_calls] == [
         "lookup_account",
         "record_decision",
     ]
-    assert result.receipt["deterministicallyShaped"] is True
+
+
+def test_multiple_final_decisions_fail_closed():
+    result = run(
+        [
+            {
+                "id": "decision-1",
+                "type": "function",
+                "function": {
+                    "name": "record_decision",
+                    "arguments": '{"decision":"ALLOW"}',
+                },
+            },
+            {
+                "id": "decision-2",
+                "type": "function",
+                "function": {
+                    "name": "record_decision",
+                    "arguments": '{"decision":"DENY"}',
+                },
+            },
+        ]
+    )
+    assert result.status == "BLOCKED"
+    assert result.tool_calls == []
+    assert "MULTIPLE_FINAL_DECISIONS" in result.reason_codes
 
 
 def test_duplicate_call_id_fails_closed():
