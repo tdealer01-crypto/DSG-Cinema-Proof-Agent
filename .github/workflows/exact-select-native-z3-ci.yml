@@ -1,0 +1,44 @@
+name: Exact Select Native Z3 CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/mcp-exact-select-native-z3
+    paths:
+      - 'z3_exact_topk.py'
+      - 'z3_main_wrapper.py'
+      - 'Dockerfile'
+      - 'api_v1/exact_select.py'
+      - 'api_v1/__init__.py'
+      - 'tests/test_exact_select.py'
+      - '.github/workflows/exact-select-native-z3-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-select-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-cinema.txt
+      - name: Install Cinema and Z3 dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-cinema.txt pytest
+      - name: Compile changed Python modules
+        run: |
+          python -m py_compile z3_exact_topk.py z3_main_wrapper.py api_v1/exact_select.py api_v1/__init__.py
+      - name: Run exact-select and API regression tests
+        env:
+          DSG_STORE_PATH: /tmp/dsg-exact-select-ci-store.json
+        run: |
+          python -m pytest -q tests/test_exact_select.py tests/test_api_v1.py tests/test_cinema_main.py
