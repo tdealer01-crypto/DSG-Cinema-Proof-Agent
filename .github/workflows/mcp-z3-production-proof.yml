@@ -1,0 +1,133 @@
+name: MCP Z3 Production Proof
+
+on:
+  push:
+    branches: [agent/mcp-z3-production-proof]
+    paths:
+      - '.github/workflows/mcp-z3-production-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  external-mcp-z3-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      MCP_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp
+    steps:
+      - name: Verify production status
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          curl --fail-with-body --silent --show-error "$BASE_URL/api/v1/status" > evidence/status.json
+          jq -e '.status == "READY" and .verification_backend.ready == true and .mcp.endpoint == "/api/v1/mcp" and (.mcp.tools | index("dsg_exact_select") != null)' evidence/status.json >/dev/null
+
+      - name: Initialize MCP transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/initialize.json <<'JSON'
+          {"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"github-production-proof","version":"1"}}}
+          JSON
+          curl --fail-with-body --silent --show-error \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/initialize.json > evidence/initialize.json
+          jq -e '.jsonrpc == "2.0" and .result.protocolVersion == "2025-06-18" and .result.serverInfo.name == "dsg-one"' evidence/initialize.json >/dev/null
+
+      - name: Verify exact tool discovery and annotations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/tools.json <<'JSON'
+          {"jsonrpc":"2.0","id":"tools-1","method":"tools/list","params":{}}
+          JSON
+          curl --fail-with-body --silent --show-error \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/tools.json > evidence/tools.json
+          jq -e '
+            [.result.tools[] | select(.name == "dsg_exact_select")] as $t |
+            ($t | length) == 1 and
+            $t[0].annotations.readOnlyHint == true and
+            $t[0].annotations.openWorldHint == false and
+            $t[0].annotations.destructiveHint == false and
+            $t[0].annotations.idempotentHint == true
+          ' evidence/tools.json >/dev/null
+
+      - name: Call production MCP with useZ3 true twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/call.json <<'JSON'
+          {"jsonrpc":"2.0","id":"z3-1","method":"tools/call","params":{"name":"dsg_exact_select","arguments":{"candidates":[{"id":"a","composite":"0.50003"},{"id":"b","composite":"0.50004"},{"id":"c","composite":"0.50004"}],"k":2,"minComposite":"0","useZ3":true}}}
+          JSON
+          curl --fail-with-body --silent --show-error \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/call.json > evidence/z3-call-1.json
+          sed 's/"id":"z3-1"/"id":"z3-2"/' /tmp/call.json > /tmp/call2.json
+          curl --fail-with-body --silent --show-error \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/call2.json > evidence/z3-call-2.json
+
+          for f in evidence/z3-call-1.json evidence/z3-call-2.json; do
+            jq -e '
+              .result.isError == false and
+              .result.structuredContent.success == true and
+              .result.structuredContent.status == "PASSED" and
+              .result.structuredContent.mode == "verified-exact" and
+              .result.structuredContent.solverResult == "sat" and
+              .result.structuredContent.selectedCount == 2 and
+              .result.structuredContent.selected == [
+                {"id":"b","composite":"0.50004"},
+                {"id":"c","composite":"0.50004"}
+              ] and
+              (.result.structuredContent.evidenceHash | type == "string" and length == 64) and
+              (.result.structuredContent.z3ProofHash | type == "string" and length == 64) and
+              (.result.structuredContent.z3RequestHash | type == "string" and length == 64)
+            ' "$f" >/dev/null
+          done
+
+          test "$(jq -r '.result.structuredContent.evidenceHash' evidence/z3-call-1.json)" = "$(jq -r '.result.structuredContent.evidenceHash' evidence/z3-call-2.json)"
+          test "$(jq -r '.result.structuredContent.z3ProofHash' evidence/z3-call-1.json)" = "$(jq -r '.result.structuredContent.z3ProofHash' evidence/z3-call-2.json)"
+          test "$(jq -r '.result.structuredContent.z3RequestHash' evidence/z3-call-1.json)" = "$(jq -r '.result.structuredContent.z3RequestHash' evidence/z3-call-2.json)"
+
+      - name: Verify fail-closed invalid candidate input
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/invalid.json <<'JSON'
+          {"jsonrpc":"2.0","id":"bad-1","method":"tools/call","params":{"name":"dsg_exact_select","arguments":{"candidates":[{"id":"dup","composite":"1"},{"id":"dup","composite":"2"}],"k":1,"minComposite":"0","useZ3":true}}}
+          JSON
+          curl --fail-with-body --silent --show-error \
+            --request POST "$MCP_URL" \
+            --header 'Content-Type: application/json' \
+            --data @/tmp/invalid.json > evidence/invalid.json
+          jq -e '.result.isError == true and .result.structuredContent.error == "INVALID_ARGUMENTS"' evidence/invalid.json >/dev/null
+
+      - name: Build proof summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg endpoint "$MCP_URL" \
+            --arg evidence_hash "$(jq -r '.result.structuredContent.evidenceHash' evidence/z3-call-1.json)" \
+            --arg proof_hash "$(jq -r '.result.structuredContent.z3ProofHash' evidence/z3-call-1.json)" \
+            --arg request_hash "$(jq -r '.result.structuredContent.z3RequestHash' evidence/z3-call-1.json)" \
+            '{endpoint:$endpoint,status:"PASS",external_runner:true,useZ3:true,solverResult:"sat",selected:["b","c"],deterministicReplay:true,failClosedInvalidInput:true,evidenceHash:$evidence_hash,z3ProofHash:$proof_hash,z3RequestHash:$request_hash}' \
+            > evidence/summary.json
+          cat evidence/summary.json
+
+      - name: Upload production MCP proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-z3-production-proof-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
