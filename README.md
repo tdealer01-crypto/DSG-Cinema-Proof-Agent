@@ -277,6 +277,7 @@ Do not place production secrets in source files or example commands.
 ## Documentation
 
 - [`docs/`](docs/) — operational and technical documentation
+- [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) — canonical DSG ONE v1 authorization and verification contract
 - [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) — current proof record
 - [`docs/INTELLECTUAL_PROPERTY_NOTICE.md`](docs/INTELLECTUAL_PROPERTY_NOTICE.md) — DSG.PICS attribution/watermark notice
 - [GitBook — Cinema Proof Agent](https://dsg-cinema.gitbook.io/cinema-proof-agent) — published documentation
