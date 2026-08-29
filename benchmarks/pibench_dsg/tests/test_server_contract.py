@@ -2,6 +2,7 @@ import asyncio
 import json
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import httpx
 from a2a.client import A2ACardResolver
@@ -10,6 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import server  # noqa: E402
+from cinema_decision import CinemaBatchDecision  # noqa: E402
 
 
 def body_json(response):
@@ -133,3 +135,91 @@ def test_jsonrpc_success_shape_matches_pibench_status_message_contract():
     parts = payload["result"]["status"]["message"]["parts"]
     assert parts[0]["kind"] == "data"
     assert parts[0]["data"]["tool_calls"][0]["function"]["name"] == "record_decision"
+
+
+def _decision_tool():
+    return {
+        "type": "function",
+        "function": {
+            "name": "record_decision",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "decision": {
+                        "type": "string",
+                        "enum": ["ALLOW", "ALLOW-CONDITIONAL", "DENY", "ESCALATE"],
+                    }
+                },
+                "required": ["decision"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _model_tool_response():
+    function = SimpleNamespace(name="record_decision", arguments='{"decision":"DENY"}')
+    call = SimpleNamespace(id="call-1", function=function)
+    message = SimpleNamespace(content=None, tool_calls=[call])
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def test_cinema_preflight_runs_before_local_gate(monkeypatch):
+    events = []
+    real_gate = server.gate_tool_calls
+
+    monkeypatch.setattr(server.litellm, "completion", lambda **_kwargs: _model_tool_response())
+
+    async def fake_cinema(**_kwargs):
+        events.append("cinema")
+        return CinemaBatchDecision(decision="ALLOW", payloads=[])
+
+    def observed_gate(*args, **kwargs):
+        events.append("gate")
+        return real_gate(*args, **kwargs)
+
+    monkeypatch.setattr(server, "evaluate_with_cinema", fake_cinema)
+    monkeypatch.setattr(server, "gate_tool_calls", observed_gate)
+
+    response = asyncio.run(
+        server._handle_turn(
+            "turn-cinema-order",
+            {
+                "benchmark_context": [{"kind": "policy", "content": "test"}],
+                "tools": [_decision_tool()],
+                "messages": [{"role": "user", "content": "decide"}],
+            },
+        )
+    )
+    payload = body_json(response)
+    data = payload["result"]["status"]["message"]["parts"][0]["data"]
+    assert events == ["cinema", "gate"]
+    assert data["tool_calls"][0]["function"]["name"] == "record_decision"
+
+
+def test_non_allow_cinema_decision_emits_zero_tools_and_skips_local_gate(monkeypatch):
+    monkeypatch.setattr(server.litellm, "completion", lambda **_kwargs: _model_tool_response())
+
+    async def fake_cinema(**_kwargs):
+        return CinemaBatchDecision(decision="WAITING_PERMISSION", payloads=[])
+
+    def forbidden_gate(*_args, **_kwargs):
+        raise AssertionError("local gate must not run after non-ALLOW Cinema preflight")
+
+    monkeypatch.setattr(server, "evaluate_with_cinema", fake_cinema)
+    monkeypatch.setattr(server, "gate_tool_calls", forbidden_gate)
+
+    response = asyncio.run(
+        server._handle_turn(
+            "turn-cinema-stop",
+            {
+                "benchmark_context": [{"kind": "policy", "content": "test"}],
+                "tools": [_decision_tool()],
+                "messages": [{"role": "user", "content": "decide"}],
+            },
+        )
+    )
+    payload = body_json(response)
+    data = payload["result"]["status"]["message"]["parts"][0]["data"]
+    assert "tool_calls" not in data
+    assert "not execution-ready" in data["content"]

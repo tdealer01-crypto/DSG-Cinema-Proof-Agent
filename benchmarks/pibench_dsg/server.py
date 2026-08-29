@@ -16,6 +16,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from cinema_decision import CinemaDecisionError, cinema_preflight_mode, evaluate_with_cinema
 from gate import gate_tool_calls, sha256_json
 
 logger = logging.getLogger("dsg.pibench")
@@ -167,12 +168,19 @@ async def agent_card_alias(request: Request) -> JSONResponse:
 
 @app.get("/health")
 async def health() -> JSONResponse:
+    try:
+        cinema_mode = cinema_preflight_mode()
+        status = "ok"
+    except CinemaDecisionError:
+        cinema_mode = "invalid"
+        status = "configuration_error"
     return JSONResponse(
         {
-            "status": "ok",
+            "status": status,
             "agent": "dsg-proof-governed-pibench",
             "model": _model,
             "gate": "deterministic-fail-closed",
+            "cinemaPreflight": cinema_mode,
             "proofReceipts": "sha256-hash-chain",
         }
     )
@@ -244,7 +252,14 @@ async def _handle_turn(request_id: str | None, data: dict[str, Any]) -> JSONResp
         content, proposed = await _propose_turn(session, messages, seed, repair_note=None)
     except Exception as exc:  # noqa: BLE001 - never surface a protocol error
         logger.exception("model call failed after retries")
-        return _degraded_turn(request_id, session, messages, f"MODEL_UNAVAILABLE:{type(exc).__name__}")
+        return await _degraded_turn(request_id, session, messages, f"MODEL_UNAVAILABLE:{type(exc).__name__}")
+
+    # Cinema authorizes the pre-approved context/tool surface. Only after that
+    # decision does the local deterministic gate validate the concrete PI-Bench
+    # tool name, JSON arguments/schema, decision vocabulary and semantic ordering.
+    refusal = await _cinema_preflight(session, proposed)
+    if refusal is not None:
+        return await _degraded_turn(request_id, session, messages, "CINEMA_BLOCKED", content=refusal)
 
     gate = _run_gate(session, content, proposed)
 
@@ -260,11 +275,16 @@ async def _handle_turn(request_id: str | None, data: dict[str, Any]) -> JSONResp
         except Exception:  # noqa: BLE001
             logger.exception("repair attempt failed")
         else:
+            refusal = await _cinema_preflight(session, proposed)
+            if refusal is not None:
+                return await _degraded_turn(
+                    request_id, session, messages, "CINEMA_BLOCKED", content=refusal
+                )
             gate = _run_gate(session, content, proposed)
 
     if gate.status != "PASSED":
         logger.warning("gate blocked reason_codes=%s", ",".join(gate.reason_codes))
-        return _degraded_turn(
+        return await _degraded_turn(
             request_id,
             session,
             messages,
@@ -330,6 +350,57 @@ def _new_session(benchmark_context: list[dict[str, Any]], tools: list[dict[str, 
         "turn_failures": 0,
         "decision_recorded": False,
     }
+
+
+async def _cinema_preflight(
+    session: dict[str, Any], proposed: list[dict[str, Any]]
+) -> str | None:
+    """Authorize model proposals against an already-approved Cinema plan.
+
+    Returns ``None`` when execution may proceed, or the user-facing refusal text
+    when it may not. Baseline (``CINEMA_PREFLIGHT_MODE=off``) is a no-op; in
+    required mode the adapter never creates or approves the plan it checks.
+    """
+    if not proposed:
+        return None
+    try:
+        cinema = await evaluate_with_cinema(
+            context_hash=session["context_hash"],
+            toolset_hash=session["toolset_hash"],
+            proposed_tool_calls=proposed,
+        )
+    except CinemaDecisionError as exc:
+        logger.error("Cinema preflight failed closed: %s", exc)
+        return (
+            "I cannot execute that proposed action because the external governance "
+            "preflight could not verify it."
+        )
+
+    if cinema.payloads:
+        audit = [
+            {
+                "decision": item.get("decision"),
+                "code": item.get("code"),
+                "plan_id": item.get("plan_id"),
+                "step_id": item.get("step_id"),
+                "action": item.get("action"),
+                "target": item.get("target"),
+                "control_hash": item.get("control_hash"),
+            }
+            for item in cinema.payloads
+        ]
+        logger.info(
+            "DSG_CINEMA_PREFLIGHT %s",
+            json.dumps(audit, sort_keys=True, separators=(",", ":")),
+        )
+
+    if cinema.decision != "ALLOW":
+        logger.warning("Cinema preflight stopped execution decision=%s", cinema.decision)
+        return (
+            "I cannot execute that proposed action because the approved governance "
+            "plan is not execution-ready for it."
+        )
+    return None
 
 
 def _run_gate(session: dict[str, Any], content: str | None, proposed: list[dict[str, Any]]):
@@ -426,7 +497,7 @@ def _repair_note(reason_codes: list[str]) -> str:
     )
 
 
-def _degraded_turn(
+async def _degraded_turn(
     request_id: str | None,
     session: dict[str, Any],
     messages: list[dict[str, Any]],
@@ -448,7 +519,7 @@ def _degraded_turn(
         and session["turn_failures"] >= _MAX_TURN_FAILURES_BEFORE_FAIL_CLOSED
     ):
         fallback = _fail_closed_decision_call(session, messages)
-        if fallback is not None:
+        if fallback is not None and await _cinema_preflight(session, [fallback]) is None:
             gate = _run_gate(session, None, [fallback])
             if gate.status == "PASSED" and gate.tool_calls:
                 session["decision_recorded"] = True

@@ -13,6 +13,8 @@ import types
 
 import pytest
 
+from cinema_decision import CinemaBatchDecision
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -202,3 +204,47 @@ def test_empty_model_output_keeps_the_episode_alive_until_a_decision_exists(monk
     server._sessions[context_id]["decision_recorded"] = True
     response = asyncio.run(server._handle_turn("turn-2", {"context_id": context_id, "messages": []}))
     assert turn_data(response)["content"] == "###STOP###"
+
+
+def test_fail_closed_decision_never_self_approves_past_cinema(monkeypatch):
+    """The recovery decision is a proposal too, so Cinema still authorizes it.
+
+    In required mode the adapter must not hand itself an execution path that a
+    model proposal would not get.
+    """
+    context_id = make_session()
+    monkeypatch.setattr(
+        server.litellm,
+        "completion",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("APIConnectionError")),
+    )
+
+    async def blocking_cinema(**_kwargs):
+        return CinemaBatchDecision(decision="WAITING_PERMISSION", payloads=[])
+
+    monkeypatch.setattr(server, "evaluate_with_cinema", blocking_cinema)
+
+    for turn in ("turn-1", "turn-2", "turn-3"):
+        response = asyncio.run(server._handle_turn(turn, {"context_id": context_id, "messages": []}))
+        assert "tool_calls" not in turn_data(response)
+        assert "error" not in body_json(response)
+
+
+def test_fail_closed_decision_is_emitted_when_cinema_allows(monkeypatch):
+    context_id = make_session()
+    monkeypatch.setattr(
+        server.litellm,
+        "completion",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("APIConnectionError")),
+    )
+
+    async def allowing_cinema(**_kwargs):
+        return CinemaBatchDecision(decision="ALLOW", payloads=[])
+
+    monkeypatch.setattr(server, "evaluate_with_cinema", allowing_cinema)
+
+    asyncio.run(server._handle_turn("turn-1", {"context_id": context_id, "messages": []}))
+    response = asyncio.run(server._handle_turn("turn-2", {"context_id": context_id, "messages": []}))
+
+    calls = turn_data(response)["tool_calls"]
+    assert json.loads(calls[0]["function"]["arguments"])["decision"] == "ESCALATE"

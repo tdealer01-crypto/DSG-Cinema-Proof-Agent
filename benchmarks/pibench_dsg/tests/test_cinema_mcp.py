@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import pytest
+import asyncio
+import pathlib
+import sys
 
-import cinema_mcp
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import cinema_mcp  # noqa: E402
 
 
-@pytest.mark.asyncio
-async def test_cinema_tools_uses_tools_list(monkeypatch):
+def test_cinema_tools_uses_tools_list(monkeypatch):
     seen = {}
 
     async def fake(method, params=None):
@@ -15,13 +19,12 @@ async def test_cinema_tools_uses_tools_list(monkeypatch):
         return {"tools": []}
 
     monkeypatch.setattr(cinema_mcp, "call_cinema_mcp", fake)
-    result = await cinema_mcp.cinema_tools()
+    result = asyncio.run(cinema_mcp.cinema_tools())
     assert result == {"tools": []}
     assert seen == {"method": "tools/list", "params": None}
 
 
-@pytest.mark.asyncio
-async def test_cinema_status_calls_dsg_status(monkeypatch):
+def test_cinema_status_calls_dsg_status(monkeypatch):
     seen = {}
 
     async def fake(method, params=None):
@@ -30,7 +33,7 @@ async def test_cinema_status_calls_dsg_status(monkeypatch):
         return {"content": [{"type": "text", "text": "ok"}]}
 
     monkeypatch.setattr(cinema_mcp, "call_cinema_mcp", fake)
-    result = await cinema_mcp.cinema_status()
+    result = asyncio.run(cinema_mcp.cinema_status())
     assert result["content"][0]["text"] == "ok"
     assert seen["method"] == "tools/call"
     assert seen["params"] == {"name": "dsg_status", "arguments": {}}
