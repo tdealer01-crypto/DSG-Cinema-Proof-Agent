@@ -14,6 +14,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from cinema_decision import CinemaDecisionError, cinema_preflight_mode, evaluate_with_cinema
 from gate import gate_tool_calls, sha256_json
 
 logger = logging.getLogger("dsg.pibench")
@@ -105,12 +106,19 @@ async def agent_card_alias(request: Request) -> JSONResponse:
 
 @app.get("/health")
 async def health() -> JSONResponse:
+    try:
+        cinema_mode = cinema_preflight_mode()
+        status = "ok"
+    except CinemaDecisionError:
+        cinema_mode = "invalid"
+        status = "configuration_error"
     return JSONResponse(
         {
-            "status": "ok",
+            "status": status,
             "agent": "dsg-proof-governed-pibench",
             "model": _model,
             "gate": "deterministic-fail-closed",
+            "cinemaPreflight": cinema_mode,
             "proofReceipts": "sha256-hash-chain",
         }
     )
@@ -216,6 +224,61 @@ async def _handle_turn(request_id: str | None, data: dict[str, Any]) -> JSONResp
     content = str(content) if content is not None else None
     proposed = _normalize_tool_calls(_field(choice_message, "tool_calls"))
 
+    # A/B mode: baseline stays unchanged when Cinema is off. In required mode,
+    # every model-proposed PI-Bench tool action must first match an independently
+    # approved Cinema plan. The adapter never creates or approves that plan.
+    if proposed:
+        try:
+            cinema = await evaluate_with_cinema(
+                context_hash=session["context_hash"],
+                toolset_hash=session["toolset_hash"],
+                proposed_tool_calls=proposed,
+            )
+        except CinemaDecisionError as exc:
+            logger.error("Cinema preflight failed closed: %s", exc)
+            return _jsonrpc_success(
+                request_id,
+                {
+                    "kind": "data",
+                    "data": {
+                        "content": "I cannot execute that proposed action because the external governance preflight could not verify it."
+                    },
+                },
+            )
+
+        if cinema.payloads:
+            audit = [
+                {
+                    "decision": item.get("decision"),
+                    "code": item.get("code"),
+                    "plan_id": item.get("plan_id"),
+                    "step_id": item.get("step_id"),
+                    "action": item.get("action"),
+                    "target": item.get("target"),
+                    "control_hash": item.get("control_hash"),
+                }
+                for item in cinema.payloads
+            ]
+            logger.info(
+                "DSG_CINEMA_PREFLIGHT %s",
+                json.dumps(audit, sort_keys=True, separators=(",", ":")),
+            )
+
+        if cinema.decision != "ALLOW":
+            logger.warning("Cinema preflight stopped execution decision=%s", cinema.decision)
+            return _jsonrpc_success(
+                request_id,
+                {
+                    "kind": "data",
+                    "data": {
+                        "content": "I cannot execute that proposed action because the approved governance plan is not execution-ready for it."
+                    },
+                },
+            )
+
+    # Cinema authorizes the pre-approved context/tool surface. Only after that
+    # decision does the local deterministic gate validate the concrete PI-Bench
+    # tool name, JSON arguments/schema, decision vocabulary and semantic ordering.
     gate = gate_tool_calls(
         proposed,
         session["tools"],

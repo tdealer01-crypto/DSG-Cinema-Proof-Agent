@@ -11,6 +11,15 @@
         enum: ["low", "medium", "high"],
         default: "medium",
       },
+      cinema_preflight_mode: {
+        type: "string",
+        enum: ["off", "required"],
+        default: "off",
+      },
+      cinema_plan_id: { type: "string", default: "" },
+      cinema_plan_bindings_json: { type: "string", default: "" },
+      cinema_agent_identity: { type: "string", default: "" },
+      cinema_api_key: { type: "string", secret: true, default: "" },
     },
     required: ["openai_api_key"],
     additionalProperties: false,
@@ -32,6 +41,11 @@
       OPENAI_API_KEY: "${config.openai_api_key}",
       OPENAI_MODEL: "${config.openai_model}",
       REASONING_EFFORT: "${config.reasoning_effort}",
+      CINEMA_PREFLIGHT_MODE: "${config.cinema_preflight_mode}",
+      CINEMA_PIBENCH_PLAN_ID: "${config.cinema_plan_id}",
+      CINEMA_PIBENCH_PLAN_BINDINGS_JSON: "${config.cinema_plan_bindings_json}",
+      CINEMA_PIBENCH_AGENT_IDENTITY: "${config.cinema_agent_identity}",
+      CINEMA_API_KEY: "${config.cinema_api_key}",
     },
     network: {
       endpoints: [
