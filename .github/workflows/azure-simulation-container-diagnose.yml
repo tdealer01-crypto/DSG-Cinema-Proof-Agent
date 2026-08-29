@@ -1,0 +1,60 @@
+name: Diagnose AIMO Simulation Container Activation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/azure-simulation-container-diagnose.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    name: Read Azure simulation container configuration
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 8
+    env:
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      SIMULATION_APP: dsg-agi-simulation
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Azure login with Cinema production OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Read container activation state only
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== WEBAPP ==='
+          az webapp show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --query '{name:name,state:state,kind:kind,host:defaultHostName,identity:identity.type}' -o json
+
+          echo '=== LINUX CONTAINER CONFIG ==='
+          az webapp config show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --query '{linuxFxVersion:linuxFxVersion,appCommandLine:appCommandLine,alwaysOn:alwaysOn}' -o json
+
+          echo '=== CONTAINER SETTINGS ==='
+          az webapp config container show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --query '[].{name:name,value:value}' -o json || true
+
+          echo '=== ACR REGISTRIES IN RESOURCE GROUP ==='
+          az acr list --resource-group "$RESOURCE_GROUP" \
+            --query '[].{name:name,loginServer:loginServer,sku:sku.name,adminUserEnabled:adminUserEnabled}' -o json
+
+          echo '=== APP SETTING NAMES RELEVANT TO CONTAINER ==='
+          az webapp config appsettings list --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
+            --query "[?contains(name,'DOCKER') || contains(name,'CONTAINER') || contains(name,'WEBSITE_RUN_FROM_PACKAGE') || contains(name,'PORT')].name" -o json

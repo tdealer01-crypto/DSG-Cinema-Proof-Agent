@@ -1,0 +1,9 @@
+{
+  "name": "dsg-one-live-aimo-proof",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "live": "tsx run-live.ts" },
+  "dependencies": { "tsx": "4.22.4" },
+  "engines": { "node": ">=20.0.0" }
+}

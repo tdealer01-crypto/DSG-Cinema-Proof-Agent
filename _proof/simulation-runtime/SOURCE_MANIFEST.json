@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "dsg.simulation-runtime-snapshot.v1",
+  "sourceRepo": "tdealer01-crypto/dsg-agi-simulation",
+  "sourceCommit": "8a1a603a31aa65780b6e57762589ab19a0e76b68",
+  "sourceTree": "c68bd61d0da5a82d9e522c5497dd10fd289381ea",
+  "truthBoundary": "Runtime TypeScript source files are exact Git blobs from the merged simulation commit. package.json is an operator-minimal Azure runtime manifest pinned to tsx 4.22.4; it is not the original repository package manifest.",
+  "operatorPackagePinned": true,
+  "files": [
+    {"path":"src/http-server.ts","originalBlobSha":"6b8da9bc19024fff41c9d8cf512b50a3f4a42b37"},
+    {"path":"src/aimo/auth.ts","originalBlobSha":"7633fb96ecf019baeff7ae30f1a159a5a558a6ca"},
+    {"path":"src/aimo/encoding-proof-authority.ts","originalBlobSha":"18903fdd441460b0dff67c8cfd3b5f5a89dc08e9"},
+    {"path":"src/aimo/governed-solver.ts","originalBlobSha":"34a01b91d2b25c1863ab9cf9712992e7e7624023"},
+    {"path":"src/aimo/solver.ts","originalBlobSha":"b19a32553b591c6b63c14ee992c9a9b4525bbd18"},
+    {"path":"src/aimo/stable.ts","originalBlobSha":"24b45f0f70bc010ac8d8f5b4a57f09b3893f1c60"},
+    {"path":"src/aimo/types.ts","originalBlobSha":"468c030f7d5a4e284688f4c3003fb7d0573c0496"}
+  ]
+}

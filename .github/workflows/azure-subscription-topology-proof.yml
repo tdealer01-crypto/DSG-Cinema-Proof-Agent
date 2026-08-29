@@ -1,0 +1,104 @@
+name: Azure Subscription Topology Proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/azure-subscription-topology-proof.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  topology:
+    name: Discover Azure production topology
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    env:
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      EXPECTED_RESOURCE_GROUP: rg-t.dealer01-0468
+
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Azure login with Cinema production OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Discover resource names and hostnames only
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors >/dev/null
+
+          echo '=== AZURE_ACCOUNT_SAFE ==='
+          az account show --query '{subscription:id,tenant:tenantId,name:name}' -o json
+
+          echo '=== RESOURCE_GROUPS ==='
+          az group list --query '[].{name:name,location:location}' -o table
+
+          echo '=== WEB_APPS ==='
+          az webapp list --query '[].{name:name,resourceGroup:resourceGroup,state:state,host:defaultHostName}' -o table || true
+
+          echo '=== CONTAINER_APPS ==='
+          az containerapp list --query '[].{name:name,resourceGroup:resourceGroup,location:location,host:properties.configuration.ingress.fqdn}' -o table || true
+
+          echo '=== KEY_VAULTS ==='
+          az keyvault list --query '[].{name:name,resourceGroup:resourceGroup,location:location}' -o table || true
+
+          mkdir -p "$RUNNER_TEMP/azure-topology"
+          az webapp list --query '[].{name:name,resourceGroup:resourceGroup,state:state,host:defaultHostName}' -o json > "$RUNNER_TEMP/azure-topology/webapps.json" || echo '[]' > "$RUNNER_TEMP/azure-topology/webapps.json"
+          az containerapp list --query '[].{name:name,resourceGroup:resourceGroup,location:location,host:properties.configuration.ingress.fqdn}' -o json > "$RUNNER_TEMP/azure-topology/containerapps.json" || echo '[]' > "$RUNNER_TEMP/azure-topology/containerapps.json"
+          az keyvault list --query '[].{name:name,resourceGroup:resourceGroup,location:location}' -o json > "$RUNNER_TEMP/azure-topology/keyvaults.json" || echo '[]' > "$RUNNER_TEMP/azure-topology/keyvaults.json"
+
+      - name: Discover binding names only
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== WEB_APP_BINDING_NAMES ==='
+          while IFS=$'\t' read -r rg app; do
+            [[ -n "$rg" && -n "$app" ]] || continue
+            echo "--- webapp=$app rg=$rg"
+            az webapp config appsettings list --resource-group "$rg" --name "$app" \
+              --query '[].name' -o tsv 2>/dev/null \
+              | grep -E '^(DSG_|AZURE_|APP_URL$|NEXT_PUBLIC_APP_URL$)' \
+              | sort -u || true
+          done < <(az webapp list --query '[].[resourceGroup,name]' -o tsv)
+
+          echo '=== CONTAINER_APP_BINDING_NAMES ==='
+          while IFS=$'\t' read -r rg app; do
+            [[ -n "$rg" && -n "$app" ]] || continue
+            echo "--- containerapp=$app rg=$rg"
+            az containerapp show --resource-group "$rg" --name "$app" \
+              --query 'properties.template.containers[].env[].name' -o tsv 2>/dev/null \
+              | tr '\t' '\n' \
+              | grep -E '^(DSG_|AZURE_|APP_URL$|NEXT_PUBLIC_APP_URL$)' \
+              | sort -u || true
+          done < <(az containerapp list --query '[].[resourceGroup,name]' -o tsv)
+
+          echo '=== KEY_VAULT_SECRET_NAMES ==='
+          for vault in $(az keyvault list --query '[].name' -o tsv); do
+            echo "--- vault=$vault"
+            az keyvault secret list --vault-name "$vault" --query '[].name' -o tsv 2>/dev/null \
+              | grep -Ei 'dsg|aimo|cinema|simulation|control|api|azure' \
+              | sort -u || echo 'SECRET_NAME_LIST_NOT_AUTHORIZED_OR_NO_MATCH'
+          done
+
+      - name: Upload safe topology evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-subscription-topology-${{ github.run_id }}
+          path: ${{ runner.temp }}/azure-topology
+          if-no-files-found: error
+          retention-days: 14
