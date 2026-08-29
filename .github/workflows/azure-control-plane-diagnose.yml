@@ -1,0 +1,95 @@
+name: Diagnose Control Plane Production Runtime
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/azure-control-plane-diagnose.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    name: Read Control Plane runtime and route contract
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 8
+    env:
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CONTROL_PLANE_APP: dsg-control-plane
+      DSG_ONE_APP: dsg-one-v1
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Azure login with Cinema production OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Read Control Plane activation state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== CONTROL_PLANE_WEBAPP ==='
+          az webapp show --resource-group "$RESOURCE_GROUP" --name "$CONTROL_PLANE_APP" \
+            --query '{name:name,state:state,kind:kind,host:defaultHostName,identity:identity.type}' -o json
+
+          echo '=== CONTROL_PLANE_RUNTIME ==='
+          az webapp config show --resource-group "$RESOURCE_GROUP" --name "$CONTROL_PLANE_APP" \
+            --query '{linuxFxVersion:linuxFxVersion,appCommandLine:appCommandLine,alwaysOn:alwaysOn}' -o json
+
+          echo '=== CONTROL_PLANE_CONTAINER ==='
+          az webapp config container show --resource-group "$RESOURCE_GROUP" --name "$CONTROL_PLANE_APP" \
+            --query '[].{name:name,value:value}' -o json || true
+
+          echo '=== CONTROL_PLANE_BINDING_NAMES ==='
+          az webapp config appsettings list --resource-group "$RESOURCE_GROUP" --name "$CONTROL_PLANE_APP" \
+            --query "[?contains(name,'SUPABASE') || contains(name,'DSG_') || contains(name,'NEXTAUTH') || contains(name,'PORT')].name" -o json
+
+          echo '=== DEPLOYMENT_SOURCE ==='
+          az webapp deployment source show --resource-group "$RESOURCE_GROUP" --name "$CONTROL_PLANE_APP" \
+            --query '{repoUrl:repoUrl,branch:branch,isManualIntegration:isManualIntegration}' -o json || true
+
+      - name: Probe live route contract with masked production credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          settings=$(az webapp config appsettings list --resource-group "$RESOURCE_GROUP" --name "$DSG_ONE_APP" --output json --only-show-errors)
+          cp_url=$(SETTINGS="$settings" node --input-type=module <<'NODE'
+          const rows = JSON.parse(process.env.SETTINGS);
+          process.stdout.write(rows.find((x) => x.name === 'DSG_CONTROL_PLANE_URL')?.value ?? '');
+          NODE
+          )
+          cp_key=$(SETTINGS="$settings" node --input-type=module <<'NODE'
+          const rows = JSON.parse(process.env.SETTINGS);
+          process.stdout.write(rows.find((x) => x.name === 'DSG_CONTROL_PLANE_API_KEY')?.value ?? '');
+          NODE
+          )
+          test -n "$cp_url" && test -n "$cp_key" || { echo 'BLOCK: DSG ONE Control Plane binding missing'; exit 1; }
+          echo "::add-mask::$cp_url"
+          echo "::add-mask::$cp_key"
+
+          echo '=== HEALTH_SAFE ==='
+          health_code=$(curl --silent --show-error --max-time 15 --output "$RUNNER_TEMP/cp-health.json" --write-out '%{http_code}' "$cp_url/api/health" || true)
+          echo "health_http=$health_code"
+          jq '{ok,status,service,version,environment,checks,readiness}' "$RUNNER_TEMP/cp-health.json" 2>/dev/null || true
+
+          echo '=== ENCODING_ROUTE_INVALID_BODY_CONTRACT ==='
+          code=$(curl --silent --show-error --max-time 20 \
+            --output "$RUNNER_TEMP/cp-invalid.json" --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --header "Authorization: Bearer $cp_key" \
+            --data '{}' \
+            "$cp_url/api/dsg/v1/encoding/prove" || true)
+          echo "invalid_body_http=$code"
+          jq '{ok,error,status,failureReasons,accessMode,requiresUpgrade}' "$RUNNER_TEMP/cp-invalid.json" 2>/dev/null || cat "$RUNNER_TEMP/cp-invalid.json"
