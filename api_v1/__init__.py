@@ -18,6 +18,7 @@ def install(app) -> None:
 
     router_module = importlib.import_module(f"{__name__}.router")
     importlib.import_module(f"{__name__}.exact_select").install_mcp_tool()
+    importlib.import_module(f"{__name__}.sheet").install_mcp_tools()
     router_module.install(app)
     importlib.import_module(f"{__name__}.control").install(app)
     importlib.import_module(f"{__name__}.mutation").install(app)
