@@ -13,10 +13,10 @@ permissions:
 
 jobs:
   verify-deploy-prove:
-    name: Verify snapshot then deploy simulation authority runtime
+    name: Verify snapshot then deploy immutable simulation container
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
@@ -24,6 +24,10 @@ jobs:
       RESOURCE_GROUP: rg-t.dealer01-0468
       SIMULATION_APP: dsg-agi-simulation
       SIMULATION_URL: https://dsg-agi-simulation.azurewebsites.net
+      ACR_NAME: dsgcp50aaef839
+      ACR_LOGIN_SERVER: dsgcp50aaef839.azurecr.io
+      IMAGE_REPOSITORY: dsg-agi-simulation
+      IMAGE_TAG: authority-8a1a603a31aa6578
       EXPECTED_SOURCE_SHA: 8a1a603a31aa65780b6e57762589ab19a0e76b68
 
     steps:
@@ -57,7 +61,7 @@ jobs:
         with:
           node-version: 20
 
-      - name: Build minimal pinned runtime and local production smoke
+      - name: Local production smoke before Azure mutation
         shell: bash
         run: |
           set -euo pipefail
@@ -92,52 +96,91 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Capture pre-deploy Azure state and verify authority bindings
+      - name: Capture current container and verify bindings
+        id: before
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/simulation-evidence"
-          az webapp show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
-            --query '{name:name,state:state,host:defaultHostName,enabled:enabled,kind:kind}' -o json \
-            > "$RUNNER_TEMP/simulation-evidence/before.json"
+          current_fx=$(az webapp config show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" --query linuxFxVersion -o tsv)
+          case "$current_fx" in DOCKER\|*) ;; *) echo "BLOCK: expected Linux custom container, got $current_fx"; exit 1;; esac
+          printf '%s\n' "$current_fx" > "$RUNNER_TEMP/simulation-evidence/previous-linux-fx-version.txt"
+          echo "previous_fx=$current_fx" >> "$GITHUB_OUTPUT"
+
           names=$(az webapp config appsettings list --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" --query '[].name' -o tsv)
-          for required in DSG_AGI_SIMULATION_API_KEY DSG_CONTROL_PLANE_URL DSG_CONTROL_PLANE_API_KEY; do
+          for required in DSG_AGI_SIMULATION_API_KEY DSG_CONTROL_PLANE_URL DSG_CONTROL_PLANE_API_KEY WEBSITES_PORT; do
             grep -qx "$required" <<<"$names" || { echo "BLOCK: missing Azure runtime binding $required"; exit 1; }
           done
-          echo 'AZURE_PREDEPLOY_BINDINGS=PASS'
 
-      - name: Package and deploy verified runtime
+          actual_login=$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query loginServer -o tsv)
+          test "$actual_login" = "$ACR_LOGIN_SERVER" || { echo 'BLOCK: ACR login server mismatch'; exit 1; }
+          echo "PREVIOUS_IMAGE=$current_fx"
+          echo 'AZURE_CONTAINER_PRECONDITION=PASS'
+
+      - name: Build immutable authority image in ACR
         shell: bash
         run: |
           set -euo pipefail
           cd _proof/simulation-runtime
-          zip -qr "$RUNNER_TEMP/simulation-runtime.zip" . -x '*.log'
-          sha256sum "$RUNNER_TEMP/simulation-runtime.zip" | tee "$RUNNER_TEMP/simulation-evidence/package.sha256"
+          cat > Dockerfile.proof <<'DOCKERFILE'
+          FROM node:20-alpine
+          WORKDIR /app
+          COPY package.json ./
+          RUN npm install --omit=dev --ignore-scripts=false --no-audit --no-fund
+          COPY src ./src
+          ENV NODE_ENV=production
+          ENV PORT=8080
+          RUN addgroup -g 1001 -S appgroup && adduser -S -u 1001 -G appgroup appuser && chown -R appuser:appgroup /app
+          USER appuser
+          EXPOSE 8080
+          CMD ["npx", "tsx", "src/http-server.ts"]
+          DOCKERFILE
+
+          az acr build \
+            --registry "$ACR_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_REPOSITORY:$IMAGE_TAG" \
+            --file Dockerfile.proof \
+            . \
+            --only-show-errors
+
+          digest=$(az acr repository show \
+            --name "$ACR_NAME" \
+            --image "$IMAGE_REPOSITORY:$IMAGE_TAG" \
+            --query digest -o tsv)
+          test -n "$digest" || { echo 'BLOCK: ACR image digest missing'; exit 1; }
+          printf '%s\n' "$digest" > "$RUNNER_TEMP/simulation-evidence/new-image-digest.txt"
+          printf '%s/%s:%s\n' "$ACR_LOGIN_SERVER" "$IMAGE_REPOSITORY" "$IMAGE_TAG" > "$RUNNER_TEMP/simulation-evidence/new-image.txt"
           printf '%s\n' "$EXPECTED_SOURCE_SHA" > "$RUNNER_TEMP/simulation-evidence/source-commit.txt"
+          echo "ACR_IMAGE_DIGEST=$digest"
+          echo 'ACR_IMMUTABLE_IMAGE_BUILD=PASS'
 
-          az webapp config appsettings set \
-            --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
-            --settings NODE_ENV=production SCM_DO_BUILD_DURING_DEPLOYMENT=false \
-            --only-show-errors --output none
-          az webapp config set \
-            --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
-            --startup-file 'npm run serve' \
-            --only-show-errors --output none
-          az webapp deploy \
-            --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" \
-            --src-path "$RUNNER_TEMP/simulation-runtime.zip" \
-            --type zip --clean true --restart true --track-status true \
-            --only-show-errors --output json \
-            > "$RUNNER_TEMP/simulation-evidence/deploy.json"
-          echo 'AZURE_SIMULATION_DEPLOY=COMPLETE'
-
-      - name: Prove deployed authority boundary and fail-closed auth
+      - name: Activate new container image
+        id: activate
         shell: bash
+        run: |
+          set -euo pipefail
+          new_image="$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY:$IMAGE_TAG"
+          az webapp config set \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$SIMULATION_APP" \
+            --linux-fx-version "DOCKER|$new_image" \
+            --only-show-errors --output none
+          az webapp restart --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" --only-show-errors
+          actual_fx=$(az webapp config show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" --query linuxFxVersion -o tsv)
+          test "$actual_fx" = "DOCKER|$new_image" || { echo "BLOCK: Azure did not activate requested image: $actual_fx"; exit 1; }
+          echo "ACTIVE_IMAGE=$actual_fx"
+          echo 'AZURE_CONTAINER_ACTIVATION=PASS'
+
+      - name: Prove deployed authority boundary with automatic rollback
+        shell: bash
+        env:
+          PREVIOUS_FX: ${{ steps.before.outputs.previous_fx }}
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/simulation-evidence/health.json"
           ready=false
-          for attempt in $(seq 1 48); do
+          for attempt in $(seq 1 60); do
             code=$(curl --silent --show-error --max-time 15 --output "$body" --write-out '%{http_code}' "$SIMULATION_URL/health" || true)
             if [ "$code" = 200 ] && jq -e '.ok == true and .service == "dsg-agi-simulation" and .authConfigured == true and .encodingProofAuthorityConfigured == true and .productionAuthFailClosed == true' "$body" >/dev/null 2>&1; then
               ready=true
@@ -145,8 +188,21 @@ jobs:
             fi
             sleep 5
           done
-          jq '{ok,service,aimoShardEndpoint,authConfigured,encodingProofAuthorityConfigured,authMode,productionAuthFailClosed,truthBoundary}' "$body" || cat "$body"
-          test "$ready" = true || { echo 'SIMULATION_DEPLOYMENT_PROOF=BLOCK'; exit 1; }
+
+          if [ "$ready" != true ]; then
+            echo 'NEW_IMAGE_HEALTH=BLOCK; rolling back to previous image'
+            cat "$body" 2>/dev/null || true
+            az webapp config set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$SIMULATION_APP" \
+              --linux-fx-version "$PREVIOUS_FX" \
+              --only-show-errors --output none
+            az webapp restart --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" --only-show-errors
+            echo 'AZURE_CONTAINER_ROLLBACK=ISSUED'
+            exit 1
+          fi
+
+          jq '{ok,service,aimoShardEndpoint,authConfigured,encodingProofAuthorityConfigured,authMode,productionAuthFailClosed,truthBoundary}' "$body"
 
           unauth_code=$(curl --silent --show-error --max-time 15 \
             --output "$RUNNER_TEMP/simulation-evidence/unauthenticated-solve.json" \
@@ -156,13 +212,16 @@ jobs:
             "$SIMULATION_URL/v1/aimo/solve-shard" || true)
           test "$unauth_code" = 401 || { echo "BLOCK: expected unauthenticated solve HTTP 401, got $unauth_code"; exit 1; }
           jq -e '.status == "BLOCKED" and .error == "unauthorized"' "$RUNNER_TEMP/simulation-evidence/unauthenticated-solve.json" >/dev/null
-          echo 'SIMULATION_DEPLOYMENT_PROOF=PASS'
+
+          active_fx=$(az webapp config show --resource-group "$RESOURCE_GROUP" --name "$SIMULATION_APP" --query linuxFxVersion -o tsv)
+          printf '%s\n' "$active_fx" > "$RUNNER_TEMP/simulation-evidence/active-linux-fx-version.txt"
+          echo 'SIMULATION_CONTAINER_DEPLOYMENT_PROOF=PASS'
 
       - name: Upload safe deployment evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-authority-runtime-${{ github.run_id }}
+          name: simulation-authority-container-${{ github.run_id }}
           path: ${{ runner.temp }}/simulation-evidence
           if-no-files-found: warn
           retention-days: 30
