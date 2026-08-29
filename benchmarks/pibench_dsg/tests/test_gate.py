@@ -238,3 +238,64 @@ def test_receipts_chain_between_turns():
     second = run([], previous=first.receipt["receiptHash"], turn=1)
     assert second.receipt["previousReceiptHash"] == first.receipt["receiptHash"]
     assert second.receipt["receiptHash"] != first.receipt["receiptHash"]
+
+
+def test_malformed_inventory_entry_does_not_block_well_formed_calls():
+    """A defective benchmark tool schema must not silence the whole scenario.
+
+    The finra inventory ships a tool whose parameter block is not a valid JSON
+    Schema. Poisoning every turn because of it costs the entire scenario, so
+    the gate keeps validating the tools it can and still emits valid calls.
+    """
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "create_alert",
+                "parameters": {"description": {"type": "string", "required": True}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "record_decision",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"decision": {"type": "string"}},
+                    "required": ["decision"],
+                },
+            },
+        },
+    ]
+    result = gate_tool_calls(
+        [
+            {
+                "id": "call-1",
+                "function": {"name": "record_decision", "arguments": '{"decision": "ESCALATE"}'},
+            }
+        ],
+        tools,
+        content=None,
+        context_hash="ctx",
+        toolset_hash="tools",
+        turn_index=0,
+    )
+
+    assert result.status == "PASSED"
+    assert result.reason_codes == []
+    assert [call["function"]["name"] for call in result.tool_calls] == ["record_decision"]
+
+
+def test_unknown_tool_still_fails_closed():
+    result = gate_tool_calls(
+        [{"id": "call-1", "function": {"name": "wire_money", "arguments": "{}"}}],
+        [{"type": "function", "function": {"name": "record_decision", "parameters": {"type": "object"}}}],
+        content=None,
+        context_hash="ctx",
+        toolset_hash="tools",
+        turn_index=0,
+    )
+
+    assert result.status == "BLOCKED"
+    assert result.tool_calls == []
+    assert "UNKNOWN_TOOL:wire_money" in result.reason_codes
