@@ -1,4 +1,4 @@
-"""Bounded deterministic exact-decimal selection for the Cinema MCP surface."""
+"""Bounded deterministic exact-decimal selection and DSG Sheet MCP surface."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ MAX_Z3_EXPONENT = 1000
 MAX_CANDIDATES = 24
 MAX_K = 12
 Z3_TIMEOUT_MS = 30000
+SHEET_SIZE = 100
 
 
 class ExactCandidateArgs(Strict):
@@ -56,6 +57,15 @@ class ExactSelectArgs(Strict):
                 "candidate ids must be unique",
             )
         return self
+
+
+class SheetCellArgs(Strict):
+    cell_id: int = Field(ge=1, le=SHEET_SIZE)
+
+
+class SheetComposeArgs(Strict):
+    goal: str = Field(min_length=1, max_length=1024)
+    required_capabilities: list[str] = Field(min_length=1, max_length=64)
 
 
 def _validate_exponent(raw: str) -> None:
@@ -226,11 +236,149 @@ async def exact_select(args: ExactSelectArgs) -> dict[str, Any]:
     }
 
 
+# DSG Sheet is additive metadata over the existing system. It does not relocate,
+# copy or re-host any existing DSG runtime. A provider cell only identifies a
+# capability that DSG may call through that provider's existing boundary.
+ASSIGNED_CELLS: dict[int, dict[str, Any]] = {
+    1: {"slug": "dsg-core", "name": "DSG Core", "kind": "core", "provider": "dsg", "capabilities": ["runtime"]},
+    2: {"slug": "governance", "name": "Governance", "kind": "core", "provider": "dsg", "capabilities": ["governance", "policy", "permission"]},
+    3: {"slug": "execution", "name": "Execution", "kind": "core", "provider": "dsg", "capabilities": ["execution"]},
+    4: {"slug": "z3", "name": "Z3", "kind": "core", "provider": "dsg", "capabilities": ["exact-verification", "solver"]},
+    5: {"slug": "evidence", "name": "Evidence", "kind": "core", "provider": "dsg", "capabilities": ["evidence"]},
+    6: {"slug": "proof", "name": "Proof", "kind": "core", "provider": "dsg", "capabilities": ["proof"]},
+    7: {"slug": "replay", "name": "Replay", "kind": "core", "provider": "dsg", "capabilities": ["replay"]},
+    8: {"slug": "identity", "name": "Identity", "kind": "core", "provider": "dsg", "capabilities": ["identity"]},
+    9: {"slug": "connection-broker", "name": "Connection Broker", "kind": "core", "provider": "dsg", "capabilities": ["connection", "credential-broker"]},
+    10: {"slug": "mcp", "name": "MCP Surface", "kind": "interface", "provider": "dsg", "capabilities": ["mcp"]},
+    11: {"slug": "neon-postgres", "name": "Neon Postgres", "kind": "provider", "provider": "neon", "capabilities": ["memory", "postgres", "state"]},
+    12: {"slug": "github", "name": "GitHub", "kind": "provider", "provider": "github", "capabilities": ["source", "repository", "ci"]},
+    13: {"slug": "stripe", "name": "Stripe", "kind": "provider", "provider": "stripe", "capabilities": ["payment", "billing", "commerce"]},
+    14: {"slug": "azure-devops", "name": "Azure DevOps", "kind": "provider", "provider": "microsoft", "capabilities": ["devops", "pipeline", "deployment"]},
+    15: {"slug": "aws-cdk", "name": "AWS CDK", "kind": "provider", "provider": "aws", "capabilities": ["infrastructure", "cloud", "deployment"]},
+    16: {"slug": "nvidia", "name": "NVIDIA", "kind": "provider", "provider": "nvidia", "capabilities": ["gpu", "inference"]},
+    17: {"slug": "openai", "name": "OpenAI Developers", "kind": "provider", "provider": "openai", "capabilities": ["model", "agent", "inference"]},
+    18: {"slug": "activecampaign", "name": "ActiveCampaign", "kind": "provider", "provider": "activecampaign", "capabilities": ["crm", "marketing"]},
+    19: {"slug": "appdeploy", "name": "AppDeploy", "kind": "provider", "provider": "appdeploy", "capabilities": ["app-delivery", "deployment"]},
+    20: {"slug": "marketplace", "name": "Marketplace", "kind": "surface", "provider": "dsg", "capabilities": ["storefront", "distribution"]},
+    21: {"slug": "supabase", "name": "Supabase", "kind": "provider", "provider": "supabase", "capabilities": ["database", "auth", "storage", "realtime"]},
+}
+
+
+def _sheet_cell(cell_id: int) -> dict[str, Any]:
+    assigned = ASSIGNED_CELLS.get(cell_id)
+    if assigned is None:
+        return {
+            "cell_id": cell_id,
+            "occupied": False,
+            "slug": None,
+            "name": None,
+            "kind": "empty",
+            "provider": None,
+            "capabilities": [],
+        }
+    return {"cell_id": cell_id, "occupied": True, **assigned}
+
+
+def sheet_snapshot() -> dict[str, Any]:
+    cells = [_sheet_cell(cell_id) for cell_id in range(1, SHEET_SIZE + 1)]
+    occupied = len(ASSIGNED_CELLS)
+    return {
+        "status": "PASSED",
+        "sheet_size": SHEET_SIZE,
+        "occupied_count": occupied,
+        "empty_count": SHEET_SIZE - occupied,
+        "cells": cells,
+    }
+
+
+def compose_sheet(goal: str, required_capabilities: list[str]) -> dict[str, Any]:
+    required = sorted({value.strip().lower() for value in required_capabilities if value.strip()})
+    if not required:
+        return {
+            "status": "BLOCKED",
+            "reason": "NO_CAPABILITIES_REQUESTED",
+            "goal": goal,
+            "required_capabilities": [],
+            "selected_cells": [],
+        }
+
+    by_capability: dict[str, list[int]] = {}
+    for cell_id, cell in ASSIGNED_CELLS.items():
+        for capability in cell["capabilities"]:
+            by_capability.setdefault(capability, []).append(cell_id)
+
+    selected: set[int] = set()
+    resolution: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for capability in required:
+        choices = sorted(by_capability.get(capability, []))
+        if not choices:
+            missing.append(capability)
+            resolution.append({"capability": capability, "status": "MISSING", "cell_id": None})
+            continue
+        cell_id = choices[0]
+        selected.add(cell_id)
+        resolution.append({"capability": capability, "status": "RESOLVED", "cell_id": cell_id})
+
+    selected_cells = [_sheet_cell(cell_id) for cell_id in sorted(selected)]
+    if missing:
+        return {
+            "status": "BLOCKED",
+            "reason": "MISSING_CAPABILITY",
+            "goal": goal,
+            "required_capabilities": required,
+            "missing_capabilities": missing,
+            "resolution": resolution,
+            "selected_cells": selected_cells,
+        }
+    return {
+        "status": "PASSED",
+        "goal": goal,
+        "required_capabilities": required,
+        "resolution": resolution,
+        "selected_cells": selected_cells,
+    }
+
+
+def _validate_sheet_contract() -> None:
+    if SHEET_SIZE != 100:
+        raise RuntimeError("DSG Sheet size must remain exactly 100")
+    if not ASSIGNED_CELLS:
+        raise RuntimeError("DSG Sheet requires at least one assigned cell")
+    if min(ASSIGNED_CELLS) < 1 or max(ASSIGNED_CELLS) > SHEET_SIZE:
+        raise RuntimeError("DSG Sheet assigned cell is outside 1..100")
+    slugs = [cell["slug"] for cell in ASSIGNED_CELLS.values()]
+    if len(slugs) != len(set(slugs)):
+        raise RuntimeError("DSG Sheet slugs must be unique")
+    if _sheet_cell(11)["slug"] != "neon-postgres":
+        raise RuntimeError("DSG Sheet memory cell 11 must remain Neon Postgres")
+    known = compose_sheet("contract-check", ["memory", "payment", "source"])
+    if known.get("status") != "PASSED" or [c["cell_id"] for c in known["selected_cells"]] != [11, 12, 13]:
+        raise RuntimeError("DSG Sheet deterministic composition contract failed")
+    missing = compose_sheet("contract-check", ["teleportation"])
+    if missing.get("status") != "BLOCKED" or missing.get("reason") != "MISSING_CAPABILITY":
+        raise RuntimeError("DSG Sheet fail-closed contract failed")
+
+
+async def _sheet_list(_: Any) -> dict[str, Any]:
+    return sheet_snapshot()
+
+
+async def _sheet_get(args: SheetCellArgs) -> dict[str, Any]:
+    return {"status": "PASSED", "cell": _sheet_cell(args.cell_id)}
+
+
+async def _sheet_compose(args: SheetComposeArgs) -> dict[str, Any]:
+    return compose_sheet(args.goal, args.required_capabilities)
+
+
 def install_mcp_tool() -> None:
     from . import mcp
 
     if "dsg_exact_select" in mcp._BY_NAME:
         return
+
+    _validate_sheet_contract()
 
     class ExactSelectTool(mcp._Tool):
         def definition(self) -> dict[str, Any]:
@@ -264,23 +412,44 @@ def install_mcp_tool() -> None:
             )
             return definition
 
-    tool = ExactSelectTool(
-        "dsg_exact_select",
-        "Deterministically select top-k from up to 24 exact decimal candidates. "
-        "useZ3=false uses Python Decimal exact sorting; useZ3=true requires a native "
-        "Z3 exact-real optimality proof and fails closed on any mismatch or backend failure.",
-        ExactSelectArgs,
-        exact_select,
+    tools = (
+        ExactSelectTool(
+            "dsg_exact_select",
+            "Deterministically select top-k from up to 24 exact decimal candidates. "
+            "useZ3=false uses Python Decimal exact sorting; useZ3=true requires a native "
+            "Z3 exact-real optimality proof and fails closed on any mismatch or backend failure.",
+            ExactSelectArgs,
+            exact_select,
+        ),
+        mcp._Tool(
+            "dsg_sheet_list",
+            "Read the DSG Sheet: exactly 100 stable capability cells; empty cells remain explicit and ready for future providers.",
+            None,
+            _sheet_list,
+        ),
+        mcp._Tool(
+            "dsg_sheet_get",
+            "Read one stable DSG Sheet cell by number 1..100. This does not move or copy the provider system.",
+            SheetCellArgs,
+            _sheet_get,
+        ),
+        mcp._Tool(
+            "dsg_sheet_compose",
+            "Resolve requested capabilities to existing DSG Sheet cells. Missing capability fails closed instead of inventing a provider.",
+            SheetComposeArgs,
+            _sheet_compose,
+        ),
     )
-    mcp.TOOLS = (*mcp.TOOLS, tool)
-    mcp._BY_NAME[tool.name] = tool
+    for tool in tools:
+        mcp.TOOLS = (*mcp.TOOLS, tool)
+        mcp._BY_NAME[tool.name] = tool
 
     if not getattr(mcp, "_dsg_exact_select_error_wrapper_installed", False):
         original_call_tool = mcp._call_tool
 
         async def exact_aware_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             result = await original_call_tool(name, arguments)
-            if name == "dsg_exact_select" and isinstance(result, dict):
+            if name in {"dsg_exact_select", "dsg_sheet_compose"} and isinstance(result, dict):
                 structured = result.get("structuredContent")
                 if isinstance(structured, dict) and structured.get("status") == "BLOCKED":
                     result["isError"] = True
