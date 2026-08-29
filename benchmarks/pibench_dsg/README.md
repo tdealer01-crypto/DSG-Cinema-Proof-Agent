@@ -17,6 +17,10 @@ The benchmark adapter uses the model selected by the assessment operator, then a
 7. malformed, unknown, or invalidly ordered actions fail closed and emit **zero** tool calls;
 8. every locally gated turn emits an internal SHA-256 proof receipt chained to the prior receipt.
 
+An inventory entry whose parameter block is not a valid JSON Schema is validated
+against an empty object schema instead of poisoning the turn, so one defective
+benchmark tool definition cannot silence the agent for a whole scenario.
+
 The proof receipt includes hashes of the benchmark context, tool inventory, assistant content, proposed tool calls, emitted tool calls, gate status, reason codes, and previous receipt hash. Receipt format `dsg-pibench-proof/v2` records deterministic representation normalization without claiming that the gate repairs semantic ordering.
 
 ### Optional production Cinema preflight
@@ -55,6 +59,26 @@ The DSG gate proves the **execution contract** it enforces. It does **not** by i
 
 The Cinema preflight proves that the mapped context/tool action matched an already-approved production plan and that Cinema returned an execution-ready `ALLOW`. This benchmark adapter does not yet record PI-Bench's completed execution/evidence back into Cinema's final Z3 verification pipeline, so no final Cinema execution-proof claim should be made from preflight alone.
 
+## Turn resilience
+
+PI-Bench terminates an entire scenario as soon as one agent turn raises or
+returns a protocol error, and a scenario that records no canonical decision is
+scored zero regardless of the reasoning it contained. The adapter therefore
+never surfaces a turn-level failure to the benchmark:
+
+1. provider calls retry with exponential backoff and jitter, progressively
+   dropping optional request parameters (`seed`, then `reasoning_effort`) that
+   can turn a retryable error into a hard rejection;
+2. a gate-blocked turn is re-proposed once with the gate's reason codes fed back
+   to the model, because a blocked turn emits zero tool calls anyway;
+3. an unknown or expired `context_id` rebuilds the session instead of returning
+   a JSON-RPC error;
+4. after repeated unrecoverable turns the agent records a fail-closed
+   `ESCALATE` through `record_decision`, reusing identifiers already present in
+   the transcript rather than inventing them, so the scenario still carries a
+   canonical decision;
+5. `###STOP###` is only emitted once a decision has been recorded.
+
 ## AgentBeats compatibility
 
 The server implements the PI-Bench A2A network contract and advertises:
@@ -90,6 +114,9 @@ Optional baseline settings:
 
 - `OPENAI_MODEL` — default `gpt-5`
 - `REASONING_EFFORT` — default `medium`
+- `MODEL_MAX_ATTEMPTS` — provider attempts per turn, default `5`
+- `MODEL_RETRY_BASE_DELAY` — first backoff in seconds, default `2.0`
+- `MODEL_RETRY_MAX_DELAY` — backoff ceiling in seconds, default `30.0`
 - `CINEMA_PREFLIGHT_MODE` — `off` by default; set `required` only when approved plan binding is provisioned
 
 Required when Cinema mode is `required`:

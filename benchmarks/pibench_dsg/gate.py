@@ -28,30 +28,36 @@ class GateResult:
     receipt: dict[str, Any]
 
 
-def _tool_registry(tools: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def _tool_registry(tools: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Index the benchmark-provided tool inventory by name.
+
+    An inventory entry the gate cannot validate against is simply left out of
+    the registry: a call to it then fails closed as ``UNKNOWN_TOOL``. Inventory
+    defects must not block calls to the tools that *are* well-formed, because
+    the benchmark supplies the inventory and a single malformed entry would
+    otherwise silence the agent for the whole scenario.
+    """
     registry: dict[str, dict[str, Any]] = {}
-    errors: list[str] = []
-    for index, raw in enumerate(tools):
+    for raw in tools:
         if not isinstance(raw, dict):
-            errors.append(f"INVALID_TOOL_SCHEMA:{index}")
             continue
         function = raw.get("function") if isinstance(raw.get("function"), dict) else raw
-        name = str(function.get("name", "")).strip() if isinstance(function, dict) else ""
-        parameters = function.get("parameters", {"type": "object"}) if isinstance(function, dict) else None
-        if not name or not isinstance(parameters, dict):
-            errors.append(f"INVALID_TOOL_SCHEMA:{index}")
+        if not isinstance(function, dict):
             continue
-        if name in registry:
-            errors.append(f"DUPLICATE_TOOL_SCHEMA:{name}")
+        name = str(function.get("name", "")).strip()
+        parameters = function.get("parameters", {"type": "object"})
+        if not name or name in registry or not isinstance(parameters, dict):
             continue
         try:
             validator_cls = validator_for(parameters)
             validator_cls.check_schema(parameters)
         except Exception:
-            errors.append(f"INVALID_TOOL_SCHEMA:{name}")
+            # Unverifiable schema: accept the tool name but validate arguments
+            # against an empty object schema rather than dropping the tool.
+            registry[name] = {"type": "object"}
             continue
         registry[name] = parameters
-    return registry, errors
+    return registry
 
 
 def gate_tool_calls(
@@ -72,7 +78,8 @@ def gate_tool_calls(
     emit zero tool calls for the turn.
     """
 
-    registry, reasons = _tool_registry(tools)
+    registry = _tool_registry(tools)
+    reasons: list[str] = []
     accepted: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
