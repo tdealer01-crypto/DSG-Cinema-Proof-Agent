@@ -1,0 +1,16 @@
+{
+  "sourceRepository": "tdealer01-crypto/dsg-one-v1",
+  "sourceCommit": "b2395a072b1e85c68fababefe799c07744641605",
+  "files": [
+    {"path":"lib/dsg/aimo/harness.ts","originalBlobSha":"2ecb773581619502ddb88d07bb27148e9979e8f7"},
+    {"path":"lib/dsg/aimo/deterministic.ts","originalBlobSha":"dd9a783f501508e4c1e3de3480faba275909f000"},
+    {"path":"lib/dsg/aimo/nvidia-ising.ts","originalBlobSha":"b7fb3a20a6d5735aa8f8bf646534aac8223935ae"},
+    {"path":"lib/dsg/aimo/service-registry.ts","originalBlobSha":"f7f6ba1aa3c1ea861f99fc34c36804e1c7c67912"},
+    {"path":"lib/dsg/aimo/simulation-client.ts","originalBlobSha":"8c4da239aff0372017f4bcba086f5c2652069da4"},
+    {"path":"lib/dsg/aimo/verifier-client.ts","originalBlobSha":"c6518d623aae5517ba5161b5e2adaf23b5d57cf9"},
+    {"path":"lib/dsg/aimo/types.ts","originalBlobSha":"28d9bdbac119dd25675871b9b82a6b405aa9346b"},
+    {"path":"lib/dsg/runtime/encoding-proof-client.ts","originalBlobSha":"da16101298470ba6ac916f851a6350b0eb3b32c3"},
+    {"path":"lib/dsg/runtime/hash.ts","originalBlobSha":"d175b1f9c9017894c324df8dd71d1193d7f9ad99"},
+    {"path":"lib/dsg/runtime/stable-json.ts","originalBlobSha":"856f37d2dded51f6c490ae169204c0156884d258"}
+  ]
+}
