@@ -112,7 +112,7 @@ jobs:
           assert 'secretref:activecampaign-api-token' in shell
           assert 'DSG_MARKETING_PROFILE_STORE=/revenue/marketing-profiles.json' in shell
           assert '/billing/marketing/reconcile' in shell
-          assert 'signed Stripe invoice evidence only' in shell
+          assert 'signature-verified scoped Stripe invoice.paid evidence only' in shell
           print('workflow contracts verified')
           PY
 
