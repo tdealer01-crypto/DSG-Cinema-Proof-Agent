@@ -1,0 +1,150 @@
+name: DSG ONE ActiveCampaign Key Vault Bind
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/dsg-one-activecampaign-keyvault-bind.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  bind:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    env:
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      WEBAPP: dsg-one-v1
+      CINEMA_APP: dsg-cinema-production
+      VAULT: dsg-shared-secrets
+      TARGET_SECRET_NAME: dsg-one-activecampaign-api-token
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Bind ActiveCampaign without exposing token
+        shell: bash
+        run: |
+          set -euo pipefail
+          az extension add --name containerapp --upgrade --only-show-errors >/dev/null
+
+          VAULT_ID="$(az keyvault show -g "$RESOURCE_GROUP" -n "$VAULT" --query id -o tsv)"
+          WEBAPP_PRINCIPAL="$(az webapp identity show -g "$RESOURCE_GROUP" -n "$WEBAPP" --query principalId -o tsv)"
+          test -n "$VAULT_ID" && test -n "$WEBAPP_PRINCIPAL"
+
+          ACCESS_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
+          RUNNER_OID="$(ACCESS_TOKEN="$ACCESS_TOKEN" python - <<'PY'
+          import base64, json, os
+          token = os.environ['ACCESS_TOKEN'].split('.')[1]
+          token += '=' * (-len(token) % 4)
+          payload = json.loads(base64.urlsafe_b64decode(token.encode()).decode())
+          print(payload['oid'])
+          PY
+          )"
+          unset ACCESS_TOKEN
+          test -n "$RUNNER_OID"
+
+          TEMP_ROLE_CREATED=0
+          cleanup() {
+            if [[ "$TEMP_ROLE_CREATED" == "1" ]]; then
+              az role assignment delete \
+                --assignee-object-id "$RUNNER_OID" \
+                --role 'Key Vault Secrets Officer' \
+                --scope "$VAULT_ID" \
+                --only-show-errors || true
+            fi
+          }
+          trap cleanup EXIT
+
+          RUNNER_HAS_ROLE="$(az role assignment list \
+            --assignee-object-id "$RUNNER_OID" \
+            --scope "$VAULT_ID" \
+            --query "[?roleDefinitionName=='Key Vault Secrets Officer'] | length(@)" -o tsv)"
+          if [[ "$RUNNER_HAS_ROLE" == "0" ]]; then
+            az role assignment create \
+              --assignee-object-id "$RUNNER_OID" \
+              --assignee-principal-type ServicePrincipal \
+              --role 'Key Vault Secrets Officer' \
+              --scope "$VAULT_ID" \
+              --output none
+            TEMP_ROLE_CREATED=1
+          fi
+
+          WEBAPP_HAS_ROLE="$(az role assignment list \
+            --assignee-object-id "$WEBAPP_PRINCIPAL" \
+            --scope "$VAULT_ID" \
+            --query "[?roleDefinitionName=='Key Vault Secrets User'] | length(@)" -o tsv)"
+          if [[ "$WEBAPP_HAS_ROLE" == "0" ]]; then
+            az role assignment create \
+              --assignee-object-id "$WEBAPP_PRINCIPAL" \
+              --assignee-principal-type ServicePrincipal \
+              --role 'Key Vault Secrets User' \
+              --scope "$VAULT_ID" \
+              --output none
+          fi
+
+          AC_API_URL="$(az containerapp show -g "$RESOURCE_GROUP" -n "$CINEMA_APP" \
+            --query "properties.template.containers[0].env[?name=='ACTIVECAMPAIGN_API_URL'].value | [0]" -o tsv)"
+          TOKEN_REF="$(az containerapp show -g "$RESOURCE_GROUP" -n "$CINEMA_APP" \
+            --query "properties.template.containers[0].env[?name=='ACTIVECAMPAIGN_API_TOKEN'].secretRef | [0]" -o tsv)"
+          test -n "$AC_API_URL" && test -n "$TOKEN_REF"
+
+          AC_TOKEN="$(az containerapp secret list -g "$RESOURCE_GROUP" -n "$CINEMA_APP" --show-values \
+            --query "[?name=='$TOKEN_REF'].value | [0]" -o tsv)"
+          test -n "$AC_TOKEN"
+          echo "::add-mask::$AC_TOKEN"
+
+          SECRET_SET=0
+          for attempt in $(seq 1 12); do
+            if az keyvault secret set --vault-name "$VAULT" --name "$TARGET_SECRET_NAME" \
+              --value "$AC_TOKEN" --output none --only-show-errors; then
+              SECRET_SET=1
+              break
+            fi
+            sleep 5
+          done
+          unset AC_TOKEN
+          [[ "$SECRET_SET" == "1" ]] || {
+            echo 'BLOCK: temporary runner role did not become usable for Key Vault secret set.' >&2
+            exit 1
+          }
+
+          SECRET_URI="$(az keyvault secret show --vault-name "$VAULT" --name "$TARGET_SECRET_NAME" --query id -o tsv --only-show-errors)"
+          test -n "$SECRET_URI"
+          TOKEN_SETTING="@Microsoft.KeyVault(SecretUri=$SECRET_URI)"
+
+          az webapp config appsettings set -g "$RESOURCE_GROUP" -n "$WEBAPP" --settings \
+            "ACTIVECAMPAIGN_API_URL=$AC_API_URL" \
+            "ACTIVECAMPAIGN_API_TOKEN=$TOKEN_SETTING" \
+            'ACTIVECAMPAIGN_TAG_VERIFICATION_STARTED_ID=12' \
+            'ACTIVECAMPAIGN_TAG_PROOF_CREATED_ID=13' \
+            'ACTIVECAMPAIGN_TAG_PROOF_VIEWED_ID=14' \
+            --output none
+          az webapp restart -g "$RESOURCE_GROUP" -n "$WEBAPP"
+
+          SHAPE="$(az webapp config appsettings list -g "$RESOURCE_GROUP" -n "$WEBAPP" -o json)"
+          SHAPE="$SHAPE" node - <<'NODE'
+          const rows = JSON.parse(process.env.SHAPE || '[]');
+          const get = (name) => rows.find((x) => x.name === name)?.value || '';
+          const checks = {
+            apiUrlPresent: Boolean(get('ACTIVECAMPAIGN_API_URL')),
+            tokenUsesKeyVaultReference: get('ACTIVECAMPAIGN_API_TOKEN').startsWith('@Microsoft.KeyVault(SecretUri='),
+            verificationStartedTag: get('ACTIVECAMPAIGN_TAG_VERIFICATION_STARTED_ID') === '12',
+            proofCreatedTag: get('ACTIVECAMPAIGN_TAG_PROOF_CREATED_ID') === '13',
+            proofViewedTag: get('ACTIVECAMPAIGN_TAG_PROOF_VIEWED_ID') === '14',
+          };
+          console.log(JSON.stringify(checks));
+          if (Object.values(checks).some((v) => v !== true)) process.exit(1);
+          NODE
+
+          echo 'DSG_ONE_ACTIVECAMPAIGN_KEYVAULT_BIND=PASS'
