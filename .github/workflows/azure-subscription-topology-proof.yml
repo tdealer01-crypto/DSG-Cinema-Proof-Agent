@@ -1,5 +1,5 @@
 # Diagnostic trigger for DSG ONE First Value production authority discovery.
-# This comment is non-functional; the pull_request path filter intentionally runs the existing read-only topology proof.
+# This PR adds read-only topology/runtime probes only; it performs no Azure mutation.
 name: Azure Subscription Topology Proof
 
 on:
@@ -74,7 +74,7 @@ jobs:
             echo "--- webapp=$app rg=$rg"
             az webapp config appsettings list --resource-group "$rg" --name "$app" \
               --query '[].name' -o tsv 2>/dev/null \
-              | grep -E '^(DSG_|AZURE_|APP_URL$|NEXT_PUBLIC_APP_URL$)' \
+              | grep -E '^(DSG_|AZURE_|APP_URL$|NEXT_PUBLIC_APP_URL$|ACTIVECAMPAIGN_)' \
               | sort -u || true
           done < <(az webapp list --query '[].[resourceGroup,name]' -o tsv)
 
@@ -85,7 +85,7 @@ jobs:
             az containerapp show --resource-group "$rg" --name "$app" \
               --query 'properties.template.containers[].env[].name' -o tsv 2>/dev/null \
               | tr '\t' '\n' \
-              | grep -E '^(DSG_|AZURE_|APP_URL$|NEXT_PUBLIC_APP_URL$)' \
+              | grep -E '^(DSG_|AZURE_|APP_URL$|NEXT_PUBLIC_APP_URL$|ACTIVECAMPAIGN_)' \
               | sort -u || true
           done < <(az containerapp list --query '[].[resourceGroup,name]' -o tsv)
 
@@ -93,9 +93,54 @@ jobs:
           for vault in $(az keyvault list --query '[].name' -o tsv); do
             echo "--- vault=$vault"
             az keyvault secret list --vault-name "$vault" --query '[].name' -o tsv 2>/dev/null \
-              | grep -Ei 'dsg|aimo|cinema|simulation|control|api|azure' \
+              | grep -Ei 'dsg|aimo|cinema|simulation|control|api|azure|activecampaign' \
               | sort -u || echo 'SECRET_NAME_LIST_NOT_AUTHORIZED_OR_NO_MATCH'
           done
+
+      - name: Probe DSG ONE runtime and First Value routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          RG='rg-t.dealer01-0468'
+          APP='dsg-one-v1'
+          HOST="$(az webapp show --resource-group "$RG" --name "$APP" --query defaultHostName -o tsv)"
+          echo "DSG_ONE_HOST=$HOST"
+          echo '=== DSG_ONE_RUNTIME_CONFIG_SAFE ==='
+          az webapp show --resource-group "$RG" --name "$APP" \
+            --query '{state:state,host:defaultHostName,kind:kind,linuxFxVersion:siteConfig.linuxFxVersion}' -o json
+          echo '=== DSG_ONE_CONTAINER_CONFIG_SAFE ==='
+          az webapp config container show --resource-group "$RG" --name "$APP" \
+            --query '{linuxFxVersion:linuxFxVersion,registryUrl:dockerRegistryServerUrl}' -o json || true
+
+          probe() {
+            local path="$1"
+            local out="$RUNNER_TEMP/probe-body.txt"
+            local code
+            code="$(curl -sS -L --max-time 30 -o "$out" -w '%{http_code}' "https://$HOST$path" || true)"
+            echo "PROBE path=$path status=$code bytes=$(wc -c < "$out" 2>/dev/null || echo 0)"
+            if [[ "$path" == '/api/dsg/app-builder/proof' && "$code" == '200' ]]; then
+              node - "$out" <<'NODE'
+          const fs = require('fs');
+          const file = process.argv[2];
+          try {
+            const p = JSON.parse(fs.readFileSync(file, 'utf8'));
+            console.log(JSON.stringify({
+              ok: p.ok,
+              status: p.status,
+              proofKind: p.proofKind,
+              hasProofHash: typeof p.proofHash === 'string' && p.proofHash.length > 0,
+              runtimeGateStatus: p.runtimeGate?.status,
+              productionReadyClaim: p.claimBoundary?.productionReadyClaim
+            }));
+          } catch {
+            console.log('PROOF_RESPONSE_NOT_JSON');
+          }
+          NODE
+            fi
+          }
+          probe '/'
+          probe '/dsg/verify'
+          probe '/api/dsg/app-builder/proof'
 
       - name: Upload safe topology evidence
         uses: actions/upload-artifact@v4
