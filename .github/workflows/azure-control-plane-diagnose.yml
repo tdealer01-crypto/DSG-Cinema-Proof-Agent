@@ -1,6 +1,7 @@
 name: Diagnose Control Plane Production Runtime
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
@@ -27,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Azure login with Cinema production OIDC
         uses: azure/login@v2
@@ -59,6 +60,30 @@ jobs:
           echo '=== DEPLOYMENT_SOURCE ==='
           az webapp deployment source show --resource-group "$RESOURCE_GROUP" --name "$CONTROL_PLANE_APP" \
             --query '{repoUrl:repoUrl,branch:branch,isManualIntegration:isManualIntegration}' -o json || true
+
+      - name: Read DSG ONE App Service deployment state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== DSG_ONE_WEBAPP ==='
+          az webapp show --resource-group "$RESOURCE_GROUP" --name "$DSG_ONE_APP" \
+            --query '{name:name,state:state,kind:kind,host:defaultHostName,identity:identity.type,principalId:identity.principalId}' -o json
+
+          echo '=== DSG_ONE_RUNTIME ==='
+          az webapp config show --resource-group "$RESOURCE_GROUP" --name "$DSG_ONE_APP" \
+            --query '{linuxFxVersion:linuxFxVersion,appCommandLine:appCommandLine,alwaysOn:alwaysOn,http20Enabled:http20Enabled}' -o json
+
+          echo '=== DSG_ONE_CONTAINER ==='
+          az webapp config container show --resource-group "$RESOURCE_GROUP" --name "$DSG_ONE_APP" \
+            --query '[].{name:name,value:value}' -o json || true
+
+          echo '=== DSG_ONE_DEPLOYMENT_SOURCE ==='
+          az webapp deployment source show --resource-group "$RESOURCE_GROUP" --name "$DSG_ONE_APP" \
+            --query '{repoUrl:repoUrl,branch:branch,isManualIntegration:isManualIntegration}' -o json || true
+
+          echo '=== DSG_ONE_BINDING_NAMES ==='
+          az webapp config appsettings list --resource-group "$RESOURCE_GROUP" --name "$DSG_ONE_APP" \
+            --query "[?contains(name,'SUPABASE') || contains(name,'DSG_') || contains(name,'ACTIVECAMPAIGN') || contains(name,'KEY_VAULT') || contains(name,'PORT')].name" -o json
 
       - name: Probe live route contract with masked production credential
         shell: bash
