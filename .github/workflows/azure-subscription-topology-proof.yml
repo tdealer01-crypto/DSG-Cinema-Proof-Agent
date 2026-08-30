@@ -1,3 +1,5 @@
+# Diagnostic trigger for DSG ONE First Value production authority discovery.
+# This comment is non-functional; the pull_request path filter intentionally runs the existing read-only topology proof.
 name: Azure Subscription Topology Proof
 
 on:
