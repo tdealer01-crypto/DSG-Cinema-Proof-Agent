@@ -9,8 +9,29 @@ permissions:
   contents: write
 
 jobs:
-  smoke:
+  patch:
     runs-on: ubuntu-latest
     steps:
-      - name: Smoke
-        run: echo campaign-readiness-helper-ok
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix/campaign-readiness-20260831
+          fetch-depth: 0
+
+      - name: Apply deterministic patch
+        run: |
+          set -euo pipefail
+          python scripts/apply_campaign_readiness_patch.py
+          git diff --check
+          git diff -- .github/workflows/deploy-cinema-production.yml
+
+      - name: Commit patch and remove helpers
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/patch-campaign-readiness.yml scripts/apply_campaign_readiness_patch.py
+          git add .github/workflows/deploy-cinema-production.yml
+          git diff --cached --check
+          git commit -m 'fix(deploy): restart latest ready Cinema revision'
+          git push origin HEAD:fix/campaign-readiness-20260831
