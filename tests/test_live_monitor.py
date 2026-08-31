@@ -65,7 +65,7 @@ def approved_plan() -> dict:
 
 def start_session() -> tuple[str, dict]:
     response = client.post(
-        "/api/v1/live/sessions",
+        "/live/api/sessions",
         json={"display_name": "Customer Agent Live", "ttl_seconds": 3600},
     )
     assert response.status_code == 200
@@ -110,7 +110,7 @@ def test_observe_keeps_outside_plan_classification_but_does_not_stop_customer_ru
     token, _ = start_session()
 
     response = client.post(
-        "/api/v1/live/check",
+        "/live/api/check",
         headers={"X-DSG-Live-Token": token},
         json=action_payload(plan["plan_id"], target="production/other"),
     )
@@ -137,7 +137,7 @@ def test_enforce_switch_turns_same_outside_plan_result_into_stop_effect():
     token, _ = start_session()
 
     mode = client.post(
-        "/api/v1/live/mode",
+        "/live/api/mode",
         headers={"X-DSG-Live-Token": token},
         json={"mode": "enforce"},
     )
@@ -145,7 +145,7 @@ def test_enforce_switch_turns_same_outside_plan_result_into_stop_effect():
     assert mode.json()["session"]["mode"] == "ENFORCE"
 
     response = client.post(
-        "/api/v1/live/check",
+        "/live/api/check",
         headers={"X-DSG-Live-Token": token},
         json=action_payload(plan["plan_id"], target="production/other", trace_id="live-enforce-1"),
     )
@@ -164,7 +164,7 @@ def test_missing_capability_remains_waiting_permission_and_observe_does_not_rela
     payload["required_capabilities"] = [{"capability": "stripe_api"}]
 
     response = client.post(
-        "/api/v1/live/check",
+        "/live/api/check",
         headers={"X-DSG-Live-Token": token},
         json=payload,
     )
@@ -182,14 +182,14 @@ def test_live_token_isolation_rejects_unknown_session_capability():
     token, _ = start_session()
 
     response = client.post(
-        "/api/v1/live/check",
+        "/live/api/check",
         headers={"X-DSG-Live-Token": token},
         json=action_payload(plan["plan_id"]),
     )
     assert response.status_code == 200
 
     invalid = client.get(
-        "/api/v1/live/events",
+        "/live/api/events",
         headers={"X-DSG-Live-Token": "x" * 43},
     )
     assert invalid.status_code == 401
@@ -203,7 +203,7 @@ def test_live_evidence_and_replay_are_recomputed_from_stored_execution_not_calle
     payload = action_payload(plan["plan_id"], trace_id=trace_id)
 
     checked = client.post(
-        "/api/v1/live/check",
+        "/live/api/check",
         headers={"X-DSG-Live-Token": token},
         json=payload,
     )
@@ -211,7 +211,7 @@ def test_live_evidence_and_replay_are_recomputed_from_stored_execution_not_calle
     assert checked.json()["live"]["governance_status"] == "PASS"
 
     before = client.get(
-        "/api/v1/live/events",
+        "/live/api/events",
         headers={"X-DSG-Live-Token": token},
     ).json()["latest"]
     assert before["evidence"]["status"] == "UNVERIFIED"
@@ -253,7 +253,7 @@ def test_live_evidence_and_replay_are_recomputed_from_stored_execution_not_calle
     )
 
     after = client.get(
-        "/api/v1/live/events",
+        "/live/api/events",
         headers={"X-DSG-Live-Token": token},
     ).json()["latest"]
     assert after["evidence"]["execution_id"] == execution["execution_id"]
@@ -277,12 +277,13 @@ def test_mcp_exposes_live_start_check_status_but_not_agent_mode_switch():
     assert "dsg_live_set_mode" not in names
 
 
-def test_live_openapi_contract_and_monitor_have_five_panels_with_no_execution_replay():
+def test_live_transport_stays_outside_verification_v1_and_monitor_has_five_panels_with_no_execution_replay():
     schema = client.get("/openapi.json").json()
-    assert "/api/v1/live/sessions" in schema["paths"]
-    assert "/api/v1/live/check" in schema["paths"]
-    assert "/api/v1/live/events" in schema["paths"]
-    assert "/api/v1/live/mode" in schema["paths"]
+    assert "/live/api/sessions" in schema["paths"]
+    assert "/live/api/check" in schema["paths"]
+    assert "/live/api/events" in schema["paths"]
+    assert "/live/api/mode" in schema["paths"]
+    assert not any(path.startswith("/api/v1/live") for path in schema["paths"])
 
     page = client.get("/live.html")
     assert page.status_code == 200
@@ -290,6 +291,7 @@ def test_live_openapi_contract_and_monitor_have_five_panels_with_no_execution_re
     labels = ["1 · LIVE ACTION", "2 · PLAN CHECK", "3 · DSG EFFECT", "4 · WHY", "5 · EVIDENCE"]
     positions = [text.index(label) for label in labels]
     assert positions == sorted(positions)
+    assert "const API = '/live/api';" in text
     assert "Replay is verification-only and never re-executes the action" in text
     assert "Re-run production" not in text
     assert "Execution Replay" not in text
@@ -297,7 +299,7 @@ def test_live_openapi_contract_and_monitor_have_five_panels_with_no_execution_re
 
 
 def test_live_contract_states_replay_verification_only():
-    response = client.get("/api/v1/live/contract")
+    response = client.get("/live/api/contract")
     assert response.status_code == 200
     body = response.json()
     assert body["default_mode"] == "OBSERVE"
