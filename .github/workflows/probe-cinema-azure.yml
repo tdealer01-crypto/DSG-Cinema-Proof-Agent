@@ -80,6 +80,9 @@ jobs:
           : > /tmp/billing-status-body
           : > /tmp/marketplace-status-body
           : > /tmp/stripe-marketplace-status-body
+          : > /tmp/live-contract-body
+          : > /tmp/live-html-body
+          : > /tmp/openapi-body
 
           set +e
           HEALTH_CODE=$(curl --silent --show-error \
@@ -106,12 +109,33 @@ jobs:
             --max-time 30 \
             "https://$HOST/marketplace/stripe/status")
           STRIPE_MARKETPLACE_RC=$?
+          LIVE_CONTRACT_CODE=$(curl --silent --show-error \
+            --output /tmp/live-contract-body \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://$HOST/live/api/contract")
+          LIVE_CONTRACT_RC=$?
+          LIVE_HTML_CODE=$(curl --silent --show-error \
+            --output /tmp/live-html-body \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://$HOST/live.html")
+          LIVE_HTML_RC=$?
+          OPENAPI_CODE=$(curl --silent --show-error \
+            --output /tmp/openapi-body \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://$HOST/openapi.json")
+          OPENAPI_RC=$?
           set -e
 
           if [[ "$HEALTH_RC" != "0" ]]; then HEALTH_CODE=0; fi
           if [[ "$BILLING_RC" != "0" ]]; then BILLING_CODE=0; fi
           if [[ "$MARKETPLACE_RC" != "0" ]]; then MARKETPLACE_CODE=0; fi
           if [[ "$STRIPE_MARKETPLACE_RC" != "0" ]]; then STRIPE_MARKETPLACE_CODE=0; fi
+          if [[ "$LIVE_CONTRACT_RC" != "0" ]]; then LIVE_CONTRACT_CODE=0; fi
+          if [[ "$LIVE_HTML_RC" != "0" ]]; then LIVE_HTML_CODE=0; fi
+          if [[ "$OPENAPI_RC" != "0" ]]; then OPENAPI_CODE=0; fi
 
           HEALTH_READY=false
           if [[ "$HEALTH_CODE" == "200" ]] && \
@@ -139,6 +163,41 @@ jobs:
             STRIPE_MARKETPLACE_READABLE=true
           fi
 
+          LIVE_CONTRACT_READABLE=false
+          if [[ "$LIVE_CONTRACT_CODE" == "200" ]] && \
+             jq -e '
+               .default_mode == "OBSERVE" and
+               .panels == ["LIVE ACTION", "PLAN CHECK", "DSG EFFECT", "WHY", "EVIDENCE"] and
+               (.replay | type == "string") and
+               (.replay | contains("never re-executes"))
+             ' /tmp/live-contract-body >/dev/null 2>&1; then
+            LIVE_CONTRACT_READABLE=true
+          fi
+
+          LIVE_HTML_READABLE=false
+          if [[ "$LIVE_HTML_CODE" == "200" ]] && \
+             grep -Fq '1 · LIVE ACTION' /tmp/live-html-body && \
+             grep -Fq '2 · PLAN CHECK' /tmp/live-html-body && \
+             grep -Fq '3 · DSG EFFECT' /tmp/live-html-body && \
+             grep -Fq '4 · WHY' /tmp/live-html-body && \
+             grep -Fq '5 · EVIDENCE' /tmp/live-html-body && \
+             grep -Fq "const API = '/live/api';" /tmp/live-html-body; then
+            LIVE_HTML_READABLE=true
+          fi
+
+          LIVE_OPENAPI_BOUNDARY=false
+          if [[ "$OPENAPI_CODE" == "200" ]] && \
+             jq -e '
+               (.paths["/live/api/contract"].get != null) and
+               (.paths["/live/api/sessions"].post != null) and
+               (.paths["/live/api/check"].post != null) and
+               (.paths["/live/api/events"].get != null) and
+               (.paths["/live/api/mode"].post != null) and
+               ([.paths | keys[] | select(startswith("/api/v1/live"))] | length == 0)
+             ' /tmp/openapi-body >/dev/null 2>&1; then
+            LIVE_OPENAPI_BOUNDARY=true
+          fi
+
           CHECKOUT_STATUS=$(jq -r '.checkout_status // "UNAVAILABLE"' /tmp/billing-status-body 2>/dev/null || echo UNAVAILABLE)
           STRIPE_CHARGES_ENABLED=$(jq -r '.stripe.charges_enabled // false' /tmp/billing-status-body 2>/dev/null || echo false)
           METERING_ENFORCED=$(jq -r '.metering_enforced // false' /tmp/billing-status-body 2>/dev/null || echo false)
@@ -147,6 +206,7 @@ jobs:
           STRIPE_JSON=$(jq -c '.stripe // {}' /tmp/billing-status-body 2>/dev/null || echo '{}')
           MARKETPLACE_JSON=$(jq -c '.' /tmp/marketplace-status-body 2>/dev/null || echo '{}')
           STRIPE_MARKETPLACE_JSON=$(jq -c '.' /tmp/stripe-marketplace-status-body 2>/dev/null || echo '{}')
+          LIVE_CONTRACT_JSON=$(jq -c '.' /tmp/live-contract-body 2>/dev/null || echo '{}')
 
           jq -n \
             --arg app_name "$CINEMA_APP" \
@@ -172,6 +232,13 @@ jobs:
             --argjson stripe_marketplace_http_status "$STRIPE_MARKETPLACE_CODE" \
             --argjson stripe_marketplace_readable "$STRIPE_MARKETPLACE_READABLE" \
             --argjson stripe_marketplace "$STRIPE_MARKETPLACE_JSON" \
+            --argjson live_contract_http_status "$LIVE_CONTRACT_CODE" \
+            --argjson live_contract_readable "$LIVE_CONTRACT_READABLE" \
+            --argjson live_html_http_status "$LIVE_HTML_CODE" \
+            --argjson live_html_readable "$LIVE_HTML_READABLE" \
+            --argjson openapi_http_status "$OPENAPI_CODE" \
+            --argjson live_openapi_boundary "$LIVE_OPENAPI_BOUNDARY" \
+            --argjson live_contract "$LIVE_CONTRACT_JSON" \
             '{
               target: "azure_container_app",
               app_name: $app_name,
@@ -204,6 +271,15 @@ jobs:
                 http_status: $stripe_marketplace_http_status,
                 readable: $stripe_marketplace_readable,
                 status: $stripe_marketplace
+              },
+              dsg_live: {
+                contract_http_status: $live_contract_http_status,
+                contract_readable: $live_contract_readable,
+                html_http_status: $live_html_http_status,
+                html_readable: $live_html_readable,
+                openapi_http_status: $openapi_http_status,
+                verification_v1_boundary_clean: $live_openapi_boundary,
+                contract: $live_contract
               }
             }' > cinema_runtime_probe.json
 
@@ -227,6 +303,21 @@ jobs:
           if [[ "$STRIPE_MARKETPLACE_READABLE" != "true" ]]; then
             echo 'Current production marketplace/stripe/status is unavailable or malformed.' >&2
             cat /tmp/stripe-marketplace-status-body >&2 || true
+            exit 1
+          fi
+          if [[ "$LIVE_CONTRACT_READABLE" != "true" ]]; then
+            echo 'Current production DSG Live contract is unavailable or malformed.' >&2
+            cat /tmp/live-contract-body >&2 || true
+            exit 1
+          fi
+          if [[ "$LIVE_HTML_READABLE" != "true" ]]; then
+            echo 'Current production DSG Live monitor HTML is unavailable or malformed.' >&2
+            head -c 4000 /tmp/live-html-body >&2 || true
+            exit 1
+          fi
+          if [[ "$LIVE_OPENAPI_BOUNDARY" != "true" ]]; then
+            echo 'Current production OpenAPI does not expose the expected DSG Live transport boundary.' >&2
+            jq -c '.paths | keys' /tmp/openapi-body >&2 2>/dev/null || true
             exit 1
           fi
 
