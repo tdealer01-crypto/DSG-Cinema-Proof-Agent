@@ -21,6 +21,7 @@ def install(app) -> None:
     router_module.install(app)
     importlib.import_module(f"{__name__}.control").install(app)
     importlib.import_module(f"{__name__}.live_monitor").install(app)
+    importlib.import_module(f"{__name__}.live_ui").install(app)
     importlib.import_module(f"{__name__}.mutation").install(app)
     importlib.import_module(f"{__name__}.stripe_app_executor").install(app)
     importlib.import_module(f"{__name__}.mobile_control").install(app)
