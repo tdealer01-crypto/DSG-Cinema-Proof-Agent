@@ -1,14 +1,18 @@
-"""Cross-channel tests: REST and MCP must use the same DSG decision core."""
+"""Cross-channel tests: REST, MCP and DSG Live must use one decision core."""
 
 from __future__ import annotations
+
+import hashlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 import cinema_main
 from api_v1 import service
+from api_v1.live_monitor import LiveStartRequest, create_live_session
 from api_v1.models import ApprovePlanRequest, PlanDocument
-from api_v1.store import RecordStore, reset_store
+from api_v1.store import RecordStore, get_store, reset_store
 
 client = TestClient(cinema_main.app)
 
@@ -60,6 +64,11 @@ def payload(plan_id: str):
         "channel": "test",
         "trace_id": "cross-channel-1",
     }
+
+
+def live_token() -> str:
+    session = create_live_session(LiveStartRequest(display_name="Cross-channel Live", ttl_seconds=3600))
+    return session["live_session_token"]
 
 
 def test_rest_contract_exposes_single_core_semantics():
@@ -118,10 +127,77 @@ def test_mcp_uses_same_waiting_permission_decision():
     assert body["computed_by"] == "dsg-decision-core"
 
 
-def test_mcp_lists_unified_preflight_tool():
+def test_live_observe_uses_same_block_decision_without_stopping_customer_runtime():
+    plan = approved_plan()
+    token = live_token()
+    request = payload(plan["plan_id"])
+    request["required_capabilities"] = []
+    request["action"]["target"] = "production/not-approved"
+
+    response = client.post(
+        "/live/api/check",
+        headers={"X-DSG-Live-Token": token},
+        json=request,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "BLOCK"
+    assert body["allowed"] is False
+    assert body["computed_by"] == "dsg-decision-core"
+    assert body["live"]["mode"] == "OBSERVE"
+    assert body["live"]["governance_status"] == "OUTSIDE_PLAN"
+    assert body["live"]["execution_instruction"] == "CONTINUE"
+    assert body["live"]["enforcement_applied"] is False
+
+    event = get_store().list_records("live_events")[0]
+    assert event["decision"] == "BLOCK"
+    assert "parameters" not in event
+    assert len(event["parameters_hash"]) == 64
+
+
+def test_live_enforce_keeps_same_block_decision_and_changes_only_effect():
+    plan = approved_plan()
+    token = live_token()
+    changed = client.post(
+        "/live/api/mode",
+        headers={"X-DSG-Live-Token": token},
+        json={"mode": "enforce"},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["session"]["mode"] == "ENFORCE"
+
+    request = payload(plan["plan_id"])
+    request["required_capabilities"] = []
+    request["action"]["target"] = "production/not-approved"
+    response = client.post(
+        "/live/api/check",
+        headers={"X-DSG-Live-Token": token},
+        json=request,
+    )
+    body = response.json()
+    assert body["decision"] == "BLOCK"
+    assert body["computed_by"] == "dsg-decision-core"
+    assert body["live"]["governance_status"] == "OUTSIDE_PLAN"
+    assert body["live"]["execution_instruction"] == "STOP"
+    assert body["live"]["effect"] == "BLOCKED_BY_DSG"
+    assert body["live"]["enforcement_applied"] is True
+
+
+def test_live_session_token_is_hashed_and_not_persisted_plaintext():
+    token = live_token()
+    record = get_store().list_records("live_sessions")[0]
+    assert token not in json.dumps(record, sort_keys=True)
+    assert record["token_hash"] == hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def test_mcp_lists_unified_preflight_and_live_tools():
     response = client.post(
         "/api/v1/mcp",
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
     )
     names = [tool["name"] for tool in response.json()["result"]["tools"]]
     assert "dsg_preflight_action" in names
+    assert "dsg_live_start" in names
+    assert "dsg_live_check_action" in names
+    assert "dsg_live_status" in names
+    assert "dsg_live_set_mode" not in names

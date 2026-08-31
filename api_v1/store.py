@@ -1,4 +1,4 @@
-"""Record store for plans, executions, evidence, and proofs.
+"""Record store for plans, executions, evidence, proofs, and live monitor data.
 
 Truth boundary, stated plainly:
 
@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional
 
-COLLECTIONS = ("plans", "executions", "proofs")
+COLLECTIONS = ("plans", "executions", "proofs", "live_sessions", "live_events")
 _REVENUE_STORE_VARS = ("DSG_REVENUE_LEDGER_STORE", "DSG_REVENUE_ACCOUNT_STORE")
 
 
@@ -142,6 +142,11 @@ class RecordStore:
         with self._critical_section():
             record = self._data[collection].get(key)
             return json.loads(json.dumps(record)) if record is not None else None
+
+    def list_records(self, collection: str) -> list[dict[str, Any]]:
+        """Return detached records without exposing mutable store internals."""
+        with self._critical_section():
+            return json.loads(json.dumps(list(self._data[collection].values())))
 
     def mutate(
         self,

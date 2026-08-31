@@ -20,6 +20,12 @@ def install(app) -> None:
     importlib.import_module(f"{__name__}.exact_select").install_mcp_tool()
     router_module.install(app)
     importlib.import_module(f"{__name__}.control").install(app)
+    # DSG Live reuses the v1 Decision Core, but its customer monitor/control
+    # transport deliberately lives outside /api/v1 so the independent
+    # verification OpenAPI remains exact. The transport also installs the
+    # existing Live MCP tools onto /api/v1/mcp.
+    importlib.import_module(f"{__name__}.live_transport").install(app)
+    importlib.import_module(f"{__name__}.live_ui").install(app)
     importlib.import_module(f"{__name__}.mutation").install(app)
     importlib.import_module(f"{__name__}.stripe_app_executor").install(app)
     importlib.import_module(f"{__name__}.mobile_control").install(app)
