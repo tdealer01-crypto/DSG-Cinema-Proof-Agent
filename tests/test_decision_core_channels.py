@@ -135,7 +135,7 @@ def test_live_observe_uses_same_block_decision_without_stopping_customer_runtime
     request["action"]["target"] = "production/not-approved"
 
     response = client.post(
-        "/api/v1/live/check",
+        "/live/api/check",
         headers={"X-DSG-Live-Token": token},
         json=request,
     )
@@ -159,7 +159,7 @@ def test_live_enforce_keeps_same_block_decision_and_changes_only_effect():
     plan = approved_plan()
     token = live_token()
     changed = client.post(
-        "/api/v1/live/mode",
+        "/live/api/mode",
         headers={"X-DSG-Live-Token": token},
         json={"mode": "enforce"},
     )
@@ -170,7 +170,7 @@ def test_live_enforce_keeps_same_block_decision_and_changes_only_effect():
     request["required_capabilities"] = []
     request["action"]["target"] = "production/not-approved"
     response = client.post(
-        "/api/v1/live/check",
+        "/live/api/check",
         headers={"X-DSG-Live-Token": token},
         json=request,
     )
