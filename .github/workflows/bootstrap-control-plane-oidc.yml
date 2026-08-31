@@ -28,17 +28,16 @@ jobs:
         run: |
           set -euo pipefail
           file='.github/workflows/bootstrap-control-plane-oidc.yml'
-          forbidden_secret_name='AZURE_CLIENT_SECRET'
-          forbidden_rbac_command='az role assignment create'
           grep -Fq 'dsg-cinema-proof-agent-github-deployer' "$file"
           grep -Fq 'tdealer01-crypto-dsg-control-plane@1186640068:environment:prod' "$file"
           grep -Fq 'api://AzureADTokenExchange' "$file"
-          if grep -Fq "$forbidden_secret_name" "$file"; then
-            echo '::error::Bootstrap must not use an Azure client secret.' >&2
+          mutation_block="$(awk '/^  bootstrap-federation:/{found=1} found{print}' "$file")"
+          if grep -Fq 'AZURE_CLIENT_SECRET' <<<"$mutation_block"; then
+            echo '::error::Bootstrap mutation job must not use an Azure client secret.' >&2
             exit 1
           fi
-          if grep -Fq "$forbidden_rbac_command" "$file"; then
-            echo '::error::Bootstrap must not broaden Azure RBAC.' >&2
+          if grep -Fq 'az role assignment create' <<<"$mutation_block"; then
+            echo '::error::Bootstrap mutation job must not broaden Azure RBAC.' >&2
             exit 1
           fi
 
