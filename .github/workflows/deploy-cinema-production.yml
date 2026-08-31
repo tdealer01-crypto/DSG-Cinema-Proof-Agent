@@ -876,10 +876,9 @@ jobs:
         run: |
           set -euo pipefail
           AZURE_ORIGIN=$(jq -er '.product.public_landing | rtrimstr("/")' marketplace/launch-manifest.json)
-          RENDER_ORIGIN='https://dsg-one-verified-execution.onrender.com'
           VERIFY_URL="$CINEMA_URL/verify/evaluate"
 
-          for origin in "$AZURE_ORIGIN" "$RENDER_ORIGIN"; do
+          for origin in "$AZURE_ORIGIN"; do
             CORS_CODE=$(curl --silent --show-error --output /dev/null --dump-header /tmp/cors-headers.txt --write-out '%{http_code}' \
               --request OPTIONS "$VERIFY_URL" \
               --header "Origin: $origin" \
