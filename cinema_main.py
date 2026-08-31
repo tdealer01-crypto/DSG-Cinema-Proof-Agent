@@ -59,7 +59,6 @@ app.add_middleware(
         "https://dashboard.stripe.com",
         "https://dashboard-test.stripe.com",
         "https://dsgoneverifiedweb.z1.web.core.windows.net",
-        "https://dsg-one-verified-execution.onrender.com",
     ],
     allow_origin_regex=r"https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net",
     allow_credentials=False,

@@ -105,7 +105,7 @@ def test_any_azure_storage_static_site_origin_matches_cors_policy(monkeypatch):
 
 def test_render_landing_origin_can_call_public_verification_api(monkeypatch):
     configure(monkeypatch)
-    origin = "https://dsg-one-verified-execution.onrender.com"
+    origin = "https://dsgoneverifiedweb.z1.web.core.windows.net"
     response = client.options(
         "/verify/evaluate",
         headers={
