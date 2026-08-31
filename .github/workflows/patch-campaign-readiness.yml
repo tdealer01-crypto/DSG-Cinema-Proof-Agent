@@ -6,24 +6,69 @@ on:
       - 'fix/campaign-readiness-20260831'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  materialize:
+  prepare-commit:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: fix/campaign-readiness-20260831
+          fetch-depth: 1
 
-      - name: Materialize patched workflow
+      - name: Materialize and validate patch
+        shell: bash
         run: |
           set -euo pipefail
           python scripts/apply_campaign_readiness_patch.py
           git diff --check
           echo "PATCHED_SHA256=$(sha256sum .github/workflows/deploy-cinema-production.yml | awk '{print $1}')"
-          echo 'PATCHED_BASE64_BEGIN'
-          base64 -w0 .github/workflows/deploy-cinema-production.yml
-          echo
-          echo 'PATCHED_BASE64_END'
+
+      - name: Create immutable Git commit object
+        id: object
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PARENT_SHA=$(git rev-parse HEAD)
+          BASE_TREE_SHA=$(git rev-parse HEAD^{tree})
+
+          BLOB_SHA=$(jq -Rs '{content: ., encoding: "utf-8"}' \
+            < .github/workflows/deploy-cinema-production.yml \
+            | gh api --method POST "repos/$REPO/git/blobs" --input - --jq '.sha')
+
+          TREE_SHA=$(jq -n \
+            --arg base "$BASE_TREE_SHA" \
+            --arg deploy_blob "$BLOB_SHA" \
+            '{base_tree:$base,tree:[
+              {path:".github/workflows/deploy-cinema-production.yml",mode:"100644",type:"blob",sha:$deploy_blob},
+              {path:".github/workflows/patch-campaign-readiness.yml",mode:"100644",type:"blob",sha:null},
+              {path:"scripts/apply_campaign_readiness_patch.py",mode:"100644",type:"blob",sha:null}
+            ]}' \
+            | gh api --method POST "repos/$REPO/git/trees" --input - --jq '.sha')
+
+          COMMIT_SHA=$(jq -n \
+            --arg message 'fix(deploy): restart latest ready Cinema revision' \
+            --arg tree "$TREE_SHA" \
+            --arg parent "$PARENT_SHA" \
+            '{message:$message,tree:$tree,parents:[$parent]}' \
+            | gh api --method POST "repos/$REPO/git/commits" --input - --jq '.sha')
+
+          echo "Prepared immutable commit object: $COMMIT_SHA"
+          echo "COMMIT_SHA=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "COMMIT_SHA=$COMMIT_SHA" >> "$GITHUB_ENV"
+
+      - name: Verify prepared commit object
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$COMMIT_SHA"
+          gh api "repos/$REPO/git/commits/$COMMIT_SHA" --jq '{sha:.sha,message:.message,tree:.tree.sha,parents:[.parents[].sha]}'
+          echo "READY_COMMIT_SHA=$COMMIT_SHA"
