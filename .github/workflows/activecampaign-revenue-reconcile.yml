@@ -145,18 +145,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail-with-body --silent --show-error \
+          RECONCILE_CODE=$(curl --silent --show-error \
+            --output /tmp/activecampaign-reconcile.json \
+            --write-out '%{http_code}' \
             --request POST "$CINEMA_URL/billing/marketing/reconcile" \
             --header "Authorization: Bearer $REVENUE_ADMIN_SECRET" \
             --header 'Content-Type: application/json' \
-            --data '{}' > /tmp/activecampaign-reconcile.json
+            --data '{}' || true)
 
+          if [[ "$RECONCILE_CODE" != '200' ]]; then
+            echo "ActiveCampaign reconcile returned HTTP $RECONCILE_CODE." >&2
+            if jq -e . /tmp/activecampaign-reconcile.json >/dev/null 2>&1; then
+              jq -c . /tmp/activecampaign-reconcile.json >&2
+            else
+              cat /tmp/activecampaign-reconcile.json >&2 || true
+            fi
+            exit 1
+          fi
+
+          # Keep this contract aligned with /billing/marketing/reconcile. Do not
+          # infer payment eligibility from CRM state: payment truth remains the
+          # signature-verified Stripe lifecycle owned by Cinema.
           jq -e '
             (.checked | type == "number") and
-            (.eligible_from_paid_invoice | type == "number") and
             (.synced | type == "number") and
             (.pending | type == "number") and
-            (.failed | type == "number")
+            (.failed | type == "number") and
+            (.results | type == "array") and
+            (.truth_boundary | type == "string")
           ' /tmp/activecampaign-reconcile.json >/dev/null
 
           if [[ "$(jq -r '.failed' /tmp/activecampaign-reconcile.json)" != '0' ]]; then
@@ -165,4 +181,4 @@ jobs:
             exit 1
           fi
 
-          jq -c '{checked,eligible_from_paid_invoice,synced,pending,failed}' /tmp/activecampaign-reconcile.json
+          jq -c '{checked,synced,pending,failed}' /tmp/activecampaign-reconcile.json
