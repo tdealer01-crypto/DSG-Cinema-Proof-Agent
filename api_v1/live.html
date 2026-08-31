@@ -55,7 +55,7 @@
 <script>
 (() => {
   'use strict';
-  const API = 'https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/live';
+  const API = '/live/api';
   const token = decodeURIComponent((location.hash || '').replace(/^#/, ''));
   const $ = (id) => document.getElementById(id);
   let lastPayload = null;
