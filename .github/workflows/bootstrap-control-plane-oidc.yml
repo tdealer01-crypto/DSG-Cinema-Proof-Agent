@@ -1,0 +1,141 @@
+name: Bootstrap Control Plane Azure OIDC
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/bootstrap-control-plane-oidc.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bootstrap-control-plane-oidc.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bootstrap-control-plane-azure-oidc
+  cancel-in-progress: false
+
+jobs:
+  validate-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate bounded federation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          file='.github/workflows/bootstrap-control-plane-oidc.yml'
+          grep -Fq 'dsg-cinema-proof-agent-github-deployer' "$file"
+          grep -Fq 'tdealer01-crypto-dsg-control-plane@1186640068:environment:prod' "$file"
+          grep -Fq 'api://AzureADTokenExchange' "$file"
+          mutation_block="$(awk '/^  bootstrap-federation:/{found=1} found{print}' "$file")"
+          if grep -Fq 'AZURE_CLIENT_SECRET' <<<"$mutation_block"; then
+            echo '::error::Bootstrap mutation job must not use an Azure client secret.' >&2
+            exit 1
+          fi
+          if grep -Fq 'az role assignment create' <<<"$mutation_block"; then
+            echo '::error::Bootstrap mutation job must not broaden Azure RBAC.' >&2
+            exit 1
+          fi
+
+  bootstrap-federation:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    env:
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      IDENTITY_NAME: dsg-cinema-proof-agent-github-deployer
+      FEDERATED_CREDENTIAL_NAME: github-control-plane-prod
+      CONTROL_PLANE_SUBJECT: repo:tdealer01-crypto@260597462/tdealer01-crypto-dsg-control-plane@1186640068:environment:prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login with proven Cinema GitHub OIDC identity
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify source identity and subscription
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(az account show --query tenantId -o tsv)" = "$AZURE_TENANT_ID"
+          test "$(az account show --query id -o tsv)" = "$AZURE_SUBSCRIPTION_ID"
+          client_id="$(az identity show \
+            --name "$IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query clientId -o tsv)"
+          test "$client_id" = "$AZURE_CLIENT_ID" || {
+            echo '::error::Cinema GitHub deployment identity clientId mismatch' >&2
+            exit 1
+          }
+
+      - name: Create or update exact Control Plane prod federation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if az identity federated-credential show \
+            --name "$FEDERATED_CREDENTIAL_NAME" \
+            --identity-name "$IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --only-show-errors --output none 2>/dev/null; then
+            az identity federated-credential update \
+              --name "$FEDERATED_CREDENTIAL_NAME" \
+              --identity-name "$IDENTITY_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --issuer 'https://token.actions.githubusercontent.com' \
+              --subject "$CONTROL_PLANE_SUBJECT" \
+              --audiences 'api://AzureADTokenExchange' \
+              --only-show-errors --output none
+          else
+            az identity federated-credential create \
+              --name "$FEDERATED_CREDENTIAL_NAME" \
+              --identity-name "$IDENTITY_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --issuer 'https://token.actions.githubusercontent.com' \
+              --subject "$CONTROL_PLANE_SUBJECT" \
+              --audiences 'api://AzureADTokenExchange' \
+              --only-show-errors --output none
+          fi
+
+      - name: Verify exact federation readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          issuer="$(az identity federated-credential show \
+            --name "$FEDERATED_CREDENTIAL_NAME" \
+            --identity-name "$IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query issuer -o tsv)"
+          subject="$(az identity federated-credential show \
+            --name "$FEDERATED_CREDENTIAL_NAME" \
+            --identity-name "$IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query subject -o tsv)"
+          audience="$(az identity federated-credential show \
+            --name "$FEDERATED_CREDENTIAL_NAME" \
+            --identity-name "$IDENTITY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query 'audiences[0]' -o tsv)"
+          test "$issuer" = 'https://token.actions.githubusercontent.com'
+          test "$subject" = "$CONTROL_PLANE_SUBJECT"
+          test "$audience" = 'api://AzureADTokenExchange'
+          {
+            echo '## Control Plane Azure OIDC federation'
+            echo '- status: PASS'
+            echo "- client id: $AZURE_CLIENT_ID"
+            echo "- tenant id: $AZURE_TENANT_ID"
+            echo "- subscription id: $AZURE_SUBSCRIPTION_ID"
+            echo "- subject: $CONTROL_PLANE_SUBJECT"
+            echo '- RBAC mutation: none'
+            echo '- client secret created: no'
+          } >> "$GITHUB_STEP_SUMMARY"
