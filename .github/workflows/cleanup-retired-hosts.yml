@@ -28,11 +28,8 @@ jobs:
           azure = "https://dsgoneverifiedweb.z1.web.core.windows.net"
 
           replacements = {
-              Path("cinema_main.py"): [
-                  (f'        "{retired}",\n', ""),
-              ],
+              Path("cinema_main.py"): [(f'        "{retired}",\n', "")],
               Path(".github/workflows/deploy-cinema-production.yml"): [
-                  ("      - name: Verify marketplace adapters and Azure browser CORS\n", "      - name: Verify marketplace adapters and Azure browser CORS\n"),
                   (f"          RENDER_ORIGIN='{retired}'\n", ""),
                   ('          for origin in "$AZURE_ORIGIN" "$RENDER_ORIGIN"; do\n', '          for origin in "$AZURE_ORIGIN"; do\n'),
               ],
@@ -52,34 +49,28 @@ jobs:
               if text != original:
                   path.write_text(text, encoding="utf-8")
 
-          # Fail closed: no active source/workflow/test/landing reference may remain.
-          checked = [
-              Path("cinema_main.py"),
-              Path(".github/workflows/deploy-cinema-production.yml"),
-              Path("landing/index.html"),
-              Path("azure-landing/index.html"),
-              Path("tests/test_cinema_main.py"),
-              Path("tests/test_marketplace_surfaces.py"),
-          ]
+          checked = list(replacements)
           remaining = [str(p) for p in checked if p.exists() and retired in p.read_text(encoding="utf-8")]
           if remaining:
-              raise SystemExit(f"retired host still present in: {remaining}")
+              raise SystemExit(f"retired host still present in active files: {remaining}")
           PY
 
           python -m py_compile cinema_main.py
           git diff --check
+          mkdir -p .dsg-cleanup
+          cp .github/workflows/deploy-cinema-production.yml .dsg-cleanup/deploy-cinema-production.azure-only.yml
+          git checkout -- .github/workflows/deploy-cinema-production.yml
 
-      - name: Commit cleanup and remove one-time workflow
+      - name: Commit non-workflow cleanup and staged Azure workflow blob
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm .github/workflows/cleanup-retired-hosts.yml
-          git add cinema_main.py .github/workflows/deploy-cinema-production.yml landing/index.html azure-landing/index.html tests/test_cinema_main.py tests/test_marketplace_surfaces.py
+          git add cinema_main.py landing/index.html azure-landing/index.html tests/test_cinema_main.py tests/test_marketplace_surfaces.py .dsg-cleanup/deploy-cinema-production.azure-only.yml
           if git diff --cached --quiet; then
-            echo 'No cleanup changes required.'
+            echo 'No non-workflow cleanup changes required.'
             exit 0
           fi
-          git commit -m 'chore: remove retired Render hosting references'
+          git commit -m 'chore: stage Azure-only Cinema hosting cleanup'
           git push origin HEAD:main
