@@ -37,12 +37,13 @@ def install(app) -> None:
     # Pairing is the user-facing chat-driven authority switch: the dashboard
     # only enables/disables Remote, while the agent supplies plan/step intent.
     importlib.import_module(f"{__name__}.remote_pairing").install(app)
-    # Managed execution is exposed only through the authenticated relay wrapper.
-    # The implementation module itself is intentionally not mounted directly,
-    # so no unsigned public path can reach Browserbase.
+    # Managed execution is exposed only through authenticated signed relays.
+    # Browserbase remains supported, while Azure-native Chromium uses the same
+    # signature/nonce trust boundary through its own exact route.
     importlib.import_module(f"{__name__}.remote_relay_security").install(app)
-    # The Live View bridge keeps the dashboard CSP same-origin while giving the
-    # user an interactive view of the exact Browserbase session used by agents.
+    importlib.import_module(f"{__name__}.azure_relay_security").install(app)
+    # The Live View bridge is provider-neutral at runtime even though the module
+    # keeps its historical filename for dashboard compatibility.
     importlib.import_module(f"{__name__}.browserbase_live_ui").install(app)
     # ChatGPT/MCP-compatible action transport. This is intentionally mounted at
     # /mcp rather than under /api/v1 so remote execution cannot drift the
