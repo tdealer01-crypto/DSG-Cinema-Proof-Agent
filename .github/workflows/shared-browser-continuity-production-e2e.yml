@@ -23,7 +23,7 @@ jobs:
       CINEMA_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
 
     steps:
-      - name: Prove one Azure user browser survives agent authority changes
+      - name: Prove Azure shared browser and Browser Memory continuity
         shell: bash
         run: |
           set -euo pipefail
@@ -118,15 +118,48 @@ jobs:
           viewer_token="${embed_path##*/}"
           [[ -n "$viewer_token" ]]
           echo "::add-mask::$viewer_token"
+
+          # Navigate with query/fragment sentinel values. The live browser sees the
+          # complete URL, while durable Browser Memory must retain only the clean
+          # path. This proves capture without persisting URL secrets or tracking
+          # parameters.
+          memory_marker="dsg-memory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          memory_probe="DO_NOT_STORE_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          memory_clean_url="https://example.com/${memory_marker}"
+          memory_live_url="${memory_clean_url}?probe=${memory_probe}#private-fragment"
           http=$(curl -sS -o "$work/user-action.json" -w '%{http_code}' \
             -X POST "$CINEMA_BASE_URL/remote-browser/azure/view/$viewer_token/action" \
             -H 'Content-Type: application/json' \
-            --data '{"kind":"navigate","parameters":{"url":"https://example.com"}}')
+            --data "$(jq -nc --arg url "$memory_live_url" '{kind:"navigate",parameters:{url:$url}}')")
           [[ "$http" == "200" ]]
-          jq -e '.ok == true and .provider == "azure_container_apps" and (.url | startswith("https://example.com"))' "$work/user-action.json" >/dev/null
+          jq -e '.ok == true and .provider == "azure_container_apps" and (.url | startswith("https://example.com/"))' "$work/user-action.json" >/dev/null
           http=$(curl -sS -o "$work/snapshot.png" -w '%{http_code}' "$CINEMA_BASE_URL/remote-browser/azure/view/$viewer_token/snapshot")
           [[ "$http" == "200" && -s "$work/snapshot.png" ]]
           echo 'user_same_browser=PASS'
+
+          # Memory must exist before the authority-continuity boundary. Retrieval
+          # is hard bounded even though the durable corpus may grow beyond 1M
+          # logical tokens.
+          http=$(curl -sS -o "$work/memory-before.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/remote-browser/memory/context" \
+            -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg q "$memory_marker" '{query:$q,token_budget:4000,limit:20}')")
+          [[ "$http" == "200" ]]
+          jq -e --arg clean "$memory_clean_url" '
+            .available == true and
+            .backend == "azure_files" and
+            .active_context_bounded == true and
+            .selected_token_estimate <= .token_budget and
+            (.memories | length) >= 1 and
+            any(.memories[]; .content.url == $clean and .content.action == "user.navigate")
+          ' "$work/memory-before.json" >/dev/null
+          if grep -Fq "$memory_probe" "$work/memory-before.json"; then
+            echo 'browser_memory_privacy=FAIL query sentinel persisted'
+            exit 1
+          fi
+          memory_hash_before=$(jq -r --arg clean "$memory_clean_url" '[.memories[] | select(.content.url == $clean and .content.action == "user.navigate")][0].memory_hash // empty' "$work/memory-before.json")
+          [[ -n "$memory_hash_before" ]]
+          echo 'browser_memory_written_sanitized=PASS'
 
           rpc() {
             local body="$1" output="$2"
@@ -148,7 +181,7 @@ jobs:
 
           http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.extract",controller:"agent_verifier",parameters:{}}}}}')" "$work/action.json")
           [[ "$http" == "200" ]]
-          jq -e '.result.isError == false and (.result.structuredContent.response.url | startswith("https://example.com"))' "$work/action.json" >/dev/null
+          jq -e '.result.isError == false and (.result.structuredContent.response.url | startswith("https://example.com/"))' "$work/action.json" >/dev/null
           evidence_hash=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
           [[ ${#evidence_hash} -eq 64 ]]
           echo 'agent_observed_user_browser=PASS'
@@ -178,15 +211,43 @@ jobs:
           [[ "$browser_id_reon" == "$browser_id_on" ]]
           echo 'remote_reon_same_browser=PASS'
 
+          # Retrieve the exact pre-boundary memory after Agent disconnect and
+          # Remote OFF/ON. The memory hash must be unchanged and the query/fragment
+          # sentinel must still be absent.
+          http=$(curl -sS -o "$work/memory-after.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/remote-browser/memory/context" \
+            -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg q "$memory_marker" '{query:$q,token_budget:4000,limit:20}')")
+          [[ "$http" == "200" ]]
+          jq -e --arg clean "$memory_clean_url" '
+            .available == true and
+            .backend == "azure_files" and
+            .active_context_bounded == true and
+            .selected_token_estimate <= .token_budget and
+            any(.memories[]; .content.url == $clean and .content.action == "user.navigate")
+          ' "$work/memory-after.json" >/dev/null
+          memory_hash_after=$(jq -r --arg clean "$memory_clean_url" '[.memories[] | select(.content.url == $clean and .content.action == "user.navigate")][0].memory_hash // empty' "$work/memory-after.json")
+          [[ "$memory_hash_after" == "$memory_hash_before" ]]
+          if grep -Fq "$memory_probe" "$work/memory-after.json"; then
+            echo 'browser_memory_privacy_after_boundary=FAIL query sentinel persisted'
+            exit 1
+          fi
+          memory_stored_tokens=$(jq -r '.stored_token_estimate // 0' "$work/memory-after.json")
+          memory_selected_tokens=$(jq -r '.selected_token_estimate // 0' "$work/memory-after.json")
+          echo 'browser_memory_survived_continuity_boundary=PASS'
+
           jq -n \
             --arg commit "$evidence_commit" \
             --arg account_hash "$(printf '%s' "$account_id" | sha256sum | cut -d' ' -f1)" \
             --arg plan_hash "$plan_hash" \
             --arg browser_session_hash "$(printf '%s' "$browser_id_on" | sha256sum | cut -d' ' -f1)" \
             --arg action_evidence_hash "$evidence_hash" \
-            '{status:"PASS",commit:$commit,provider:"azure_container_apps",account_sha256:$account_hash,plan_hash:$plan_hash,browser_session_sha256:$browser_session_hash,context_persistent:true,user_live_view_same_browser:true,same_browser_on_agent_connect:true,agent_observed_user_navigation:true,browser_survived_agent_disconnect:true,browser_survived_remote_off:true,same_browser_after_remote_reenable:true,action_evidence_hash:$action_evidence_hash}' \
+            --arg browser_memory_hash "$memory_hash_after" \
+            --argjson browser_memory_stored_tokens "$memory_stored_tokens" \
+            --argjson browser_memory_selected_tokens "$memory_selected_tokens" \
+            '{status:"PASS",commit:$commit,provider:"azure_container_apps",account_sha256:$account_hash,plan_hash:$plan_hash,browser_session_sha256:$browser_session_hash,context_persistent:true,user_live_view_same_browser:true,same_browser_on_agent_connect:true,agent_observed_user_navigation:true,browser_survived_agent_disconnect:true,browser_survived_remote_off:true,same_browser_after_remote_reenable:true,action_evidence_hash:$action_evidence_hash,browser_memory_backend:"azure_files",browser_memory_sanitized:true,browser_memory_survived_continuity_boundary:true,browser_memory_active_context_bounded:true,browser_memory_hash:$browser_memory_hash,browser_memory_stored_token_estimate:$browser_memory_stored_tokens,browser_memory_selected_token_estimate:$browser_memory_selected_tokens}' \
             > shared-browser-continuity-evidence.json
-          echo 'Shared Browser Continuity Production E2E: PASS'
+          echo 'Shared Browser + Browser Memory Continuity Production E2E: PASS'
 
       - name: Upload non-secret continuity evidence
         uses: actions/upload-artifact@v4
