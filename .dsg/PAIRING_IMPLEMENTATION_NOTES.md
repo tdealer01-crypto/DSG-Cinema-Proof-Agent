@@ -1,0 +1,1 @@
+Implementation in progress. Need to inspect existing Settings/API key UI and existing pairing/auth primitives before code changes. Do not claim complete until tests run.

@@ -37,6 +37,9 @@ def install(app) -> None:
     # Pairing is the user-facing chat-driven authority switch: the dashboard
     # only enables/disables Remote, while the agent supplies plan/step intent.
     importlib.import_module(f"{__name__}.remote_pairing").install(app)
+    # Short-lived agent credentials keep the master API key out of model/tool
+    # payloads while preserving the exact existing MCP authorization path.
+    importlib.import_module(f"{__name__}.agent_pairing").install(app)
     # Managed execution is exposed only through authenticated signed relays.
     # Browserbase remains supported, while Azure-native Chromium uses the same
     # signature/nonce trust boundary through its own exact route.
