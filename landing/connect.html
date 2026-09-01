@@ -3,52 +3,161 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="description" content="Connect DSG Live to GitHub Copilot without using a terminal. Add the DSG marketplace, install the plugin, and start an Observe session.">
+  <meta name="description" content="Connect GitHub Copilot, MCP-compatible clients, Android, OpenAI, Claude, Gemini, or a custom agent to DSG Live. Start in Observe mode and keep your existing system.">
   <meta name="theme-color" content="#020617">
-  <title>Connect DSG Live</title>
+  <title>Connect any AI to DSG Live</title>
   <style>
-    :root{--bg:#020617;--panel:#07111f;--panel2:#0b1524;--line:rgba(148,163,184,.18);--text:#f8fafc;--muted:#9aaabd;--cyan:#22d3ee;--blue:#3b82f6;--green:#34d399;--violet:#a78bfa;--amber:#fbbf24;--max:780px}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(700px 460px at 20% -8%,rgba(34,211,238,.12),transparent 65%),radial-gradient(720px 480px at 95% 10%,rgba(139,92,246,.12),transparent 65%),linear-gradient(180deg,#020617,#030817 60%,#020617);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}a{color:inherit;text-decoration:none}button,input{font:inherit}.wrap{width:min(var(--max),calc(100% - 28px));margin:auto}.nav{padding:18px 0}.navin{display:flex;align-items:center;justify-content:space-between;gap:14px}.brand{display:flex;gap:10px;align-items:center;font-weight:900;letter-spacing:.08em}.mark{width:38px;height:38px;border:1px solid rgba(34,211,238,.35);border-radius:12px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(34,211,238,.15),rgba(139,92,246,.12));font-size:11px}.back{font-size:12px;color:#a7b6c9}.hero{padding:44px 0 26px}.eyebrow{display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(52,211,153,.28);border-radius:999px;padding:7px 11px;background:rgba(52,211,153,.07);color:#a7f3d0;font-size:11px;font-weight:850}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}h1{font-size:clamp(42px,11vw,68px);line-height:.97;letter-spacing:-.055em;margin:20px 0 17px}.grad{background:linear-gradient(90deg,#fff 2%,#bae6fd 38%,#67e8f9 65%,#c4b5fd 96%);-webkit-background-clip:text;background-clip:text;color:transparent}.sub{font-size:17px;color:#a5b4c6;max-width:650px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:19px}.chip{border:1px solid var(--line);border-radius:999px;padding:7px 10px;font-size:10px;color:#9fb0c4;background:rgba(7,17,31,.65)}.steps{display:grid;gap:13px;padding:18px 0 44px}.step{border:1px solid var(--line);border-radius:20px;padding:20px;background:linear-gradient(145deg,rgba(10,24,43,.92),rgba(4,12,25,.94));box-shadow:0 18px 50px rgba(0,0,0,.18)}.stepHead{display:flex;gap:13px;align-items:flex-start}.num{flex:0 0 34px;width:34px;height:34px;border-radius:11px;display:grid;place-items:center;border:1px solid rgba(125,211,252,.24);background:rgba(14,165,233,.08);color:#bae6fd;font-size:12px;font-weight:900}.step h2{font-size:20px;margin:1px 0 4px;letter-spacing:-.02em}.step p{margin:0;color:#91a3b8;font-size:12px}.action{margin-top:16px}.btn{width:100%;min-height:52px;border:0;border-radius:13px;padding:0 16px;display:flex;align-items:center;justify-content:center;gap:9px;font-weight:900;font-size:14px;cursor:pointer;color:white;background:linear-gradient(100deg,#0891b2,#2563eb 58%,#7c3aed);box-shadow:0 12px 34px rgba(37,99,235,.19)}.btn.secondary{background:#101a2a;border:1px solid #2b3a50;box-shadow:none}.btn:disabled{opacity:.45;cursor:not-allowed}.hint{margin-top:10px;color:#718399;font-size:10px}.repoBox{margin-top:15px}.repoBox label{display:block;font-size:11px;font-weight:850;color:#c4d0df;margin-bottom:7px}.repoBox input{width:100%;min-height:48px;border:1px solid #2b3a50;border-radius:12px;background:#08111f;color:#f8fafc;padding:0 13px;outline:none}.repoBox input:focus{border-color:#22d3ee;box-shadow:0 0 0 3px rgba(34,211,238,.08)}.status{margin-top:9px;min-height:17px;color:#8fa1b6;font-size:10px}.truth{border:1px solid rgba(251,191,36,.20);border-radius:16px;padding:16px;background:rgba(251,191,36,.05);margin:4px 0 46px}.truth b{font-size:12px;color:#fde68a}.truth p{margin:6px 0 0;color:#9aaabd;font-size:11px}.preview{border-top:1px solid rgba(148,163,184,.09);padding:46px 0}.preview h2{font-size:30px;letter-spacing:-.04em;margin:0 0 8px}.preview>div>p{color:#91a3b8;margin:0 0 18px;font-size:13px}.panel{border:1px solid var(--line);border-radius:14px;padding:14px 15px;margin-top:8px;background:rgba(7,17,31,.72)}.panel small{display:block;color:#7dd3fc;font:900 9px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.11em}.panel strong{display:block;margin-top:5px;font-size:14px}.panel span{display:block;color:#8193a8;font-size:10px;margin-top:3px}.footer{padding:26px 0 42px;color:#6f8196;font-size:10px;border-top:1px solid rgba(148,163,184,.08)}.footerIn{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}.footer a{color:#9fb0c3}.dev{margin-top:14px}.dev summary{cursor:pointer;color:#91a3b8;font-size:11px}.dev div{margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:11px;background:#060d17;color:#8fa1b6;font-size:10px;overflow-wrap:anywhere}
-    @media(max-width:560px){.hero{padding-top:24px}.step{padding:17px}.wrap{width:min(var(--max),calc(100% - 20px))}.back{font-size:10px}}
+    :root{--bg:#020617;--panel:#07111f;--panel2:#0b1524;--line:rgba(148,163,184,.18);--text:#f8fafc;--muted:#94a3b8;--cyan:#22d3ee;--blue:#3b82f6;--green:#34d399;--violet:#a78bfa;--amber:#fbbf24;--red:#fb7185;--max:980px}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(800px 500px at 15% -10%,rgba(34,211,238,.12),transparent 65%),radial-gradient(820px 520px at 95% 10%,rgba(139,92,246,.12),transparent 65%),linear-gradient(180deg,#020617,#030817 62%,#020617);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}a{color:inherit;text-decoration:none}button,input{font:inherit}.wrap{width:min(var(--max),calc(100% - 28px));margin:auto}.nav{padding:18px 0}.navin{display:flex;align-items:center;justify-content:space-between;gap:14px}.brand{display:flex;gap:10px;align-items:center;font-weight:900;letter-spacing:.08em}.mark{width:38px;height:38px;border:1px solid rgba(34,211,238,.35);border-radius:12px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(34,211,238,.15),rgba(139,92,246,.12));font-size:11px}.back{font-size:12px;color:#a7b6c9}.hero{padding:42px 0 22px}.eyebrow{display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(52,211,153,.28);border-radius:999px;padding:7px 11px;background:rgba(52,211,153,.07);color:#a7f3d0;font-size:11px;font-weight:850}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}h1{font-size:clamp(42px,10vw,72px);line-height:.97;letter-spacing:-.055em;margin:20px 0 17px}.grad{background:linear-gradient(90deg,#fff 2%,#bae6fd 35%,#67e8f9 60%,#c4b5fd 96%);-webkit-background-clip:text;background-clip:text;color:transparent}.sub{font-size:17px;color:#a5b4c6;max-width:720px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:19px}.chip{border:1px solid var(--line);border-radius:999px;padding:7px 10px;font-size:10px;color:#9fb0c4;background:rgba(7,17,31,.65)}
+    .section{padding:24px 0 46px}.section h2{font-size:30px;letter-spacing:-.04em;margin:0 0 7px}.sectionLead{margin:0 0 18px;color:#91a3b8;font-size:13px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.choice{width:100%;text-align:left;border:1px solid var(--line);border-radius:18px;padding:17px;background:linear-gradient(145deg,rgba(10,24,43,.92),rgba(4,12,25,.94));color:var(--text);cursor:pointer;transition:.16s transform,.16s border-color,.16s background}.choice:hover,.choice:focus-visible{transform:translateY(-1px);border-color:rgba(34,211,238,.4);outline:none}.choice.active{border-color:rgba(34,211,238,.65);box-shadow:0 0 0 3px rgba(34,211,238,.07)}.choiceTop{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.choice strong{font-size:17px}.choice p{margin:8px 0 0;color:#8fa2b7;font-size:11px}.badge{white-space:nowrap;border-radius:999px;padding:5px 8px;font-size:9px;font-weight:900;border:1px solid var(--line)}.live{color:#a7f3d0;border-color:rgba(52,211,153,.25);background:rgba(52,211,153,.07)}.guided{color:#bae6fd;border-color:rgba(56,189,248,.25);background:rgba(56,189,248,.07)}.adapter{color:#ddd6fe;border-color:rgba(167,139,250,.25);background:rgba(167,139,250,.07)}.pending{color:#fde68a;border-color:rgba(251,191,36,.24);background:rgba(251,191,36,.07)}
+    .route{margin-top:14px;border:1px solid var(--line);border-radius:20px;background:linear-gradient(160deg,rgba(7,17,31,.96),rgba(4,10,21,.96));padding:20px}.routeHead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.route h3{font-size:23px;margin:0 0 4px;letter-spacing:-.03em}.route p{margin:0;color:#91a3b8;font-size:12px}.routeBody{margin-top:18px}.steps{display:grid;gap:10px}.step{border:1px solid rgba(148,163,184,.14);border-radius:14px;padding:14px;background:rgba(8,17,31,.62)}.step small{display:block;color:#7dd3fc;font-size:9px;font-weight:900;letter-spacing:.1em}.step strong{display:block;margin-top:4px;font-size:13px}.step span{display:block;margin-top:3px;color:#8193a8;font-size:10px}.actionRow{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}.btn{min-height:50px;border:0;border-radius:13px;padding:0 14px;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:900;font-size:13px;cursor:pointer;color:white;background:linear-gradient(100deg,#0891b2,#2563eb 58%,#7c3aed);box-shadow:0 12px 34px rgba(37,99,235,.19)}.btn.secondary{background:#101a2a;border:1px solid #2b3a50;box-shadow:none}.btn.ghost{background:transparent;border:1px solid #2b3a50;box-shadow:none;color:#cbd5e1}.btn:disabled{opacity:.45;cursor:not-allowed}.copyBox{display:flex;gap:8px;margin-top:12px}.copyBox input{min-width:0;flex:1;min-height:46px;border:1px solid #2b3a50;border-radius:11px;background:#060d17;color:#dbeafe;padding:0 12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}.copyBox button{flex:0 0 auto}.hint{margin-top:9px;color:#718399;font-size:10px}.warning{margin-top:12px;border:1px solid rgba(251,191,36,.2);border-radius:12px;padding:12px;background:rgba(251,191,36,.05);color:#c5b98b;font-size:10px}.detect{display:none;margin-top:13px;border:1px solid rgba(52,211,153,.18);border-radius:12px;padding:11px;background:rgba(52,211,153,.05);color:#a7f3d0;font-size:10px}
+    .preview{border-top:1px solid rgba(148,163,184,.09);padding:46px 0}.preview h2{font-size:30px;letter-spacing:-.04em;margin:0 0 8px}.preview>div>p{color:#91a3b8;margin:0 0 18px;font-size:13px}.panel{border:1px solid var(--line);border-radius:14px;padding:14px 15px;margin-top:8px;background:rgba(7,17,31,.72)}.panel small{display:block;color:#7dd3fc;font:900 9px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.11em}.panel strong{display:block;margin-top:5px;font-size:14px}.panel span{display:block;color:#8193a8;font-size:10px;margin-top:3px}.truth{border:1px solid rgba(148,163,184,.16);border-radius:16px;padding:16px;background:rgba(8,17,31,.58);margin-top:16px}.truth strong{font-size:12px}.truth p{margin:6px 0 0;color:#8fa1b6;font-size:10px}.footer{padding:26px 0 42px;color:#6f8196;font-size:10px;border-top:1px solid rgba(148,163,184,.08)}.footerIn{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}.footer a{color:#9fb0c3}
+    @media(max-width:680px){.grid{grid-template-columns:1fr}.actionRow{grid-template-columns:1fr}.hero{padding-top:24px}.wrap{width:min(var(--max),calc(100% - 20px))}.back{font-size:10px}.route{padding:16px}}
   </style>
 </head>
 <body>
   <nav class="nav"><div class="wrap navin"><a class="brand" href="dsg-live.html"><span class="mark">DSG</span><span>CONNECT</span></a><a class="back" href="dsg-live.html">What is DSG Live?</a></div></nav>
   <main>
-    <section class="hero"><div class="wrap"><div class="eyebrow"><span class="dot"></span>NO TERMINAL REQUIRED</div><h1>Connect DSG.<br><span class="grad">See Live.</span></h1><p class="sub">For GitHub Copilot App, first-time setup is three guided actions. DSG pre-fills the marketplace, plugin, and Live prompt. You only confirm what GitHub shows you.</p><div class="chips"><span class="chip">Observe starts first</span><span class="chip">No DSG key for first Live view</span><span class="chip">Existing system stays in place</span></div></div></section>
-
-    <section><div class="wrap steps">
-      <article class="step"><div class="stepHead"><div class="num">1</div><div><h2>Add DSG to Copilot</h2><p>Opens GitHub Copilot App with the DSG marketplace source already filled in.</p></div></div><div class="action"><a class="btn" id="addMarketplace" href="https://github.com/copilot/app/launch?open=ghapp%3A%2F%2Fplugins%2Fmarketplace%2Fadd%3Fsource%3Dtdealer01-crypto%252FDSG-Cinema-Proof-Agent">Open Copilot · Add DSG</a></div><div class="hint">GitHub asks you to confirm. DSG cannot silently add a marketplace on your behalf.</div></article>
-
-      <article class="step"><div class="stepHead"><div class="num">2</div><div><h2>Install DSG Governance</h2><p>After the marketplace is added, this opens the plugin install form with <strong>dsg-governance</strong> pre-filled.</p></div></div><div class="action"><a class="btn" id="installPlugin" href="https://github.com/copilot/app/launch?open=ghapp%3A%2F%2Fplugins%2Finstall%3Fsource%3Ddsg-governance%2540dsg-agent-plugins">Open Copilot · Install DSG</a></div><div class="hint">The installed plugin uses the production Cinema MCP endpoint. No secret is embedded in the plugin package.</div></article>
-
-      <article class="step"><div class="stepHead"><div class="num">3</div><div><h2>Start DSG Live</h2><p>Paste the GitHub repository where your agent works. DSG opens a Copilot session with the Live kickoff prompt already filled in.</p></div></div><div class="repoBox"><label for="repo">Your repository</label><input id="repo" inputmode="url" autocomplete="off" placeholder="owner/repository or GitHub URL"><div id="repoStatus" class="status">Example: acme/customer-support-agent</div></div><div class="action"><button class="btn" id="startLive" type="button" disabled>Open Copilot · Start Live</button></div><div class="hint">The kickoff asks the plugin to call DSG status, start an OBSERVE Live session, and return the private monitor link before the first governed action.</div></article>
-
-      <div class="truth"><b>Why there are confirmations</b><p>GitHub intentionally requires the user to confirm marketplace and plugin installation. This page pre-fills those forms but does not bypass GitHub security. DSG Live can start in OBSERVE without a DSG API key; deployments that enforce paid/control access can require account authentication before ENFORCE or verified proof issuance.</p></div>
-
-      <details class="dev"><summary>Developer fallback</summary><div>CLI remains available for engineers, but it is not the customer onboarding path. Plugin source: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/tree/main/marketplace/agent-plugin</div></details>
+    <section class="hero"><div class="wrap">
+      <div class="eyebrow"><span class="dot"></span>UNIVERSAL CONNECT</div>
+      <h1>Use your AI.<br><span class="grad">Add DSG.</span></h1>
+      <p class="sub">DSG is the governance layer, not the AI vendor. Keep your existing agent, automation, mobile device, MCP client, or API workflow. Connect through the path your system actually supports and start in Observe mode.</p>
+      <div class="chips"><span class="chip">Android browser friendly</span><span class="chip">Observe starts first</span><span class="chip">No migration required</span><span class="chip">Enforce stays opt-in</span></div>
+      <div class="detect" id="androidDetect">Android detected · You can use this page and DSG Live in your browser. For an Android agent/app, choose Android or MCP / Custom API below.</div>
     </div></section>
 
-    <section class="preview"><div class="wrap"><h2>What appears after Start Live</h2><p>One event, five synchronized views.</p><div class="panel"><small>01 · LIVE ACTION</small><strong>What the agent is doing now</strong><span>Action, target, system, time</span></div><div class="panel"><small>02 · PLAN CHECK</small><strong>PASS · OUTSIDE PLAN · MISSING PERMISSION</strong><span>Governance result</span></div><div class="panel"><small>03 · DSG EFFECT</small><strong>OBSERVE · CONTINUE</strong><span>Shows whether DSG actually stopped anything</span></div><div class="panel"><small>04 · WHY</small><strong>Human-readable reason</strong><span>No raw-log hunting</span></div><div class="panel"><small>05 · EVIDENCE</small><strong>UNVERIFIED → VERIFIED</strong><span>Evidence, verification-only replay, proof state</span></div></div></section>
+    <section class="section"><div class="wrap">
+      <h2>What are you using?</h2>
+      <p class="sectionLead">Choose a client. The status badge shows what is actually available today.</p>
+      <div class="grid" id="choices">
+        <button class="choice active" data-route="copilot"><div class="choiceTop"><strong>GitHub Copilot</strong><span class="badge guided">GUIDED INSTALL</span></div><p>No terminal. GitHub confirmation is still required.</p></button>
+        <button class="choice" data-route="mcp"><div class="choiceTop"><strong>Claude / MCP client</strong><span class="badge live">MCP LIVE</span></div><p>Use the production Streamable HTTP MCP endpoint if your client supports remote MCP.</p></button>
+        <button class="choice" data-route="openai"><div class="choiceTop"><strong>ChatGPT / OpenAI</strong><span class="badge pending">NATIVE PUBLISH PENDING</span></div><p>OpenAI Skills package exists; Direct API/MCP is the usable path today.</p></button>
+        <button class="choice" data-route="gemini"><div class="choiceTop"><strong>Gemini / other AI</strong><span class="badge adapter">MCP / API</span></div><p>No vendor-specific installer claim. Connect through MCP or the live Direct API.</p></button>
+        <button class="choice" data-route="android"><div class="choiceTop"><strong>Android</strong><span class="badge adapter">AUDITED ADAPTER</span></div><p>Web works on Android. Native control is restricted to the audited DSG Android identity.</p></button>
+        <button class="choice" data-route="api"><div class="choiceTop"><strong>My own Agent / API</strong><span class="badge live">DIRECT API LIVE</span></div><p>Use Cinema HTTP directly from your existing agent, backend, automation, or workflow.</p></button>
+      </div>
+
+      <div class="route" id="routePanel" aria-live="polite"></div>
+
+      <div class="truth">
+        <strong>Truth boundary</strong>
+        <p>“Universal” means DSG has vendor-neutral MCP/HTTP integration paths. It does not mean every vendor exposes a one-click installer. Copilot has a guided deep-link flow. Direct API is live. OpenAI Skills is prepared but still requires external publishing. Android native control is pinned to the audited DSG app identity. Claude, Gemini, and other clients use MCP or HTTP when their client supports those transports.</p>
+      </div>
+    </div></section>
+
+    <section class="preview"><div class="wrap">
+      <h2>Every route ends at the same Live view</h2><p>One execution ID, five synchronized views.</p>
+      <div class="panel"><small>01 · LIVE ACTION</small><strong>What the agent is doing now</strong><span>Action, target, system, time</span></div>
+      <div class="panel"><small>02 · PLAN CHECK</small><strong>PASS · OUTSIDE PLAN · MISSING PERMISSION</strong><span>Governance result</span></div>
+      <div class="panel"><small>03 · DSG EFFECT</small><strong>OBSERVE · CONTINUE</strong><span>Separates policy verdict from what DSG actually did</span></div>
+      <div class="panel"><small>04 · WHY</small><strong>Human-readable reason</strong><span>No raw-log hunting</span></div>
+      <div class="panel"><small>05 · EVIDENCE</small><strong>UNVERIFIED → VERIFIED</strong><span>Evidence, verification-only replay, proof state</span></div>
+    </div></section>
   </main>
-  <footer class="footer"><div class="wrap footerIn"><span>DSG ONE · Cinema Proof Agent</span><span><a href="dsg-live.html">DSG Live</a> · <a href="https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/live/api/contract">Production contract</a></span></div></footer>
+  <footer class="footer"><div class="wrap footerIn"><span>DSG ONE · Cinema Proof Agent</span><span><a href="dsg-live.html">DSG Live</a> · <a href="https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/docs">Direct API</a></span></div></footer>
+
   <script>
-  (()=>{
+  (() => {
     'use strict';
-    const repoInput=document.getElementById('repo');
-    const startButton=document.getElementById('startLive');
-    const repoStatus=document.getElementById('repoStatus');
-    const kickoff='Use DSG governance for this task. Before the first governed action, call dsg_status, start DSG Live in OBSERVE mode with dsg_live_start, and give me the returned monitor URL. Keep the Live session token secret and use dsg_live_check_action before each proposed action.';
-    function normalizeRepo(value){
-      let raw=(value||'').trim();
-      if(!raw)return null;
-      try{const url=new URL(raw);if(url.hostname!=='github.com')return null;raw=url.pathname.replace(/^\/+|\/+$/g,'').replace(/\.git$/,'');}catch(_){raw=raw.replace(/^\/+|\/+$/g,'').replace(/\.git$/,'');}
-      return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)?raw:null;
+    const CINEMA = 'https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io';
+    const MCP = `${CINEMA}/api/v1/mcp`;
+    const DOCS = `${CINEMA}/docs`;
+    const MOBILE = `${CINEMA}/api/v1/mobile/client-contract`;
+    const choices = [...document.querySelectorAll('.choice')];
+    const panel = document.getElementById('routePanel');
+    const kickoff = 'Use DSG governance for this task. Before the first governed action, call dsg_status, start DSG Live in OBSERVE mode with dsg_live_start, and give me the returned monitor URL. Keep the Live session token secret and use dsg_live_check_action before each proposed action.';
+
+    const escapeHtml = value => value.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const copy = async value => {
+      try { await navigator.clipboard.writeText(value); return true; }
+      catch (_) { return false; }
+    };
+    const copyBox = (id, value, label='Copy') => `<div class="copyBox"><input id="${id}" value="${escapeHtml(value)}" readonly aria-label="${label} value"><button class="btn secondary copyBtn" data-copy="${id}" type="button">${label}</button></div>`;
+
+    const routes = {
+      copilot: () => `
+        <div class="routeHead"><div><h3>GitHub Copilot</h3><p>Guided onboarding with GitHub-controlled confirmation.</p></div><span class="badge guided">GUIDED INSTALL</span></div>
+        <div class="routeBody"><div class="steps">
+          <div class="step"><small>STEP 1</small><strong>Add the DSG marketplace</strong><span>DSG pre-fills the marketplace source. GitHub asks you to confirm.</span></div>
+          <div class="step"><small>STEP 2</small><strong>Install DSG Governance</strong><span>The plugin uses the production Cinema MCP endpoint.</span></div>
+          <div class="step"><small>STEP 3</small><strong>Start DSG Live</strong><span>Open a Copilot session with the Observe kickoff prompt pre-filled.</span></div>
+        </div>
+        <div class="actionRow">
+          <a class="btn" href="https://github.com/copilot/app/launch?open=ghapp%3A%2F%2Fplugins%2Fmarketplace%2Fadd%3Fsource%3Dtdealer01-crypto%252FDSG-Cinema-Proof-Agent">1 · Add DSG</a>
+          <a class="btn secondary" href="https://github.com/copilot/app/launch?open=ghapp%3A%2F%2Fplugins%2Finstall%3Fsource%3Ddsg-governance%2540dsg-agent-plugins">2 · Install DSG</a>
+        </div>
+        <div class="actionRow"><button class="btn" id="copilotStart" type="button">3 · Start Live in Copilot</button><a class="btn ghost" href="dsg-live.html">See DSG Live</a></div>
+        <div class="hint">Start Live opens Copilot with a generic DSG kickoff prompt. If your task is tied to a repository, open that repository in Copilot first.</div>`,
+      mcp: () => `
+        <div class="routeHead"><div><h3>MCP-compatible client</h3><p>For Claude or any client that can add a remote Streamable HTTP MCP server.</p></div><span class="badge live">MCP LIVE</span></div>
+        <div class="routeBody"><div class="step"><small>PRODUCTION MCP</small><strong>Add this server to your client</strong><span>After connection, ask the client to call dsg_live_start in OBSERVE mode before its first governed action.</span></div>
+        ${copyBox('mcpValue', MCP, 'Copy MCP URL')}
+        ${copyBox('mcpPrompt', kickoff, 'Copy kickoff')}
+        <div class="warning">Client setup differs by vendor. DSG does not claim a one-click Claude installer here; this route is for clients that already support remote MCP.</div></div>`,
+      openai: () => `
+        <div class="routeHead"><div><h3>ChatGPT / OpenAI</h3><p>Use the live transport now; native OpenAI Skills distribution is not yet published.</p></div><span class="badge pending">NATIVE PUBLISH PENDING</span></div>
+        <div class="routeBody"><div class="steps">
+          <div class="step"><small>AVAILABLE NOW</small><strong>Direct API / MCP</strong><span>Connect an OpenAI-backed agent or app to Cinema using HTTP or remote MCP.</span></div>
+          <div class="step"><small>PREPARED</small><strong>OpenAI Skills package</strong><span>The repository package is ready for external submission, but this page does not claim public native installation yet.</span></div>
+        </div>
+        <div class="actionRow"><a class="btn" href="${DOCS}">Open Direct API</a><button class="btn secondary copyStatic" data-value="${MCP}" type="button">Copy MCP URL</button></div></div>`,
+      gemini: () => `
+        <div class="routeHead"><div><h3>Gemini / another AI vendor</h3><p>Use DSG independently of the model vendor through MCP or HTTP.</p></div><span class="badge adapter">MCP / API</span></div>
+        <div class="routeBody"><div class="steps">
+          <div class="step"><small>OPTION A</small><strong>Remote MCP</strong><span>If your client supports a remote Streamable HTTP MCP server, add the production DSG endpoint.</span></div>
+          <div class="step"><small>OPTION B</small><strong>Direct HTTP API</strong><span>If your agent can call HTTP, integrate Cinema directly from your backend or tool layer.</span></div>
+        </div>
+        ${copyBox('otherMcp', MCP, 'Copy MCP URL')}
+        <div class="actionRow"><a class="btn" href="${DOCS}">Open API docs</a><a class="btn ghost" href="dsg-live.html">Open Live view</a></div>
+        <div class="warning">No vendor-specific Gemini installer is claimed. The integration is through vendor-neutral transports.</div></div>`,
+      android: () => `
+        <div class="routeHead"><div><h3>Android</h3><p>The web onboarding and Live monitor work in an Android browser. Native control has a stricter trust boundary.</p></div><span class="badge adapter">AUDITED ADAPTER</span></div>
+        <div class="routeBody"><div class="steps">
+          <div class="step"><small>ANDROID BROWSER</small><strong>Use DSG Live on this phone</strong><span>No desktop is required to view the onboarding or monitor.</span></div>
+          <div class="step"><small>NATIVE DSG APP</small><strong>Audited client identity only</strong><span>Native mobile preflight checks package, version, APK hash, and signing certificate. The audited binary is distributed outside the source tree.</span></div>
+          <div class="step"><small>OTHER ANDROID AGENT</small><strong>Use MCP or Direct API</strong><span>A third-party Android AI app is not automatically trusted as the audited DSG app.</span></div>
+        </div>
+        <div class="actionRow"><a class="btn" href="dsg-live.html">Open DSG Live</a><a class="btn secondary" href="${MOBILE}">View Android contract</a></div>
+        ${copyBox('androidMcp', MCP, 'Copy MCP URL')}</div>`,
+      api: () => `
+        <div class="routeHead"><div><h3>My own Agent / API</h3><p>The most vendor-neutral path. Keep your existing execution system and call Cinema directly.</p></div><span class="badge live">DIRECT API LIVE</span></div>
+        <div class="routeBody"><div class="steps">
+          <div class="step"><small>1 · CONNECT</small><strong>Use Cinema HTTP or MCP</strong><span>No repository migration and no model-vendor dependency.</span></div>
+          <div class="step"><small>2 · OBSERVE</small><strong>Start DSG Live first</strong><span>Anonymous Observe can provide first value before control is enabled.</span></div>
+          <div class="step"><small>3 · CONTROL LATER</small><strong>Enable Enforce only when authorized</strong><span>Paid/control deployments can require a valid DSG account before Enforce or verified proof.</span></div>
+        </div>
+        <div class="actionRow"><a class="btn" href="${DOCS}">Open production API docs</a><button class="btn secondary copyStatic" data-value="${MCP}" type="button">Copy MCP URL</button></div>
+        <div class="hint">Direct API is the fallback that keeps DSG usable even when a specific AI vendor has no plugin system.</div></div>`
+    };
+
+    function bindActions() {
+      panel.querySelectorAll('.copyBtn').forEach(button => button.addEventListener('click', async () => {
+        const input = document.getElementById(button.dataset.copy);
+        const ok = await copy(input.value);
+        button.textContent = ok ? 'Copied' : 'Select & copy';
+        if (!ok) input.select();
+      }));
+      panel.querySelectorAll('.copyStatic').forEach(button => button.addEventListener('click', async () => {
+        const ok = await copy(button.dataset.value);
+        button.textContent = ok ? 'Copied' : 'Copy failed';
+      }));
+      const start = document.getElementById('copilotStart');
+      if (start) start.addEventListener('click', () => {
+        const app = `ghapp://session/new?mode=interactive&prompt=${encodeURIComponent(kickoff)}`;
+        location.href = `https://github.com/copilot/app/launch?open=${encodeURIComponent(app)}`;
+      });
     }
-    function update(){const repo=normalizeRepo(repoInput.value);startButton.disabled=!repo;repoStatus.textContent=repo?`Ready: ${repo}`:'Enter owner/repository or a github.com repository URL.';}
-    repoInput.addEventListener('input',update);
-    startButton.addEventListener('click',()=>{const repo=normalizeRepo(repoInput.value);if(!repo)return;const app=`ghapp://session/new?repo=${encodeURIComponent(repo)}&mode=interactive&prompt=${encodeURIComponent(kickoff)}`;location.href=`https://github.com/copilot/app/launch?open=${encodeURIComponent(app)}`;});
-    update();
+    function render(route) {
+      choices.forEach(c => c.classList.toggle('active', c.dataset.route === route));
+      panel.innerHTML = routes[route]();
+      bindActions();
+      history.replaceState(null, '', `#${route}`);
+    }
+    choices.forEach(choice => choice.addEventListener('click', () => render(choice.dataset.route)));
+    if (/Android/i.test(navigator.userAgent)) document.getElementById('androidDetect').style.display = 'block';
+    const initial = location.hash.replace('#','');
+    render(routes[initial] ? initial : (/Android/i.test(navigator.userAgent) ? 'android' : 'copilot'));
   })();
   </script>
 </body>
