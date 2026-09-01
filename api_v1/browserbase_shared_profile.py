@@ -8,6 +8,11 @@ is enabled/disabled independently. Agent mutations remain plan-bound by
 A Browserbase Context persists cookies/auth/application storage across provider
 sessions. The account id itself is never sent to Browserbase or stored in the
 profile; only a SHA-256 account digest is used as metadata/file identity.
+
+Continuity is deliberately privacy-minimized. Cinema stores only timestamped
+page URL/title snapshots with query strings, fragments and URL credentials
+removed. It never stores form values, keystrokes, passwords, OTPs or DOM input
+contents as browser-memory state.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ PROFILE_VERSION = 1
 DEFAULT_SESSION_TIMEOUT_SECONDS = 21_600
 MIN_SESSION_TIMEOUT_SECONDS = 900
 MAX_SESSION_TIMEOUT_SECONDS = 21_600
+MAX_CONTINUITY_EVENTS = 50
 
 
 def configured() -> bool:
@@ -60,6 +66,7 @@ def _read_profile(account_id: str) -> dict[str, Any]:
             "updated_at": None,
             "last_observed_at": None,
             "last_pages": [],
+            "history": [],
         }
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -71,6 +78,7 @@ def _read_profile(account_id: str) -> dict[str, Any]:
     value.setdefault("context_id", None)
     value.setdefault("browserbase_session_id", None)
     value.setdefault("last_pages", [])
+    value.setdefault("history", [])
     return value
 
 
@@ -102,7 +110,13 @@ def _safe_page(value: Any) -> dict[str, Any] | None:
         try:
             parsed = urlsplit(raw_url)
             if parsed.scheme.lower() in {"http", "https"} and parsed.hostname:
-                safe_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+                port = parsed.port
+                default = (parsed.scheme.lower() == "https" and port in {None, 443}) or (
+                    parsed.scheme.lower() == "http" and port in {None, 80}
+                )
+                host = parsed.hostname.rstrip(".").lower()
+                netloc = host if default else f"{host}:{port}"
+                safe_url = urlunsplit((parsed.scheme.lower(), netloc, parsed.path, "", ""))
         except ValueError:
             safe_url = None
     result: dict[str, Any] = {}
@@ -116,17 +130,37 @@ def _safe_page(value: Any) -> dict[str, Any] | None:
     return result or None
 
 
+def _safe_pages(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    return [page for raw in metadata.get("pages") or [] if (page := _safe_page(raw)) is not None]
+
+
+def _record_observation(profile: dict[str, Any], pages: list[dict[str, Any]]) -> None:
+    observed_at = utc_now()
+    profile["last_observed_at"] = observed_at
+    profile["last_pages"] = pages
+    history = list(profile.get("history") or [])
+    if not history or history[-1].get("pages") != pages:
+        history.append({"observed_at": observed_at, "pages": pages})
+    profile["history"] = history[-MAX_CONTINUITY_EVENTS:]
+
+
+def _continuity(profile: dict[str, Any], pages: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "last_observed_at": profile.get("last_observed_at"),
+        "pages": pages,
+        "recent_navigation": list(profile.get("history") or [])[-20:],
+        "privacy": "URL/title only; query, fragment, credentials and form/input values are not stored",
+    }
+
+
 def _public_metadata(metadata: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    pages = [page for raw in metadata.get("pages") or [] if (page := _safe_page(raw)) is not None]
+    pages = _safe_pages(metadata)
     return {
         **metadata,
         "pages": pages,
         "shared_profile": True,
         "context_persistent": bool(profile.get("context_id")),
-        "continuity": {
-            "last_observed_at": profile.get("last_observed_at"),
-            "pages": pages,
-        },
+        "continuity": _continuity(profile, pages),
     }
 
 
@@ -155,9 +189,8 @@ async def _existing_session(account_id: str, profile: dict[str, Any]) -> Optiona
         _write_profile(account_id, profile)
         return None
 
-    pages = [page for raw in metadata.get("pages") or [] if (page := _safe_page(raw)) is not None]
-    profile["last_observed_at"] = utc_now()
-    profile["last_pages"] = pages
+    pages = _safe_pages(metadata)
+    _record_observation(profile, pages)
     _write_profile(account_id, profile)
     return _public_metadata(metadata, profile)
 
@@ -205,15 +238,11 @@ async def ensure_shared_browser(account_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail="Browserbase did not return a session id")
 
     profile["browserbase_session_id"] = session_id
-    profile["last_observed_at"] = utc_now()
-    profile["last_pages"] = []
     _write_profile(account_id, profile)
 
     metadata = await browserbase_executor._debug_metadata(session_id)
     profile = _read_profile(account_id)
-    pages = [page for raw in metadata.get("pages") or [] if (page := _safe_page(raw)) is not None]
-    profile["last_observed_at"] = utc_now()
-    profile["last_pages"] = pages
+    _record_observation(profile, _safe_pages(metadata))
     _write_profile(account_id, profile)
     return _public_metadata(metadata, profile)
 
@@ -237,17 +266,15 @@ async def current_shared_browser(account_id: str, *, create: bool = False) -> di
         return existing
     if create:
         return await ensure_shared_browser(account_id)
+    pages = list(profile.get("last_pages") or [])
     return {
         "provider": "browserbase",
         "connected": False,
         "shared_profile": True,
         "context_persistent": bool(profile.get("context_id")),
         "live_view_url": None,
-        "pages": list(profile.get("last_pages") or []),
-        "continuity": {
-            "last_observed_at": profile.get("last_observed_at"),
-            "pages": list(profile.get("last_pages") or []),
-        },
+        "pages": pages,
+        "continuity": _continuity(profile, pages),
     }
 
 
