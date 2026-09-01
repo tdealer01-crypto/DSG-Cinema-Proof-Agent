@@ -83,11 +83,14 @@ def test_universal_connect_truth_matches_repository_channels():
 
     mcp_url = plugin_mcp["mcpServers"]["dsg-one"]["url"]
     assert mcp_url.endswith("/api/v1/mcp")
-    assert mcp_url in html
+    cinema_base = mcp_url.removesuffix("/api/v1/mcp")
+    assert f"const CINEMA = '{cinema_base}'" in html
+    assert "const MCP = `${CINEMA}/api/v1/mcp`;" in html
 
     channels = {item["channel"]: item for item in launch["channels"]}
     assert channels["Direct API"]["status"] == "LIVE"
-    assert channels["Direct API"]["public_url"] in html
+    assert channels["Direct API"]["public_url"] == f"{cinema_base}/docs"
+    assert "const DOCS = `${CINEMA}/docs`;" in html
     assert channels["OpenAI Skills"]["status"] == "READY_FOR_EXTERNAL_SUBMIT"
 
     assert mobile["package_name"] == "com.dsg.architect"
