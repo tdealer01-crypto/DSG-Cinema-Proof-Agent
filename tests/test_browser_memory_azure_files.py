@@ -101,9 +101,11 @@ def test_file_backend_can_account_for_logical_context_over_one_million_tokens(tm
     result = browser_memory_file.search_context(account_hash=account, token_budget=32_000)
     assert result["stored_token_estimate"] == 1_200_000
     assert result["stored_memory_count"] == 6
-    # Records produced by the real recorder are small; this synthetic oversized
-    # record also proves the retriever never expands the active corpus to 1.2M.
-    assert len(result["memories"]) == 1
+    # Oversized atomic memories are skipped rather than truncated, preserving
+    # meaning/provenance while keeping active context within its hard budget.
+    assert result["memories"] == []
+    assert result["selected_token_estimate"] == 0
+    assert result["selected_token_estimate"] <= result["token_budget"]
 
 
 def test_store_facade_prefers_postgres_and_uses_azure_files_when_requested(tmp_path: Path, monkeypatch):
