@@ -5,10 +5,11 @@ new independent-verification operation. Keeping these routes outside `/api/v1`
 preserves the exact `openapi/dsg-one-v1.yaml` contract while the existing MCP
 transport continues to expose the Live tools through `/api/v1/mcp`.
 
-Onboarding deliberately separates observation from control:
+Onboarding deliberately separates observation from paid/control identity:
 
 - OBSERVE may start without a DSG API key so a new user can see first value.
-- ENFORCE always requires a valid DSG account/API key before the mode switch.
+- A production deployment with revenue enforcement requires a valid DSG account
+  before switching the Live session to ENFORCE.
 - Verified proof issuance keeps the existing metering/entitlement gate unchanged.
 """
 
@@ -45,14 +46,17 @@ def _optional_account_id(api_key: Optional[str]) -> str | None:
     return authorization.account.account_id
 
 
-def _require_enforce_account(api_key: Optional[str]) -> str:
+def _require_enforce_account_when_configured(api_key: Optional[str]) -> str | None:
+    """Require account identity only on deployments that enforce revenue access."""
+    if not billing.get_engine().enforce:
+        return None
     presented = (api_key or "").strip()
     if not presented:
         raise HTTPException(
             status_code=401,
             detail={
                 "error": "DSG_ACCOUNT_REQUIRED",
-                "message": "Observe is available without an API key. Enable Enforce only after authenticating a DSG account.",
+                "message": "Observe is available without an API key. This deployment requires a DSG account before Enforce can be enabled.",
                 "next_step": "Activate or use a DSG account, then retry with X-DSG-API-Key.",
             },
         )
@@ -66,7 +70,7 @@ async def live_contract():
     contract = await live_monitor.live_contract()
     contract["onboarding"] = {
         "anonymous_observe": True,
-        "enforce_requires_account": True,
+        "enforce_account_gate_when_revenue_enforced": True,
         "verified_proof_requires_entitlement": True,
     }
     return contract
@@ -104,7 +108,7 @@ async def live_mode(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ):
     if request.mode == "enforce":
-        _require_enforce_account(x_dsg_api_key)
+        _require_enforce_account_when_configured(x_dsg_api_key)
     return live_monitor.set_live_mode(x_dsg_live_token, request.mode)
 
 
