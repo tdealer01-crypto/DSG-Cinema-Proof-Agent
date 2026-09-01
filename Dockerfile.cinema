@@ -6,11 +6,13 @@ COPY requirements-cinema.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Azure-native Remote Browser: keep Chromium inside the Cinema image so the
-# account shared browser has no metered Browserbase dependency. Browser state is
-# checkpointed to the existing durable /revenue Azure Files mount. Deployments
-# can explicitly override DSG_BROWSER_PROVIDER=browserbase if ever required.
+# account shared browser has no metered Browserbase dependency. Browser state and
+# privacy-minimized operational memory use the existing durable /revenue Azure
+# Files mount, so production does not require a second paid database. Deployments
+# can explicitly override either provider/backend if ever required.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    DSG_BROWSER_PROVIDER=azure_local
+    DSG_BROWSER_PROVIDER=azure_local \
+    DSG_BROWSER_MEMORY_BACKEND=azure_files
 RUN python -m playwright install --with-deps chromium
 
 COPY cinema_main.py marketplace_verification.py ./
