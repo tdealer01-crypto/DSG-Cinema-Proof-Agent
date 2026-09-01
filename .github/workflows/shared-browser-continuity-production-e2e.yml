@@ -2,6 +2,9 @@ name: Shared Browser Continuity Production E2E
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ['Bind Browserbase Production']
+    types: [completed]
   push:
     branches: [main]
     paths:
@@ -16,6 +19,7 @@ concurrency:
 
 jobs:
   shared-browser-continuity:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -31,6 +35,13 @@ jobs:
           mkdir -p "$work"
           api_key=""
           session_token=""
+          evidence_commit="$GITHUB_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
+            workflow_head=$(jq -r '.workflow_run.head_sha // empty' "$GITHUB_EVENT_PATH")
+            if [[ -n "$workflow_head" ]]; then
+              evidence_commit="$workflow_head"
+            fi
+          fi
 
           cleanup() {
             if [[ -n "$api_key" ]]; then
@@ -156,7 +167,7 @@ jobs:
           echo 'remote_reon_same_browser=PASS'
 
           jq -n \
-            --arg commit "$GITHUB_SHA" \
+            --arg commit "$evidence_commit" \
             --arg account_hash "$(printf '%s' "$account_id" | sha256sum | cut -d' ' -f1)" \
             --arg plan_hash "$plan_hash" \
             --arg browser_session_hash "$(printf '%s' "$browser_id_on" | sha256sum | cut -d' ' -f1)" \
@@ -168,7 +179,7 @@ jobs:
       - name: Upload non-secret continuity evidence
         uses: actions/upload-artifact@v4
         with:
-          name: shared-browser-continuity-${{ github.sha }}
+          name: shared-browser-continuity-${{ github.run_id }}
           path: shared-browser-continuity-evidence.json
           if-no-files-found: error
           retention-days: 30
