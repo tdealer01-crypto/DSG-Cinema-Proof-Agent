@@ -31,10 +31,10 @@ jobs:
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
       CONFIGURED_BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
-      CONFIGURED_BROWSERBASE_PROJECT_ID: ${{ vars.BROWSERBASE_PROJECT_ID }}
+      REQUESTED_BROWSERBASE_PROJECT_ID: ${{ vars.BROWSERBASE_PROJECT_ID }}
 
     steps:
-      - name: Refuse missing Browserbase production configuration
+      - name: Resolve Browserbase project from production credential
         shell: bash
         run: |
           set -euo pipefail
@@ -42,24 +42,52 @@ jobs:
             echo 'BROWSERBASE_API_KEY is not configured in GitHub Actions secrets.' >&2
             exit 1
           fi
-          if [[ -z "${CONFIGURED_BROWSERBASE_PROJECT_ID:-}" ]]; then
-            echo 'BROWSERBASE_PROJECT_ID is not configured in the production environment variables.' >&2
-            exit 1
-          fi
           echo "::add-mask::$CONFIGURED_BROWSERBASE_API_KEY"
 
-      - name: Verify Browserbase project and credential before production mutation
-        shell: bash
-        run: |
-          set -euo pipefail
           response=$(curl --silent --show-error --fail-with-body \
             --request GET 'https://api.browserbase.com/v1/projects' \
             --header "X-BB-API-Key: $CONFIGURED_BROWSERBASE_API_KEY")
-          if ! printf '%s' "$response" | jq -e --arg project "$CONFIGURED_BROWSERBASE_PROJECT_ID" \
-            'if type == "array" then any(.[]; (.id // "") == $project) else ((.id // "") == $project or any((.projects // [])[]; (.id // "") == $project)) end' >/dev/null; then
-            echo 'Configured BROWSERBASE_PROJECT_ID is not visible to the configured Browserbase credential.' >&2
+
+          mapfile -t project_ids < <(
+            printf '%s' "$response" | jq -r '
+              if type == "array" then
+                .[]? | .id // empty
+              elif ((.projects? | type) == "array") then
+                .projects[]? | .id // empty
+              elif .id? then
+                .id
+              else
+                empty
+              end
+            ' | sort -u
+          )
+
+          if [[ -n "${REQUESTED_BROWSERBASE_PROJECT_ID:-}" ]]; then
+            found=false
+            for project_id in "${project_ids[@]}"; do
+              if [[ "$project_id" == "$REQUESTED_BROWSERBASE_PROJECT_ID" ]]; then
+                found=true
+                break
+              fi
+            done
+            if [[ "$found" != true ]]; then
+              echo 'Configured BROWSERBASE_PROJECT_ID is not visible to the configured Browserbase credential.' >&2
+              exit 1
+            fi
+            resolved_project_id="$REQUESTED_BROWSERBASE_PROJECT_ID"
+          else
+            if [[ "${#project_ids[@]}" -ne 1 ]]; then
+              echo "Browserbase project discovery returned ${#project_ids[@]} projects; configure production BROWSERBASE_PROJECT_ID explicitly when the credential can access more than one." >&2
+              exit 1
+            fi
+            resolved_project_id="${project_ids[0]}"
+          fi
+
+          if [[ -z "$resolved_project_id" ]]; then
+            echo 'Browserbase project resolution returned an empty project id.' >&2
             exit 1
           fi
+          echo "BROWSERBASE_PROJECT_ID=$resolved_project_id" >> "$GITHUB_ENV"
           echo 'Browserbase project/credential preflight passed.'
 
       - name: Azure login with OIDC
@@ -73,6 +101,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -n "${BROWSERBASE_PROJECT_ID:-}"
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
           az extension add --name containerapp --upgrade --only-show-errors
 
@@ -92,7 +121,7 @@ jobs:
             --name "$CINEMA_APP" \
             --set-env-vars \
               BROWSERBASE_API_KEY=secretref:browserbase-api-key \
-              BROWSERBASE_PROJECT_ID="$CONFIGURED_BROWSERBASE_PROJECT_ID" \
+              BROWSERBASE_PROJECT_ID="$BROWSERBASE_PROJECT_ID" \
               DSG_PUBLIC_BASE_URL="$CINEMA_PUBLIC_BASE_URL" \
             --output none
 
@@ -112,7 +141,7 @@ jobs:
             --name "$CINEMA_APP" \
             --query "properties.template.containers[0].env[?name=='BROWSERBASE_PROJECT_ID'].value | [0]" \
             --output tsv)
-          test "$PROJECT_ID" = "$CONFIGURED_BROWSERBASE_PROJECT_ID"
+          test "$PROJECT_ID" = "$BROWSERBASE_PROJECT_ID"
 
           PUBLIC_ORIGIN=$(az containerapp show \
             --resource-group "$RESOURCE_GROUP" \
