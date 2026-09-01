@@ -4,6 +4,10 @@ The customer dashboard has a strict same-origin CSP. This module serves the
 small Live View client script from an exact route and issues short-lived,
 account-authenticated viewer capabilities for a same-origin iframe wrapper.
 The Browserbase debugger URL is never persisted in remote-action evidence.
+
+The Live View follows the account-scoped shared browser rather than a specific
+agent plan session. Remote ON therefore gives the user a browser immediately;
+when an approved agent later connects it joins that same provider session.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
-from . import browserbase_executor
+from . import browserbase_executor, browserbase_shared_profile, remote_pairing
 from .canonical import utc_now
 
 router = APIRouter(tags=["remote-browser"])
@@ -86,27 +90,39 @@ async def browserbase_live_script() -> FileResponse:
 async def live_frame(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ) -> dict[str, Any]:
-    live = await browserbase_executor.live_view(x_dsg_api_key=x_dsg_api_key)
+    key = remote_pairing._api_key(x_dsg_api_key)
+    account_id = remote_pairing._account_id(key)
+    state = remote_pairing._read_state(account_id)
+    live = await browserbase_shared_profile.current_shared_browser(
+        account_id,
+        create=bool(state.get("enabled")) and browserbase_shared_profile.configured(),
+    )
     live_url = live.get("live_view_url")
-    cinema_session_id = live.get("cinema_session_id")
+    browserbase_session_id = live.get("browserbase_session_id")
     if not live.get("connected") or not isinstance(live_url, str) or not live_url.startswith("https://"):
         return {
             "ok": True,
             "provider": "browserbase",
             "connected": False,
             "embed_url": None,
+            "shared_profile": True,
+            "context_persistent": bool(live.get("context_persistent")),
+            "prerequisite": live.get("prerequisite"),
+            "continuity": live.get("continuity"),
         }
-    if not isinstance(cinema_session_id, str) or not cinema_session_id:
+    if not isinstance(browserbase_session_id, str) or not browserbase_session_id:
         raise HTTPException(status_code=502, detail="shared browser session binding is incomplete")
 
-    viewer = _issue_viewer(cinema_session_id=cinema_session_id, live_view_url=live_url)
+    viewer = _issue_viewer(cinema_session_id=browserbase_session_id, live_view_url=live_url)
     return {
         "ok": True,
         "provider": "browserbase",
         "connected": True,
-        "browserbase_session_id": live.get("browserbase_session_id"),
-        "cinema_session_id": cinema_session_id,
+        "browserbase_session_id": browserbase_session_id,
         "embed_url": f"/remote-browser/browserbase/embed/{viewer}",
+        "shared_profile": True,
+        "context_persistent": bool(live.get("context_persistent")),
+        "continuity": live.get("continuity"),
     }
 
 
