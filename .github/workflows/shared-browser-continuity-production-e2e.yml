@@ -43,6 +43,20 @@ jobs:
             fi
           fi
 
+          safe_http_error() {
+            local phase="$1" code="$2" file="$3"
+            echo "${phase}_http=${code}"
+            jq -r --arg phase "$phase" '
+              if (.detail | type) == "object" then
+                "\($phase)_error=\(.detail.error // "UNKNOWN") message=\(.detail.message // "provider request failed")"
+              elif (.detail | type) == "string" then
+                "\($phase)_error=HTTP_ERROR message=\(.detail)"
+              else
+                "\($phase)_error=HTTP_ERROR"
+              end
+            ' "$file" 2>/dev/null || true
+          }
+
           cleanup() {
             if [[ -n "$api_key" ]]; then
               curl -sS -o /dev/null -X POST "$CINEMA_BASE_URL/remote-browser/disable" \
@@ -100,9 +114,14 @@ jobs:
           http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' \
             -X POST "$CINEMA_BASE_URL/remote-browser/enable" \
             -H "X-DSG-API-Key: $api_key")
-          [[ "$http" == "200" ]]
-          jq -e '.remote_enabled == true' "$work/enabled.json" >/dev/null
-          jq -e '.shared_browser.connected == true and .shared_browser.context_persistent == true' "$work/enabled.json" >/dev/null
+          if [[ "$http" != "200" ]]; then
+            safe_http_error remote_on "$http" "$work/enabled.json"
+            exit 1
+          fi
+          if ! jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true' "$work/enabled.json" >/dev/null; then
+            jq -r '"remote_on_state enabled=\(.remote_enabled // false) connected=\(.shared_browser.connected // false) context_persistent=\(.shared_browser.context_persistent // false) prerequisite=\(.shared_browser.prerequisite // "none")"' "$work/enabled.json" 2>/dev/null || true
+            exit 1
+          fi
           browser_id_on=$(jq -r '.shared_browser.browserbase_session_id // empty' "$work/enabled.json")
           [[ -n "$browser_id_on" ]]
           echo 'remote_on_shared_browser=PASS'
