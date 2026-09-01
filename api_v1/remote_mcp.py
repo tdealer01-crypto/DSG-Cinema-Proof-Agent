@@ -1,10 +1,10 @@
 """MCP action surface for Cinema Remote Browser.
 
-The MCP exposes the already-proven plan-bound Remote Browser runtime. For the
-normal managed path the client supplies only plan/agent/step intent; Cinema
-allocates an ephemeral Browserbase executor capability and derives its own
-public executor endpoint. No Browserbase endpoint or API key is exposed to the
-user or model.
+The MCP exposes the plan-bound Remote Browser runtime. For the normal managed
+path the client supplies only plan/agent/step intent; Cinema allocates an
+ephemeral executor capability and derives its own public executor endpoint. The
+managed provider can be Azure-native Chromium or Browserbase and no provider
+credential/endpoint is exposed to the user or model.
 """
 
 from __future__ import annotations
@@ -19,7 +19,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from . import API_VERSION
-from . import browserbase_executor, remote_browser, remote_pairing
+from . import (
+    azure_local_browser,
+    azure_managed_executor,
+    browserbase_executor,
+    remote_browser,
+    remote_pairing,
+    shared_browser,
+)
 from .canonical import canonical_json
 from .models import Strict
 
@@ -62,6 +69,16 @@ def _current_api_key() -> Optional[str]:
     return _api_key_var.get()
 
 
+def _managed_executor():
+    if azure_local_browser.configured():
+        return azure_managed_executor
+    return browserbase_executor
+
+
+def _managed_path() -> str:
+    return "azure" if azure_local_browser.configured() else "browserbase"
+
+
 def _normalize_public_origin(value: str) -> str:
     try:
         parsed = urlsplit(value.strip())
@@ -72,7 +89,7 @@ def _normalize_public_origin(value: str) -> str:
             status_code=503,
             detail={
                 "error": "MANAGED_BROWSER_PUBLIC_ORIGIN_UNAVAILABLE",
-                "message": "Cinema needs a public HTTPS origin for its managed Browserbase executor.",
+                "message": "Cinema needs a public HTTPS origin for its managed browser executor.",
             },
         )
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
@@ -85,7 +102,8 @@ def _normalize_public_origin(value: str) -> str:
 
 def _request_public_origin(request: Request) -> str:
     configured = (
-        os.getenv("DSG_BROWSERBASE_EXECUTOR_BASE_URL")
+        os.getenv("DSG_MANAGED_BROWSER_EXECUTOR_BASE_URL")
+        or os.getenv("DSG_BROWSERBASE_EXECUTOR_BASE_URL")
         or os.getenv("DSG_PUBLIC_BASE_URL")
         or ""
     ).strip()
@@ -105,10 +123,7 @@ def _request_public_origin(request: Request) -> str:
         status_code=503,
         detail={
             "error": "MANAGED_BROWSER_PUBLIC_ORIGIN_UNAVAILABLE",
-            "message": (
-                "Set DSG_PUBLIC_BASE_URL (or DSG_BROWSERBASE_EXECUTOR_BASE_URL) "
-                "to the public HTTPS Cinema origin."
-            ),
+            "message": "Set DSG_PUBLIC_BASE_URL to the public HTTPS Cinema origin.",
         },
     )
 
@@ -116,22 +131,24 @@ def _request_public_origin(request: Request) -> str:
 async def _remote_contract(_: Any) -> dict[str, Any]:
     value = await remote_browser.contract()
     value["managed_provider"] = {
-        "provider": "browserbase",
+        "provider": shared_browser.provider(),
         "endpoint_managed_by_cinema": True,
         "user_live_view": True,
-        "browserbase_api_key_exposed": False,
+        "provider_secret_exposed": False,
+        "account_scoped_browser": True,
     }
     return value
 
 
 async def _remote_status(_: Any) -> dict[str, Any]:
     status = await remote_pairing.remote_status(x_dsg_api_key=_current_api_key())
+    executor = _managed_executor()
     try:
-        shared = await browserbase_executor.live_view(x_dsg_api_key=_current_api_key())
+        shared = await executor.live_view(x_dsg_api_key=_current_api_key())
     except HTTPException:
         shared = {
             "ok": False,
-            "provider": "browserbase",
+            "provider": shared_browser.provider(),
             "connected": False,
             "live_view_url": None,
         }
@@ -144,13 +161,14 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
     if not public_origin:
         raise HTTPException(status_code=503, detail="managed browser public origin is unavailable")
 
-    capability = browserbase_executor.allocate_capability(
+    executor = _managed_executor()
+    capability = executor.allocate_capability(
         plan_id=args.plan_id,
         step_id=args.step_id,
         agent_identity=args.agent_identity,
         ttl_seconds=args.ttl_seconds,
     )
-    endpoint = f"{public_origin}/remote-browser/browserbase/action/{capability}"
+    endpoint = f"{public_origin}/remote-browser/{_managed_path()}/action/{capability}"
     request = remote_browser.RemoteSessionCreate(
         plan_id=args.plan_id,
         agent_identity=args.agent_identity,
@@ -162,23 +180,23 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
     created: dict[str, Any] | None = None
     try:
         created = await remote_pairing.agent_connect(request, x_dsg_api_key=_current_api_key())
-        browserbase_executor.finalize_capability(
+        executor.finalize_capability(
             capability,
             session_id=str(created["session_id"]),
             plan_hash=str(created["plan_hash"]),
             browser_policy=dict(created.get("browser_policy") or {}),
         )
-        shared = await browserbase_executor.ensure_browser_session(
+        shared = await executor.ensure_browser_session(
             str(created["session_id"]),
             plan_hash=str(created["plan_hash"]),
             browser_policy=dict(created.get("browser_policy") or {}),
         )
         created["shared_browser"] = shared
-        created["managed_provider"] = "browserbase"
+        created["managed_provider"] = str(shared.get("provider") or shared_browser.provider())
         created["endpoint_exposed"] = False
         return created
     except Exception:
-        browserbase_executor.revoke_capability(capability)
+        executor.revoke_capability(capability)
         if created and created.get("session_id"):
             remote_browser._revoke(str(created["session_id"]))
         raise
@@ -230,7 +248,7 @@ class _Tool:
 TOOLS: tuple[_Tool, ...] = (
     _Tool(
         "remote_contract",
-        "Inspect the shared Remote Browser protocol, controller roles, managed Browserbase provider, concurrency semantics, and plan-bound user-controller delegation rules.",
+        "Inspect the shared Remote Browser protocol, controller roles, managed provider, concurrency semantics, and plan-bound user-controller delegation rules.",
         None,
         _remote_contract,
         read_only=True,
@@ -239,7 +257,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_status",
-        "Check whether the user armed Remote, whether an agent session is connected, and whether the shared Browserbase Live View is available.",
+        "Check whether the user armed Remote, whether an agent session is connected, and whether the account shared browser is available.",
         None,
         _remote_status,
         read_only=True,
@@ -248,7 +266,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_agent_connect",
-        "Bind an already-approved Cinema plan step to Cinema's managed Browserbase shared browser. Supply only plan_id, agent_identity, step_id, and optional ttl_seconds. Cinema provisions the browser and executor endpoint automatically; never ask the user for an endpoint.",
+        "Bind an already-approved Cinema plan step to the user's managed shared browser. Supply only plan_id, agent_identity, step_id, and optional ttl_seconds. Cinema provisions the executor endpoint automatically; never ask the user for an endpoint.",
         ManagedRemoteSessionCreate,
         _remote_agent_connect,
         read_only=False,
@@ -264,7 +282,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_disconnect",
-        "Revoke all agent remote authority, including delegated user-controller authority, without terminating the user's shared browser session.",
+        "Revoke all agent remote authority, including delegated user-controller authority, without terminating the user's shared browser context.",
         remote_browser.RemoteDisconnectRequest,
         _remote_disconnect,
         read_only=False,
@@ -355,9 +373,9 @@ async def handle_message(
                     "instructions": (
                         "The user controls Remote ON/OFF in Cinema. Check remote_status first. "
                         "When Remote is armed, bind the approved plan step with remote_agent_connect; "
-                        "Cinema provisions the shared Browserbase session and endpoint automatically. "
+                        "Cinema provisions the account shared browser and endpoint automatically. "
                         "Then use remote_action without a per-click approval cycle while remaining inside "
-                        "the approved plan. The user, executor, and read-only verifier share one live browser. "
+                        "the approved plan. The user, executor, and read-only verifier share one browser. "
                         "Never send plaintext password/OTP/CAPTCHA/passkey/API-key values through tools."
                     ),
                 },

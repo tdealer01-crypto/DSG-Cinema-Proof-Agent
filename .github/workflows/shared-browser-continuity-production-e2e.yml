@@ -3,12 +3,8 @@ name: Shared Browser Continuity Production E2E
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ['Bind Browserbase Production']
+    workflows: ['Deploy Cinema + Z3 Production']
     types: [completed]
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/shared-browser-continuity-production-e2e.yml'
 
 permissions:
   contents: read
@@ -27,7 +23,7 @@ jobs:
       CINEMA_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
 
     steps:
-      - name: Prove one user browser survives agent authority changes
+      - name: Prove one Azure user browser survives agent authority changes
         shell: bash
         run: |
           set -euo pipefail
@@ -35,12 +31,11 @@ jobs:
           mkdir -p "$work"
           api_key=""
           session_token=""
+          viewer_token=""
           evidence_commit="$GITHUB_SHA"
           if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
             workflow_head=$(jq -r '.workflow_run.head_sha // empty' "$GITHUB_EVENT_PATH")
-            if [[ -n "$workflow_head" ]]; then
-              evidence_commit="$workflow_head"
-            fi
+            if [[ -n "$workflow_head" ]]; then evidence_commit="$workflow_head"; fi
           fi
 
           safe_http_error() {
@@ -48,12 +43,10 @@ jobs:
             echo "${phase}_http=${code}"
             jq -r --arg phase "$phase" '
               if (.detail | type) == "object" then
-                "\($phase)_error=\(.detail.error // "UNKNOWN") message=\(.detail.message // "provider request failed")"
+                "\($phase)_error=\(.detail.error // "UNKNOWN") message=\(.detail.message // "request failed")"
               elif (.detail | type) == "string" then
                 "\($phase)_error=HTTP_ERROR message=\(.detail)"
-              else
-                "\($phase)_error=HTTP_ERROR"
-              end
+              else "\($phase)_error=HTTP_ERROR" end
             ' "$file" 2>/dev/null || true
           }
 
@@ -70,7 +63,7 @@ jobs:
           http=$(curl -sS -o "$work/activate.json" -w '%{http_code}' \
             -X POST "$CINEMA_BASE_URL/billing/activate" \
             -H 'Content-Type: application/json' \
-            --data "$(jq -nc --arg id "$activation_id" '{channel:"browserbase_e2e",activation_id:$id,display_name:"Shared Browser Continuity E2E"}')")
+            --data "$(jq -nc --arg id "$activation_id" '{channel:"azure_browser_e2e",activation_id:$id,display_name:"Azure Shared Browser Continuity E2E"}')")
           [[ "$http" == "200" || "$http" == "201" ]]
           api_key=$(jq -r '.api_key // empty' "$work/activate.json")
           account_id=$(jq -r '.account.account_id // empty' "$work/activate.json")
@@ -81,7 +74,7 @@ jobs:
 
           cat > "$work/plan.json" <<'JSON'
           {
-            "title":"Shared browser continuity production E2E",
+            "title":"Azure shared browser continuity production E2E",
             "agent_identity":"github-actions-shared-browser",
             "channel":"mcp",
             "steps":[{
@@ -93,7 +86,6 @@ jobs:
             }]
           }
           JSON
-
           http=$(curl -sS -o "$work/plan-created.json" -w '%{http_code}' \
             -X POST "$CINEMA_BASE_URL/api/v1/plans" \
             -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
@@ -102,86 +94,87 @@ jobs:
           plan_id=$(jq -r '.plan_id // empty' "$work/plan-created.json")
           plan_hash=$(jq -r '.plan_hash // empty' "$work/plan-created.json")
           [[ -n "$plan_id" && ${#plan_hash} -eq 64 ]]
-
           http=$(curl -sS -o "$work/approved.json" -w '%{http_code}' \
             -X POST "$CINEMA_BASE_URL/api/v1/plans/$plan_id/approve" \
             -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
-            --data "$(jq -nc --arg h "$plan_hash" '{approver:"production-e2e",plan_hash:$h,approval_note:"Harmless shared-browser continuity E2E"}')")
+            --data "$(jq -nc --arg h "$plan_hash" '{approver:"production-e2e",plan_hash:$h,approval_note:"Harmless Azure shared-browser continuity E2E"}')")
           [[ "$http" == "200" ]]
           [[ "$(jq -r '.status' "$work/approved.json")" == "APPROVED" ]]
           echo 'plan=PASS'
 
           http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' \
-            -X POST "$CINEMA_BASE_URL/remote-browser/enable" \
-            -H "X-DSG-API-Key: $api_key")
-          if [[ "$http" != "200" ]]; then
-            safe_http_error remote_on "$http" "$work/enabled.json"
-            exit 1
-          fi
-          if ! jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true' "$work/enabled.json" >/dev/null; then
-            jq -r '"remote_on_state enabled=\(.remote_enabled // false) connected=\(.shared_browser.connected // false) context_persistent=\(.shared_browser.context_persistent // false) prerequisite=\(.shared_browser.prerequisite // "none")"' "$work/enabled.json" 2>/dev/null || true
-            exit 1
-          fi
-          browser_id_on=$(jq -r '.shared_browser.browserbase_session_id // empty' "$work/enabled.json")
+            -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
+          if [[ "$http" != "200" ]]; then safe_http_error remote_on "$http" "$work/enabled.json"; exit 1; fi
+          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and .shared_browser.provider == "azure_container_apps"' "$work/enabled.json" >/dev/null
+          browser_id_on=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/enabled.json")
           [[ -n "$browser_id_on" ]]
-          echo 'remote_on_shared_browser=PASS'
+          echo 'remote_on_azure_shared_browser=PASS'
+
+          http=$(curl -sS -o "$work/live.json" -w '%{http_code}' \
+            "$CINEMA_BASE_URL/remote-browser/browserbase/live-frame" -H "X-DSG-API-Key: $api_key")
+          [[ "$http" == "200" ]]
+          jq -e '.connected == true and .provider == "azure_container_apps" and (.embed_url | type == "string")' "$work/live.json" >/dev/null
+          embed_path=$(jq -r '.embed_url' "$work/live.json")
+          viewer_token="${embed_path##*/}"
+          [[ -n "$viewer_token" ]]
+          echo "::add-mask::$viewer_token"
+          http=$(curl -sS -o "$work/user-action.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/remote-browser/azure/view/$viewer_token/action" \
+            -H 'Content-Type: application/json' \
+            --data '{"kind":"navigate","parameters":{"url":"https://example.com"}}')
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true and .provider == "azure_container_apps" and (.url | startswith("https://example.com"))' "$work/user-action.json" >/dev/null
+          http=$(curl -sS -o "$work/snapshot.png" -w '%{http_code}' "$CINEMA_BASE_URL/remote-browser/azure/view/$viewer_token/snapshot")
+          [[ "$http" == "200" && -s "$work/snapshot.png" ]]
+          echo 'user_same_browser=PASS'
 
           rpc() {
             local body="$1" output="$2"
-            curl -sS -o "$output" -w '%{http_code}' \
-              -X POST "$CINEMA_BASE_URL/mcp" \
-              -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' \
-              --data "$body"
+            curl -sS -o "$output" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/mcp" \
+              -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' --data "$body"
           }
-
           http=$(rpc "$(jq -nc --arg p "$plan_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"remote_agent_connect",arguments:{plan_id:$p,agent_identity:"github-actions-shared-browser",step_id:"example-domain",ttl_seconds:600}}}')" "$work/connect.json")
           [[ "$http" == "200" ]]
           jq -e '.result.isError == false' "$work/connect.json" >/dev/null
           session_token=$(jq -r '.result.structuredContent.session_token // empty' "$work/connect.json")
-          browser_id_agent=$(jq -r '.result.structuredContent.shared_browser.browserbase_session_id // empty' "$work/connect.json")
+          browser_id_agent=$(jq -r '.result.structuredContent.shared_browser.browser_session_id // .result.structuredContent.shared_browser.browserbase_session_id // empty' "$work/connect.json")
+          provider_agent=$(jq -r '.result.structuredContent.managed_provider // empty' "$work/connect.json")
           continuity=$(jq -r '.result.structuredContent.browser_continuity // empty' "$work/connect.json")
           [[ -n "$session_token" && "$browser_id_agent" == "$browser_id_on" ]]
-          [[ "$continuity" == "ACCOUNT_SCOPED_PERSISTENT_CONTEXT" ]]
+          [[ "$provider_agent" == "azure_container_apps" && "$continuity" == "ACCOUNT_SCOPED_PERSISTENT_CONTEXT" ]]
           echo "::add-mask::$session_token"
           rm -f "$work/connect.json"
           echo 'agent_joined_same_browser=PASS'
 
-          http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.navigate",controller:"agent_executor",parameters:{url:"https://example.com"}}}}}')" "$work/action.json")
+          http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.extract",controller:"agent_verifier",parameters:{}}}}}')" "$work/action.json")
           [[ "$http" == "200" ]]
-          jq -e '.result.isError == false' "$work/action.json" >/dev/null
+          jq -e '.result.isError == false and (.result.structuredContent.response.url | startswith("https://example.com"))' "$work/action.json" >/dev/null
           evidence_hash=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
           [[ ${#evidence_hash} -eq 64 ]]
-          echo 'agent_action_same_browser=PASS'
+          echo 'agent_observed_user_browser=PASS'
 
           http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"remote_disconnect",arguments:{session_token:$t}}}')" "$work/disconnect.json")
           [[ "$http" == "200" ]]
           jq -e '.result.isError == false and .result.structuredContent.browser_session_terminated == false' "$work/disconnect.json" >/dev/null
-          echo 'agent_disconnect_browser_kept=PASS'
 
-          http=$(curl -sS -o "$work/status.json" -w '%{http_code}' \
-            "$CINEMA_BASE_URL/remote-browser/status" \
-            -H "X-DSG-API-Key: $api_key")
+          http=$(curl -sS -o "$work/status.json" -w '%{http_code}' "$CINEMA_BASE_URL/remote-browser/status" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
           jq -e '.remote_enabled == true and .active_sessions == 0 and .shared_browser.connected == true' "$work/status.json" >/dev/null
-          browser_id_after_agent=$(jq -r '.shared_browser.browserbase_session_id // empty' "$work/status.json")
+          browser_id_after_agent=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/status.json")
           [[ "$browser_id_after_agent" == "$browser_id_on" ]]
-          echo 'user_browser_survived_agent_disconnect=PASS'
+          echo 'browser_survived_agent_disconnect=PASS'
 
-          http=$(curl -sS -o "$work/disabled.json" -w '%{http_code}' \
-            -X POST "$CINEMA_BASE_URL/remote-browser/disable" \
-            -H "X-DSG-API-Key: $api_key")
+          http=$(curl -sS -o "$work/disabled.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/remote-browser/disable" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
           jq -e '.remote_enabled == false and .user_browser_session == "unchanged" and .shared_browser.connected == true' "$work/disabled.json" >/dev/null
-          browser_id_off=$(jq -r '.shared_browser.browserbase_session_id // empty' "$work/disabled.json")
+          browser_id_off=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/disabled.json")
           [[ "$browser_id_off" == "$browser_id_on" ]]
           echo 'remote_off_browser_kept=PASS'
 
-          http=$(curl -sS -o "$work/reenabled.json" -w '%{http_code}' \
-            -X POST "$CINEMA_BASE_URL/remote-browser/enable" \
-            -H "X-DSG-API-Key: $api_key")
+          http=$(curl -sS -o "$work/reenabled.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
-          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true' "$work/reenabled.json" >/dev/null
-          browser_id_reon=$(jq -r '.shared_browser.browserbase_session_id // empty' "$work/reenabled.json")
+          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and .shared_browser.provider == "azure_container_apps"' "$work/reenabled.json" >/dev/null
+          browser_id_reon=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/reenabled.json")
           [[ "$browser_id_reon" == "$browser_id_on" ]]
           echo 'remote_reon_same_browser=PASS'
 
@@ -191,7 +184,7 @@ jobs:
             --arg plan_hash "$plan_hash" \
             --arg browser_session_hash "$(printf '%s' "$browser_id_on" | sha256sum | cut -d' ' -f1)" \
             --arg action_evidence_hash "$evidence_hash" \
-            '{status:"PASS",commit:$commit,provider:"browserbase",account_sha256:$account_hash,plan_hash:$plan_hash,browser_session_sha256:$browser_session_hash,context_persistent:true,same_browser_on_agent_connect:true,browser_survived_agent_disconnect:true,browser_survived_remote_off:true,same_browser_after_remote_reenable:true,action_evidence_hash:$action_evidence_hash}' \
+            '{status:"PASS",commit:$commit,provider:"azure_container_apps",account_sha256:$account_hash,plan_hash:$plan_hash,browser_session_sha256:$browser_session_hash,context_persistent:true,user_live_view_same_browser:true,same_browser_on_agent_connect:true,agent_observed_user_navigation:true,browser_survived_agent_disconnect:true,browser_survived_remote_off:true,same_browser_after_remote_reenable:true,action_evidence_hash:$action_evidence_hash}' \
             > shared-browser-continuity-evidence.json
           echo 'Shared Browser Continuity Production E2E: PASS'
 
