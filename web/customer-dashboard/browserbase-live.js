@@ -13,8 +13,8 @@
     host.hidden = true;
     host.style.marginTop = "14px";
     host.innerHTML = `
-      <div class="label">Shared live browser · User + Agent</div>
-      <p class="status" id="sharedBrowserHint">Waiting for the managed browser session.</p>
+      <div class="label">Your shared browser · User + Agent</div>
+      <p class="status" id="sharedBrowserHint">Preparing your persistent browser.</p>
       <div style="margin-top:8px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#0c0d0f">
         <iframe id="sharedBrowserFrame" title="Shared Browser Live View"
           allow="clipboard-read; clipboard-write"
@@ -27,7 +27,7 @@
     return host;
   }
 
-  function clearLiveView(message = "Waiting for the managed browser session.") {
+  function clearLiveView(message = "Remote is OFF. Your saved browser context is retained for the next session.") {
     const host = panel();
     if (!host) return;
     const frame = document.getElementById("sharedBrowserFrame");
@@ -51,14 +51,22 @@
       const hint = document.getElementById("sharedBrowserHint");
       const embedUrl = typeof body.embed_url === "string" ? body.embed_url : "";
       if (!body.connected || !embedUrl) {
-        clearLiveView("Remote is armed, but the agent has not provisioned the shared Browserbase session yet.");
+        clearLiveView(
+          body.prerequisite === "BROWSERBASE_NOT_CONFIGURED"
+            ? "Shared browser is not configured on this Cinema runtime."
+            : "Remote is preparing your shared browser. Your login context will be reused when it reconnects.",
+        );
         return;
       }
       if (!embedUrl.startsWith("/remote-browser/browserbase/embed/")) {
         throw new Error("Cinema returned an invalid shared-browser viewer URL");
       }
       host.hidden = false;
-      if (hint) hint.textContent = "You and the agent are viewing and controlling this same browser session.";
+      if (hint) {
+        hint.textContent = body.context_persistent
+          ? "This is your persistent browser. Sign in once; when Remote is ON an approved agent joins this same session and plan scope."
+          : "You and the agent are viewing and controlling this same browser session.";
+      }
       if (frame && embedUrl !== lastEmbedUrl) {
         frame.src = embedUrl;
         lastEmbedUrl = embedUrl;
