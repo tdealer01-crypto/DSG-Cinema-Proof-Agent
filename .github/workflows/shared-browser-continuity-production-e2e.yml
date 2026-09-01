@@ -110,8 +110,6 @@ jobs:
           [[ -n "$browser_id_on" ]]
           echo 'remote_on_azure_shared_browser=PASS'
 
-          # Prove the user-facing same-origin surface controls this exact browser
-          # before the agent joins. The viewer token is masked and never stored in evidence.
           http=$(curl -sS -o "$work/live.json" -w '%{http_code}' \
             "$CINEMA_BASE_URL/remote-browser/browserbase/live-frame" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
@@ -126,8 +124,7 @@ jobs:
             --data '{"kind":"navigate","parameters":{"url":"https://example.com"}}')
           [[ "$http" == "200" ]]
           jq -e '.ok == true and .provider == "azure_container_apps" and (.url | startswith("https://example.com"))' "$work/user-action.json" >/dev/null
-          http=$(curl -sS -o "$work/snapshot.png" -w '%{http_code}' \
-            "$CINEMA_BASE_URL/remote-browser/azure/view/$viewer_token/snapshot")
+          http=$(curl -sS -o "$work/snapshot.png" -w '%{http_code}' "$CINEMA_BASE_URL/remote-browser/azure/view/$viewer_token/snapshot")
           [[ "$http" == "200" && -s "$work/snapshot.png" ]]
           echo 'user_same_browser=PASS'
 
@@ -149,11 +146,9 @@ jobs:
           rm -f "$work/connect.json"
           echo 'agent_joined_same_browser=PASS'
 
-          # The user already navigated to example.com. A read-only agent verifier
-          # must observe that same page without another navigation.
           http=$(rpc "$(jq -nc --arg t "$session_token" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"remote_action",arguments:{session_token:$t,action:{kind:"browser.extract",controller:"agent_verifier",parameters:{}}}}}')" "$work/action.json")
           [[ "$http" == "200" ]]
-          jq -e '.result.isError == false and (.result.structuredContent.body.url | startswith("https://example.com"))' "$work/action.json" >/dev/null
+          jq -e '.result.isError == false and (.result.structuredContent.response.url | startswith("https://example.com"))' "$work/action.json" >/dev/null
           evidence_hash=$(jq -r '.result.structuredContent.evidence_hash // empty' "$work/action.json")
           [[ ${#evidence_hash} -eq 64 ]]
           echo 'agent_observed_user_browser=PASS'
