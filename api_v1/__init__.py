@@ -49,10 +49,15 @@ def install(app) -> None:
     # /mcp rather than under /api/v1 so remote execution cannot drift the
     # independent verification OpenAPI contract.
     importlib.import_module(f"{__name__}.remote_mcp").install(app)
-    # Browser Memory is deliberately installed after remote_mcp so it can add
-    # read-only context/status tools to the same MCP tool registry. Its middleware
-    # records only sanitized page/action metadata after successful browser work.
-    importlib.import_module(f"{__name__}.browser_memory_runtime").install(app)
+    # Browser Memory is always mounted as an authenticated REST/status surface and
+    # sanitized capture middleware. MCP tools are advertised only when a durable
+    # PostgreSQL memory store is actually configured, so tool discovery never
+    # promises an unavailable capability.
+    memory_runtime = importlib.import_module(f"{__name__}.browser_memory_runtime")
+    app.add_middleware(memory_runtime.BrowserMemoryCaptureMiddleware)
+    app.include_router(memory_runtime.router)
+    if memory_runtime.browser_memory.configured():
+        memory_runtime.install_mcp_tools()
     # Flat REST adapter for ChatGPT Custom Actions. It translates explicit
     # operation-specific inputs back into the same canonical MCP handlers, so
     # Custom Actions never need to preserve nested JSON-RPC params themselves.
