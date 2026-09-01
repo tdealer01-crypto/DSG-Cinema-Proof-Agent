@@ -15,7 +15,13 @@ from pydantic import Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from . import azure_local_browser, browser_memory, browserbase_executor, remote_browser, remote_pairing
+from . import (
+    azure_local_browser,
+    browser_memory_store as browser_memory,
+    browserbase_executor,
+    remote_browser,
+    remote_pairing,
+)
 from .models import Strict
 
 router = APIRouter(prefix="/remote-browser/memory", tags=["remote-browser-memory"])
@@ -68,6 +74,7 @@ async def browser_memory_status(
     )
     return {
         "available": result.get("available", False),
+        "backend": result.get("backend", browser_memory.backend()),
         "stored_memory_count": result.get("stored_memory_count", 0),
         "stored_token_estimate": result.get("stored_token_estimate", 0),
         "active_token_budget_default": browser_memory.DEFAULT_ACTIVE_TOKEN_BUDGET,
@@ -236,6 +243,7 @@ async def _mcp_status(_: Any) -> dict[str, Any]:
     result = await asyncio.to_thread(browser_memory.search_context, account_hash=account_hash, token_budget=1000, limit=1)
     return {
         "available": result.get("available", False),
+        "backend": result.get("backend", browser_memory.backend()),
         "stored_memory_count": result.get("stored_memory_count", 0),
         "stored_token_estimate": result.get("stored_token_estimate", 0),
         "active_token_budget_default": browser_memory.DEFAULT_ACTIVE_TOKEN_BUDGET,
@@ -278,7 +286,8 @@ def install_mcp_tools() -> None:
 def install(app) -> None:
     app.add_middleware(BrowserMemoryCaptureMiddleware)
     app.include_router(router)
-    install_mcp_tools()
+    if browser_memory.configured():
+        install_mcp_tools()
 
 
 __all__ = [
