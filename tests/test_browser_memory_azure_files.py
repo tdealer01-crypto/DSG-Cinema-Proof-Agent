@@ -108,7 +108,7 @@ def test_file_backend_can_account_for_logical_context_over_one_million_tokens(tm
     assert result["selected_token_estimate"] <= result["token_budget"]
 
 
-def test_store_facade_prefers_postgres_and_uses_azure_files_when_requested(tmp_path: Path, monkeypatch):
+def test_store_facade_honors_explicit_backend_before_database_fallback(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("DSG_BROWSER_MEMORY_DATABASE_URL", raising=False)
     monkeypatch.delenv("DSG_REVENUE_DATABASE_URL", raising=False)
     monkeypatch.delenv("DSG_BROWSER_MEMORY_BACKEND", raising=False)
@@ -122,5 +122,25 @@ def test_store_facade_prefers_postgres_and_uses_azure_files_when_requested(tmp_p
     result = browser_memory_store.search_context(account_hash="e" * 64)
     assert result["backend"] == "azure_files"
 
+    # An unrelated revenue database must not silently move browser memory away
+    # from the explicitly selected Azure Files production backend.
+    monkeypatch.setenv("DSG_REVENUE_DATABASE_URL", "postgresql://configured")
+    assert browser_memory_store.backend() == "azure_files"
+
+    monkeypatch.setenv("DSG_BROWSER_MEMORY_BACKEND", "postgres")
+    assert browser_memory_store.backend() == "postgres"
+
+
+def test_store_facade_uses_postgres_as_unselected_fallback(monkeypatch):
+    monkeypatch.delenv("DSG_BROWSER_MEMORY_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DSG_BROWSER_MEMORY_BACKEND", raising=False)
     monkeypatch.setenv("DSG_REVENUE_DATABASE_URL", "postgresql://configured")
     assert browser_memory_store.backend() == "postgres"
+
+
+def test_store_facade_refuses_explicit_postgres_without_database(monkeypatch):
+    monkeypatch.delenv("DSG_BROWSER_MEMORY_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DSG_REVENUE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DSG_BROWSER_MEMORY_BACKEND", "postgres")
+    assert browser_memory_store.backend() == "disabled"
+    assert browser_memory_store.configured() is False
