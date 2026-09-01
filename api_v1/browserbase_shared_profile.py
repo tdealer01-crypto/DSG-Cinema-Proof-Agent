@@ -40,6 +40,19 @@ def configured() -> bool:
     return bool((os.getenv("BROWSERBASE_API_KEY") or "").strip())
 
 
+def _project_id() -> str:
+    value = (os.getenv("BROWSERBASE_PROJECT_ID") or "").strip()
+    if not value:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "BROWSERBASE_PROJECT_NOT_CONFIGURED",
+                "message": "BROWSERBASE_PROJECT_ID is not bound to the Cinema runtime.",
+            },
+        )
+    return value
+
+
 def _account_digest(account_id: str) -> str:
     return hashlib.sha256(account_id.encode("utf-8")).hexdigest()
 
@@ -169,7 +182,11 @@ async def _ensure_context(account_id: str, profile: dict[str, Any]) -> str:
     if existing:
         return existing
 
-    created = await browserbase_executor._bb_request("POST", "/contexts", payload={})
+    created = await browserbase_executor._bb_request(
+        "POST",
+        "/contexts",
+        payload={"projectId": _project_id()},
+    )
     context_id = str(created.get("id") or "").strip()
     if not context_id:
         raise HTTPException(status_code=502, detail="Browserbase did not return a context id")
@@ -212,6 +229,7 @@ async def ensure_shared_browser(account_id: str) -> dict[str, Any]:
     if existing is not None:
         return existing
 
+    project_id = _project_id()
     context_id = await _ensure_context(account_id, profile)
     settings: dict[str, Any] = {
         "recordSession": True,
@@ -223,14 +241,12 @@ async def ensure_shared_browser(account_id: str) -> dict[str, Any]:
         "browserSettings": settings,
         "timeout": _session_timeout_seconds(),
         "keepAlive": True,
+        "projectId": project_id,
         "userMetadata": {
             "dsg_account_hash": _account_digest(account_id),
             "surface": "dsg-shared-browser",
         },
     }
-    project_id = (os.getenv("BROWSERBASE_PROJECT_ID") or "").strip()
-    if project_id:
-        payload["projectId"] = project_id
 
     created = await browserbase_executor._bb_request("POST", "/sessions", payload=payload)
     session_id = str(created.get("id") or "").strip()

@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'api_v1/browserbase_executor.py'
+      - 'api_v1/browserbase_shared_profile.py'
       - '.github/workflows/bind-browserbase-production.yml'
 
 permissions:
@@ -30,9 +31,10 @@ jobs:
       AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
       AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
       CONFIGURED_BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+      CONFIGURED_BROWSERBASE_PROJECT_ID: ${{ vars.BROWSERBASE_PROJECT_ID }}
 
     steps:
-      - name: Refuse missing Browserbase credential
+      - name: Refuse missing Browserbase production configuration
         shell: bash
         run: |
           set -euo pipefail
@@ -40,20 +42,25 @@ jobs:
             echo 'BROWSERBASE_API_KEY is not configured in GitHub Actions secrets.' >&2
             exit 1
           fi
+          if [[ -z "${CONFIGURED_BROWSERBASE_PROJECT_ID:-}" ]]; then
+            echo 'BROWSERBASE_PROJECT_ID is not configured in the production environment variables.' >&2
+            exit 1
+          fi
           echo "::add-mask::$CONFIGURED_BROWSERBASE_API_KEY"
 
-      - name: Verify Browserbase credential before production mutation
+      - name: Verify Browserbase project and credential before production mutation
         shell: bash
         run: |
           set -euo pipefail
-          code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+          response=$(curl --silent --show-error --fail-with-body \
             --request GET 'https://api.browserbase.com/v1/projects' \
             --header "X-BB-API-Key: $CONFIGURED_BROWSERBASE_API_KEY")
-          if [[ "$code" != "200" ]]; then
-            echo "Browserbase credential preflight failed with HTTP ${code}; refusing Azure mutation." >&2
+          if ! printf '%s' "$response" | jq -e --arg project "$CONFIGURED_BROWSERBASE_PROJECT_ID" \
+            'if type == "array" then any(.[]; (.id // "") == $project) else ((.id // "") == $project or any((.projects // [])[]; (.id // "") == $project)) end' >/dev/null; then
+            echo 'Configured BROWSERBASE_PROJECT_ID is not visible to the configured Browserbase credential.' >&2
             exit 1
           fi
-          echo 'Browserbase credential preflight passed.'
+          echo 'Browserbase project/credential preflight passed.'
 
       - name: Azure login with OIDC
         uses: azure/login@v2
@@ -62,7 +69,7 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Bind Browserbase credential and public origin to Cinema
+      - name: Bind Browserbase credential, project and public origin to Cinema
         shell: bash
         run: |
           set -euo pipefail
@@ -85,6 +92,7 @@ jobs:
             --name "$CINEMA_APP" \
             --set-env-vars \
               BROWSERBASE_API_KEY=secretref:browserbase-api-key \
+              BROWSERBASE_PROJECT_ID="$CONFIGURED_BROWSERBASE_PROJECT_ID" \
               DSG_PUBLIC_BASE_URL="$CINEMA_PUBLIC_BASE_URL" \
             --output none
 
@@ -99,6 +107,13 @@ jobs:
             --output tsv)
           test "$BINDING" = "browserbase-api-key"
 
+          PROJECT_ID=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CINEMA_APP" \
+            --query "properties.template.containers[0].env[?name=='BROWSERBASE_PROJECT_ID'].value | [0]" \
+            --output tsv)
+          test "$PROJECT_ID" = "$CONFIGURED_BROWSERBASE_PROJECT_ID"
+
           PUBLIC_ORIGIN=$(az containerapp show \
             --resource-group "$RESOURCE_GROUP" \
             --name "$CINEMA_APP" \
@@ -106,4 +121,4 @@ jobs:
             --output tsv)
           test "$PUBLIC_ORIGIN" = "$CINEMA_PUBLIC_BASE_URL"
 
-          echo 'BROWSERBASE_API_KEY is bound via secretRef and DSG_PUBLIC_BASE_URL matches Cinema production.'
+          echo 'Browserbase API key, project ID and Cinema public origin are bound for production.'

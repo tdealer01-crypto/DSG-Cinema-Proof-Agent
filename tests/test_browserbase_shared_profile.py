@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from api_v1 import browserbase_executor, browserbase_shared_profile
 
@@ -55,12 +56,36 @@ async def test_account_browser_creates_persistent_context_and_reuses_same_live_s
     session_calls = [call for call in calls if call[:2] == ("POST", "/sessions")]
     assert len(context_calls) == 1
     assert len(session_calls) == 1
+    assert context_calls[0][2] == {"projectId": "project-test"}
     payload = session_calls[0][2]
     assert payload is not None
+    assert payload["projectId"] == "project-test"
     assert payload["keepAlive"] is True
     assert payload["browserSettings"]["context"] == {"id": "ctx_account_1", "persist": True}
     assert "allowedDomains" not in payload["browserSettings"]
     assert payload["userMetadata"]["dsg_account_hash"] != "acct-one"
+
+
+@pytest.mark.asyncio
+async def test_missing_project_id_fails_closed_before_provider_mutation(
+    shared_env, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("BROWSERBASE_PROJECT_ID", raising=False)
+    called = False
+
+    async def fake_bb(method: str, path: str, *, payload=None):
+        nonlocal called
+        called = True
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(browserbase_executor, "_bb_request", fake_bb)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await browserbase_shared_profile.ensure_shared_browser("acct-missing-project")
+
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail["error"] == "BROWSERBASE_PROJECT_NOT_CONFIGURED"
+    assert called is False
 
 
 @pytest.mark.asyncio
@@ -69,8 +94,10 @@ async def test_two_plan_authority_sessions_bind_to_same_user_browser(
 ):
     async def fake_bb(method: str, path: str, *, payload=None):
         if (method, path) == ("POST", "/contexts"):
+            assert payload == {"projectId": "project-test"}
             return {"id": "ctx_same_user"}
         if (method, path) == ("POST", "/sessions"):
+            assert payload is not None and payload["projectId"] == "project-test"
             return {"id": "bb_same_user"}
         if (method, path) == ("GET", "/sessions/bb_same_user/debug"):
             return {
@@ -112,14 +139,14 @@ async def test_dead_provider_session_restarts_from_same_persistent_context(
     async def fake_bb(method: str, path: str, *, payload=None):
         nonlocal created_sessions, dead
         if (method, path) == ("POST", "/contexts"):
+            assert payload == {"projectId": "project-test"}
             return {"id": "ctx_resume"}
         if (method, path) == ("POST", "/sessions"):
+            assert payload is not None and payload["projectId"] == "project-test"
             created_sessions += 1
             return {"id": f"bb_resume_{created_sessions}"}
         if method == "GET" and path.endswith("/debug"):
             if dead and path == "/sessions/bb_resume_1/debug":
-                from fastapi import HTTPException
-
                 raise HTTPException(status_code=502, detail="session ended")
             session_id = path.split("/")[2]
             return {

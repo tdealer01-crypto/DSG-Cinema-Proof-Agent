@@ -16,6 +16,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("DSG_REMOTE_ACTION_KEY", "s" * 64)
     monkeypatch.setenv("DSG_REMOTE_ACTION_STORE", str(tmp_path / "remote-store"))
     monkeypatch.setenv("BROWSERBASE_API_KEY", "bb_test_server_only")
+    monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "project-test")
 
     authorization = SimpleNamespace(account=SimpleNamespace(account_id="acct-shared-browser"))
     monkeypatch.setattr(remote_pairing.billing, "authorize_request", lambda *_args, **_kwargs: authorization)
@@ -42,8 +43,10 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     async def fake_bb(method: str, path: str, *, payload=None):
         calls.append((method, path, payload))
         if (method, path) == ("POST", "/contexts"):
+            assert payload == {"projectId": "project-test"}
             return {"id": "ctx_user"}
         if (method, path) == ("POST", "/sessions"):
+            assert payload is not None and payload["projectId"] == "project-test"
             return {"id": "bb_user_browser"}
         if (method, path) == ("GET", "/sessions/bb_user_browser/debug"):
             return {
