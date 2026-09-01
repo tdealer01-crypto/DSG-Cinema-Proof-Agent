@@ -1,8 +1,9 @@
 """Provider facade for Browser Operational Memory.
 
-PostgreSQL remains the structured/table backend when explicitly configured.
-Azure production can instead use the already-mounted Azure Files store without
-provisioning a second paid service.
+PostgreSQL remains the structured/table backend when explicitly selected or when
+no browser-memory backend is selected and a database URL already exists. Azure
+production explicitly selects the already-mounted Azure Files store so the
+presence of an unrelated revenue database cannot silently move browser memory.
 
 The facade is also the final active-context budget boundary. Individual storage
 backends may evolve independently, but no caller through this module can receive
@@ -22,11 +23,15 @@ MAX_ACTIVE_TOKEN_BUDGET = postgres.MAX_ACTIVE_TOKEN_BUDGET
 
 
 def backend() -> str:
-    if postgres.database_url():
-        return "postgres"
     requested = (os.getenv("DSG_BROWSER_MEMORY_BACKEND") or "").strip().lower()
     if requested in {"azure_files", "files"}:
         return "azure_files"
+    if requested in {"postgres", "postgresql"}:
+        return "postgres" if postgres.database_url() else "disabled"
+    if requested in {"disabled", "off", "none"}:
+        return "disabled"
+    if postgres.database_url():
+        return "postgres"
     return "disabled"
 
 
