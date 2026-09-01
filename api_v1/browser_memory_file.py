@@ -233,7 +233,7 @@ def search_context(
     selected_tokens = 0
     for record in rows[:row_limit]:
         estimated = max(0, int(record.get("token_estimate", 0)))
-        if selected and selected_tokens + estimated > budget:
+        if selected_tokens + estimated > budget:
             continue
         selected.append({
             "memory_id": record.get("memory_id"),
