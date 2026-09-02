@@ -191,7 +191,13 @@ def pair_agent(
 
     api_key, account = _authenticated_account(x_dsg_api_key)
     _cleanup()
-    state = remote_pairing._read_state(account.account_id)
+    # Pairing must remain available even when the durable Remote store is not
+    # ready yet. Approved-binding reuse is an additive convenience, not a new
+    # prerequisite for issuing a short-lived pairing token.
+    try:
+        state = remote_pairing._read_state(account.account_id)
+    except HTTPException:
+        state = {}
     approved_identity = str(state.get("last_agent_identity") or "").strip()
     agent_name = approved_identity or body.agent_name
     token = _TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -279,7 +285,12 @@ class AgentPairingMiddleware:
                 token = raw[7:].strip()
                 pairing = resolve_pairing(token)
                 if pairing is not None:
-                    await _auto_claim_if_ready(scope, pairing)
+                    try:
+                        await _auto_claim_if_ready(scope, pairing)
+                    except HTTPException:
+                        # Legacy MCP pairing must continue even if Remote durable
+                        # state is unavailable; explicit connect remains possible.
+                        pass
                     # Approval may have aligned the pairing identity since the token was minted.
                     pairing = resolve_pairing(token) or pairing
                     filtered = [
@@ -315,7 +326,7 @@ _CONNECT_HTML = """<!doctype html>
 <title>DSG ONE — Connect Agent</title>
 <style>body{font:16px system-ui;background:#07101f;color:#e9f0ff;max-width:760px;margin:auto;padding:24px}input,button{font:inherit;padding:11px;border-radius:9px;border:1px solid #345;background:#0d1a30;color:#fff}input{width:100%;box-sizing:border-box}.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.card{border:1px solid #234;padding:18px;border-radius:14px;background:#0a1426}.ok{color:#66e2b5}.muted{color:#91a3c0;font-size:13px}.primary{background:#f5f7ff;color:#07101f;font-weight:700;border-color:#f5f7ff}details{margin-top:18px}code{word-break:break-all}</style>
 <h1>Connect Agent</h1>
-<p class=muted>One click prepares Cinema for your agent. If needed, Cinema activates Free Evaluation, turns Remote ON, creates a short-lived pairing token, and verifies MCP. The master DSG key stays in this browser tab; the agent receives a short-lived pairing token only. Plan approval is never skipped. After approval, the agent's next MCP request claims the approved step automatically.</p>
+<p class=muted>One click prepares Cinema for your agent. If needed, Cinema activates Free Evaluation, turns Remote ON, creates a short-lived pairing token, and verifies MCP. The master DSG key stays in this browser tab; the agent receives a short-lived pairing token only. Plan approval is never skipped. After approval, the agent's next MCP request claims the approved step automatically; after APPROVED the agent binds to that exact step automatically.</p>
 <div class=card>
 <button id=pair class=primary>Connect Agent</button>
 <p id=s class=muted>Ready to connect.</p>
@@ -339,7 +350,7 @@ async function enableRemote(key){s.textContent='Turning Remote ON…';const b=aw
 async function pairAgent(key){s.textContent='Creating secure agent pairing…';const b=await jsonFetch('/remote-browser/agent-pair',{method:'POST',headers:{'Content-Type':'application/json','X-DSG-API-Key':key},body:JSON.stringify({agent_name:document.querySelector('#a').value||'chat-agent',ttl_seconds:600})});if(!b.pairing_token)throw new Error('Pairing returned no token');rememberPair(b.pairing_token,b.expires_at_unix);return b}
 async function checkStatus(token){s.textContent='Verifying MCP connection…';const rpc={jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'remote_status',arguments:{}}};const b=await jsonFetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(rpc)});const result=b.result||{};if(result.isError===true)throw new Error(JSON.stringify(result.structuredContent||result.content||result));return result.structuredContent||{}}
 async function ensurePair(key){const existing=storedPair();if(existing){try{existing.status=await checkStatus(existing.pairing_token);copyPair.disabled=false;return existing}catch(e){clearPair()}}return await pairAgent(key)}
-async function connectAgent(){if(running)return;running=true;pairButton.disabled=true;o.textContent='';try{const key=await ensureKey();await enableRemote(key);const pairing=await ensurePair(key);const status=pairing.status||await checkStatus(pairing.pairing_token);const summary={remote_enabled:status.remote_enabled===true,agent_connection:status.agent_connection||'waiting',active_sessions:status.active_sessions||0,shared_browser_connected:!!(status.shared_browser&&status.shared_browser.connected),mcp_endpoint:pairing.mcp_endpoint,pairing_expires_in:pairing.expires_in,pairing_reused:pairing.reused===true,master_key_exposed_to_agent:false,plan_approval_required:true,auto_claim_on_agent_contact:true};o.textContent=JSON.stringify(summary,null,2);if(!summary.remote_enabled)throw new Error('Remote status did not stay enabled');s.innerHTML='<span class=ok>READY — Cinema is paired and Remote is ON.</span> Approve the plan when Cinema shows it; the agent claims that approved step automatically on its next MCP request.'}catch(e){s.textContent='CONNECT FAILED — '+e.message}finally{running=false;pairButton.disabled=false}}
+async function connectAgent(){if(running)return;running=true;pairButton.disabled=true;o.textContent='';try{const key=await ensureKey();await enableRemote(key);const pairing=await ensurePair(key);const status=pairing.status||await checkStatus(pairing.pairing_token);const summary={remote_enabled:status.remote_enabled===true,agent_connection:status.agent_connection||'waiting',active_sessions:status.active_sessions||0,shared_browser_connected:!!(status.shared_browser&&status.shared_browser.connected),mcp_endpoint:pairing.mcp_endpoint,pairing_expires_in:pairing.expires_in,pairing_reused:pairing.reused===true,master_key_exposed_to_agent:false,plan_approval_required:true,auto_claim_on_agent_contact:true};o.textContent=JSON.stringify(summary,null,2);if(!summary.remote_enabled)throw new Error('Remote status did not stay enabled');s.innerHTML='<span class=ok>READY — Cinema is paired and Remote is ON.</span> Approve the plan when Cinema shows it; after APPROVED the agent binds to that exact step automatically on its next MCP request.'}catch(e){s.textContent='CONNECT FAILED — '+e.message}finally{running=false;pairButton.disabled=false}}
 document.querySelector('#activate').onclick=async()=>{try{await activateKey();s.innerHTML='<span class=ok>FREE KEY ACTIVE — kept only for this browser tab</span>'}catch(e){s.textContent='ACTIVATION FAILED — '+e.message}};
 document.querySelector('#show').onclick=()=>{k.type=k.type==='password'?'text':'password';document.querySelector('#show').textContent=k.type==='password'?'Show':'Hide'};
 document.querySelector('#copy').onclick=async()=>{if(!k.value.trim()){s.textContent='No API key to copy. Connect Agent first.';return}await navigator.clipboard.writeText(k.value);s.textContent='API key copied.'};
