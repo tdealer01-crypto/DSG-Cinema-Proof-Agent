@@ -11,7 +11,7 @@ def _client() -> TestClient:
 
 
 def test_compliance_status_is_truth_bounded():
-    response = _client().get("/api/v1/compliance/status")
+    response = _client().get("/compliance/status")
     assert response.status_code == 200
     body = response.json()
     assert body["product"] == "DSG Cinema"
@@ -25,7 +25,7 @@ def test_compliance_status_is_truth_bounded():
 
 
 def test_annex_iv_mapping_does_not_claim_100_percent():
-    response = _client().get("/api/v1/compliance/annex-iv")
+    response = _client().get("/compliance/annex-iv")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "READINESS_MAPPING"
@@ -37,7 +37,16 @@ def test_annex_iv_mapping_does_not_claim_100_percent():
 
 
 def test_annex_iv_partial_items_have_gaps():
-    items = _client().get("/api/v1/compliance/annex-iv").json()["items"]
+    items = _client().get("/compliance/annex-iv").json()["items"]
     partial = [item for item in items if item["status"] == "PARTIAL"]
     assert len(partial) == 4
     assert all(item.get("gap") for item in partial)
+
+
+def test_compliance_routes_do_not_expand_exact_v1_contract():
+    app = FastAPI()
+    compliance.install(app)
+    paths = {route.path for route in app.routes}
+    assert "/compliance/status" in paths
+    assert "/compliance/annex-iv" in paths
+    assert not any(path.startswith("/api/v1/compliance") for path in paths)
