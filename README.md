@@ -7,79 +7,40 @@
 
 Deterministic verification and governance runtime for AI-agent and automation execution.
 
-> **Source of truth:** production is the Azure Cinema + native Z3 deployment described below. GitHub Actions execution evidence is authoritative for deployment/proof claims. The AppDeploy exact-selector app is a reference/demo surface, not the production Z3 runtime.
+DSG ONE / Cinema sits between an agent and real execution. Authentication establishes who is calling. Approved plans, permissions, deterministic verification, and evidence decide what the caller is allowed to do. A valid credential does **not** grant authority to execute outside the approved plan.
 
-## Current production truth — 28 August 2026
+> **Source of truth:** production is the Azure Cinema + native Z3 deployment described below. GitHub Actions execution evidence is authoritative for deployment/proof claims. Historical proof remains useful evidence, but it does not override a newer verified production deployment.
+
+## Current production truth — verified 1 September 2026 UTC / 2 September 2026 Asia/Bangkok
 
 | Item | Verified state |
 |---|---|
-| Production source commit | `90949d7c3acec52258413a5d0e79f0e4e4f51020` (`feat(mcp): add native Z3 exact top-k selector (#163)`) |
-| Production deploy | GitHub Actions run `33189890939` — **PASS** |
-| External production MCP proof | GitHub Actions run `33198810484` — **PASS** |
+| Production source commit | `46d4db76cb57a00df7ee536a35d666d2e4b90bd8` — `feat: secure agent pairing and API key controls (#195)` |
+| Production deploy | GitHub Actions run `33537989165` / run #103 — **PASS** |
+| Production evidence artifact | `9812708964` — `cinema-production-evidence-46d4db76cb57a00df7ee536a35d666d2e4b90bd8` |
+| Evidence artifact digest | `sha256:97dd13281e020cd7469791507e54de0a0ffcad50be75f6f536fbb5d6a9f21c1a` |
 | Cinema production | `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io` |
 | Production MCP | `https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/api/v1/mcp` |
 | Native Z3 backend | `https://dsg-z3-verifier-production.nicetree-a005fe99.westus3.azurecontainerapps.io` |
 | MCP protocol | `2025-06-18`, HTTP JSON-RPC 2.0 |
-| AppDeploy | Reference/demo only: `https://dsg-exact-mcp-runtime-wniyu0.v2.appdeploy.ai/` |
 | GitBook | `https://dsg-cinema.gitbook.io/cinema-proof-agent` |
 
-The production deployment ran the pre-deploy regression gate (**164 passed**), built immutable Cinema/Z3 images, deployed both services, verified direct native-Z3 proof, verified Cinema → Z3 E2E replay, exercised marketplace adapters and billing/enforcement gates, and uploaded production evidence.
+The current production deployment completed the production workflow successfully from the exact source SHA above. The workflow passed contract verification, resolved production identity/secrets, built immutable images, deployed native Z3, verified a direct Z3 proof, deployed Cinema, verified Cinema → Z3 E2E plus replay, checked marketplace/browser boundaries and revenue state, and uploaded non-secret production evidence.
 
-### Production proof snapshot
+### Production capabilities included in the current source
 
-**Native Z3 / Cinema proof** — run `33189890939`
+The current production SHA includes the work merged immediately before and through PR #195:
 
-- `verification`: `VERIFIED_GLOBAL_OPTIMUM`
-- witness: `[1,0,0]`
-- exact energy: `-4`
-- replay match: `true`
-- direct Z3 proof == Cinema proof: `true`
-- proof hash: `9d096c91291b1cc91543e9191a5f1ab0df89fda284a86a807b79114866b97b8e`
-- request hash: `ff293f56b354a7815c52dc6f1c9f28a4d001d4bab81b6a1cb323c86b3a714241`
-- production artifact ID: `9693455960`
-- production artifact ZIP SHA-256: `d6ee2109053a5b5283f2011128de29f159c40271345c7e42598cf474adc0ca59`
-
-**External production MCP exact-select proof** — run `33198810484`
-
-A GitHub-hosted Ubuntu runner called the public production MCP endpoint twice with `useZ3:true` using:
-
-```json
-{
-  "candidates": [
-    {"id": "a", "composite": "0.50003"},
-    {"id": "b", "composite": "0.50004"},
-    {"id": "c", "composite": "0.50004"}
-  ],
-  "k": 2,
-  "minComposite": "0",
-  "useZ3": true
-}
-```
-
-Both calls returned:
-
-- `status`: `PASSED`
-- `mode`: `verified-exact`
-- `solverResult`: `sat`
-- selected IDs: `b`, `c`
-- identical evidence/request/proof hashes across replay
-- duplicate candidate IDs rejected with `isError:true` / `INVALID_ARGUMENTS`
-
-External proof hashes:
-
-- evidence: `f7b464892eb60556cff2605948ad2a76b9532724e34f4a0cd9b7383afcb3d42c`
-- Z3 proof: `a5c7b2ee5f1bbd3010cb48f7463ca46d18c61d2672b902e06b6697a41ca45855`
-- Z3 request: `b0e2a1abc52bac0e85ab69b0adbf6cf450ce2bfc0cbaa939398a686fc38b5d23`
-- artifact ID: `9696882174`
-- artifact ZIP SHA-256: `957663623be4b0b6a86edf1a3213fd121d43c1501e1c6d00a24164fdf1132b27`
-
-See [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) for the compact evidence record.
+- **Azure shared browser** — account-scoped browser continuity for the user while agent authority remains separately controlled.
+- **Browser Memory / long logical context** — the Browser Memory work merged before the current production SHA; its dedicated shared-browser continuity production E2E workflow completed successfully before PR #195.
+- **Secure agent pairing** — Remote ON/OFF is account-scoped and requires a valid DSG account credential.
+- **Short-lived agent credentials** — remote action sessions use short-lived session authority instead of exposing a long-lived customer credential to every remote action.
+- **Plan-bound remote execution** — enabling Remote does not itself authorize arbitrary actions; the agent must still connect through the approved-plan execution path.
+- **Native Z3 verification** — Cinema performs authenticated server-to-server verification against the native Z3 production service and verifies postconditions/replay.
 
 ## What DSG verifies
 
 The runtime separates caller intent from verifier judgment. Callers submit plans, actions, execution facts, and evidence; DSG computes the result.
-
-Core control flow:
 
 ```text
 raw plan
@@ -101,6 +62,98 @@ verified receipt / fail-closed error
 ```
 
 No caller-supplied verdict is accepted as proof. Proof failure is not silently downgraded to an unverified success path.
+
+`WAITING_PERMISSION` is not the same as plan rejection. An action can be aligned with the approved plan but still lack the credential, capability, browser authority, or other execution permission required at that moment.
+
+## Authentication and execution authority
+
+Cinema intentionally separates **authentication** from **authorization**.
+
+### 1. Customer / agent account authentication
+
+Customer-facing protected surfaces use:
+
+```http
+X-DSG-API-Key: <customer DSG API key>
+```
+
+The revenue/account layer authenticates the key and resolves the DSG account/entitlement. API-key authentication answers **who is calling**; it does not bypass the approved plan.
+
+### 2. Remote Browser authority
+
+The account owner controls remote authority through the Remote Browser surface:
+
+```text
+POST /remote-browser/enable
+GET  /remote-browser/status
+POST /remote-browser/agent-connect
+POST /remote-browser/disable
+```
+
+These routes require `X-DSG-API-Key` and resolve the authenticated account before reading or changing pairing state.
+
+Remote ON means the account permits an agent to attempt a plan-bound connection. It does **not** mean unrestricted browser control.
+
+```text
+customer enables Remote
+        ↓
+authenticated DSG account
+        ↓
+shared browser is provisioned/resumed
+        ↓
+agent-connect request
+        ↓
+approved plan + exact agent/step/action checks
+        ↓
+short-lived remote session authority
+        ↓
+remote action
+        ↓
+evidence / audit
+```
+
+Disabling Remote revokes active remote agent sessions while leaving the user's shared browser/login context available to the user.
+
+### 3. Short-lived remote session credentials
+
+Remote sessions use an opaque session token with a bounded TTL. Current request validation allows a TTL from **60 to 3600 seconds**, with a **900-second default**. Session tokens are sealed/opened by the remote-browser authority layer and are separate from the customer's long-lived DSG API key.
+
+The design goal is capability scoping: a remote session credential represents a specific authorized session, not permanent account authority.
+
+### 4. Server-to-server credentials
+
+Cinema keeps trusted backend credentials separate from customer credentials. Native Z3 verification uses a server-side backend credential over the authenticated Cinema → Z3 boundary. Production secrets are supplied through deployment/runtime configuration and are not placed in README examples.
+
+### 5. Plan authorization remains the execution boundary
+
+A valid API key or remote session token does not convert an out-of-plan action into an allowed action.
+
+Expected decision model:
+
+| Result | Meaning |
+|---|---|
+| `ALLOW` | Action is aligned with the approved plan and required execution authority is present. |
+| `WAITING_PERMISSION` | Plan alignment is valid, but a required permission/capability/credential is not available yet. |
+| `BLOCK` | Action is outside the approved plan, identity/step/target does not align, or another deterministic gate rejects it. |
+
+## Customer flow
+
+A normal governed execution is:
+
+```text
+1. Connect with a DSG API key
+2. Create a plan
+3. Approve the exact plan hash
+4. Run preflight
+5. Receive ALLOW / WAITING_PERMISSION / BLOCK
+6. If browser work is needed, turn Remote ON
+7. Agent connects to the approved plan/step
+8. Execute only the authorized action
+9. Record evidence
+10. Verify / receive proof
+```
+
+The user should not need to inspect raw logs to understand the control result. Product surfaces should expose the decision, reason, evidence, and next required action directly.
 
 ## MCP surface
 
@@ -139,11 +192,11 @@ Bounded deterministic exact-decimal top-k selection:
 Modes:
 
 - `useZ3:false` — Python `Decimal` exact sorting, score descending then candidate ID ascending.
-- `useZ3:true` — native Z3 exact-real optimization plus independent optimality obligations. The result is accepted only if Z3 reports `VERIFIED_EXACT_TOP_K`, SAT, selected IDs match the independent Decimal oracle, request/proof hashes recompute exactly, and both `UNSAT_BETTER_SCORE` and `UNSAT_BETTER_TIE` obligations are present.
+- `useZ3:true` — native Z3 exact-real optimization plus independent optimality obligations. The result is accepted only when the solver/proof/postconditions satisfy the tool's deterministic verification contract.
 
-Any backend failure, proof mismatch, result mismatch, invalid hash, invalid audit record, insufficient exact-k population, or invalid input is fail-closed.
+Backend failure, proof mismatch, result mismatch, invalid hash/audit data, insufficient exact-k population, or invalid input is fail-closed.
 
-Example production call:
+Example:
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -170,12 +223,7 @@ curl --fail-with-body --silent --show-error \
   }'
 ```
 
-The tool is advertised with:
-
-- `readOnlyHint: true`
-- `openWorldHint: false`
-- `destructiveHint: false`
-- `idempotentHint: true`
+The exact selector is advertised as read-only, non-destructive, closed-world, and idempotent.
 
 ## REST and operational surfaces
 
@@ -191,43 +239,66 @@ The tool is advertised with:
 | Executions | `/api/v1/executions` |
 | Proof receipts | `/api/v1/proofs/{proof_id}` |
 | Billing status | `/billing/status` |
+| Remote enable | `/remote-browser/enable` |
+| Remote status | `/remote-browser/status` |
+| Agent connect | `/remote-browser/agent-connect` |
+| Remote disable | `/remote-browser/disable` |
 
-Some mutation, verification, and billing operations require an API key or server-side credential. Secrets are not accepted through the public exact-selector tool.
+Protected mutation, execution, pairing, verification, and billing surfaces may require a DSG API key or server-side credential according to their route contract. Secrets are not accepted as proof and do not replace plan authorization.
+
+## Shared Browser and Browser Memory
+
+The shared browser is **account-scoped**. Agent remote authority is **plan/session-scoped**.
+
+This separation is deliberate:
+
+```text
+USER BROWSER / LOGIN CONTEXT
+        │
+        ├── persists for the account
+        │
+        └── does not imply agent authority
+
+AGENT REMOTE AUTHORITY
+        │
+        ├── user enables/disables Remote
+        ├── agent connects through approved plan
+        ├── session authority is short-lived
+        └── disabling Remote revokes agent sessions
+```
+
+The Browser Memory/continuity work was merged before the current production SHA and had a dedicated production continuity workflow complete successfully. The current production deployment includes that code together with the later secure pairing changes.
 
 ## Production architecture
 
 ```text
-MCP / REST client
-      │
-      ▼
-Azure Container Apps
-DSG Cinema Proof Agent
-      │
-      │ authenticated server-to-server request
-      ▼
-Azure Container Apps
-Native Z3 Verifier
-      │
-      ├─ exact Real / Bool constraints
-      ├─ deterministic seed
-      ├─ optimizer / solver proof obligations
-      └─ request + proof hashes
-      │
-      ▼
-Cinema postconditions
-      │
-      ├─ independent deterministic oracle
-      ├─ hash recomputation
-      ├─ replay checks
-      └─ fail-closed decision
+MCP / REST / Remote client
+          │
+          ▼
+Account authentication / entitlement
+          │
+          ▼
+Plan + permission + execution gates
+          │
+      ┌───┴─────────────┐
+      │                 │
+      ▼                 ▼
+Remote Browser       Native Z3
+pairing/session      verifier
+      │                 │
+      └──────┬──────────┘
+             ▼
+     execution evidence
+             │
+             ▼
+ deterministic postconditions
+ + hash/replay verification
+             │
+             ▼
+   verified receipt / failure
 ```
 
-Production images are built in Azure Container Registry from the exact source commit used by the deployment workflow.
-
-For commit `90949d7c3acec52258413a5d0e79f0e4e4f51020`:
-
-- Z3 image digest: `sha256:84bd41effb5e27e99d8f337e1f9ed2bdcb213c95136ab3e79d7b0c70b8b562d4`
-- Cinema image digest: `sha256:2134f545266e6ad55e523273dd1a3156b8c8919d91441eb643d308b749f87c82`
+Production images are built from the exact source commit selected by the canonical deployment workflow.
 
 ## Deployment and CI
 
@@ -237,29 +308,67 @@ Canonical production workflow:
 .github/workflows/deploy-cinema-production.yml
 ```
 
-The workflow is fail-closed and coordinates Z3 + Cinema deployment. It verifies contracts before deployment, builds immutable images, deploys native Z3, proves Z3 directly, deploys Cinema, verifies Cinema → Z3 and deterministic replay, validates runtime/billing safety gates, and uploads non-secret evidence.
+The production workflow is scoped to runtime/deployment-sensitive paths rather than README-only changes. It coordinates Cinema + Z3 deployment and verification, including:
 
-The external MCP proof is intentionally executed from a GitHub-hosted runner rather than from inside the Azure service, so it verifies the public production boundary a client actually reaches.
+- pre-deploy contract checks
+- Azure identity/runtime configuration
+- immutable image builds
+- native Z3 deployment and direct proof
+- Cinema deployment
+- Cinema → Z3 E2E and deterministic replay
+- marketplace/browser boundary checks
+- revenue-state verification
+- non-secret evidence generation and upload
+
+Current verified deployment: **run `33537989165` — PASS** for source `46d4db76cb57a00df7ee536a35d666d2e4b90bd8`.
 
 ## Evidence boundary
 
-The following claims are execution-verified as of 28 August 2026:
+### Current production claims supported by run `33537989165`
 
-- native Z3 production solve
-- Cinema → Z3 authenticated E2E
-- deterministic replay of the production proof
-- public production MCP initialize and tool discovery
-- `dsg_exact_select useZ3:true` from an external runner
-- exact selected result and deterministic hashes across replay
-- fail-closed duplicate-ID validation
+The current deployment workflow provides execution evidence that the deployment from SHA `46d4db76...` completed successfully and passed the workflow's production verification stages, including direct native-Z3 proof and Cinema → Z3 E2E/replay verification.
 
-These statements do **not** mean that any external marketplace has approved or certified DSG. In particular, a DSG adapter result named `openai_plugin` verifies that DSG's adapter path passed its own production contract; it is **not** OpenAI Marketplace approval or submission status.
+It also verifies the deployment/runtime checks represented by the successful workflow steps. The evidence artifact is recorded in the current production table above.
+
+### Shared Browser / Browser Memory continuity evidence
+
+Before PR #195, the production sequence included:
+
+- PR #193 / source `8b9b5f2f...` — Azure-native shared browser deployment; production deploy run `33495673913` — **PASS**.
+- PR #194 / source `e4eaea7a...` — Browser Memory / long logical context; production deploy run `33536014400` — **PASS**.
+- shared-browser continuity production E2E run `33537273434` — **PASS** before the secure pairing deployment.
+
+The later production SHA `46d4db76...` is a descendant of those changes and was itself deployed successfully.
+
+### Historical external MCP proof — 28 August 2026
+
+The separately recorded external public MCP exact-select proof remains useful historical evidence:
+
+- production deploy run `33189890939` — **PASS** for source `90949d7c3acec52258413a5d0e79f0e4e4f51020`
+- external production MCP proof run `33198810484` — **PASS**
+- external selected IDs: `b`, `c`
+- duplicate candidate IDs rejected fail-closed
+- evidence hash: `f7b464892eb60556cff2605948ad2a76b9532724e34f4a0cd9b7383afcb3d42c`
+- Z3 proof hash: `a5c7b2ee5f1bbd3010cb48f7463ca46d18c61d2672b902e06b6697a41ca45855`
+- Z3 request hash: `b0e2a1abc52bac0e85ab69b0adbf6cf450ce2bfc0cbaa939398a686fc38b5d23`
+
+See [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) for that historical compact evidence record.
+
+That external run proves the public MCP boundary for the deployment it tested. It is intentionally **not** presented as a new external-run proof of the later 1 September production SHA unless a newer external proof run exists.
+
+## Truth boundary
+
+DSG evidence supports only the scope actually tested.
+
+A successful DSG adapter, workflow, proof, or internal marketplace check does **not** mean an external marketplace or certification body has approved DSG. Product documentation must not convert internal verification into external certification, marketplace approval, or independent audit claims.
+
+Likewise, possession of a credential is not proof that an action is authorized. Execution remains subject to the approved plan, permission/capability state, deterministic gates, and evidence requirements.
 
 ## AppDeploy reference surface
 
-`https://dsg-exact-mcp-runtime-wniyu0.v2.appdeploy.ai/` is retained as a reference/demo for the bounded exact-selection contract. It is not the production Z3 authority.
+`https://dsg-exact-mcp-runtime-wniyu0.v2.appdeploy.ai/` may remain as a reference/demo for the bounded exact-selection contract. It is not the authoritative production Z3 runtime.
 
-The authoritative native Z3 execution proof and public MCP proof are the Azure + GitHub Actions records above. Documentation and UI on the AppDeploy reference surface should point back to this production boundary instead of claiming AppDeploy itself is the production solver.
+The authoritative production boundary is Azure Cinema + native Z3 together with the GitHub Actions evidence associated with the deployed source SHA.
 
 ## Local development
 
@@ -272,13 +381,13 @@ python -m pytest -q
 
 For the native Z3 service, install the dependencies from `requirements.txt` and use the Z3 wrapper defined by the production Dockerfile.
 
-Do not place production secrets in source files or example commands.
+Do not place production secrets in source files, documentation, screenshots, or example commands.
 
 ## Documentation
 
 - [`docs/`](docs/) — operational and technical documentation
 - [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) — canonical DSG ONE v1 authorization and verification contract
-- [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) — current proof record
+- [`docs/PRODUCTION_PROOF_2026_08_28.md`](docs/PRODUCTION_PROOF_2026_08_28.md) — historical 28 August production proof record
 - [`docs/INTELLECTUAL_PROPERTY_NOTICE.md`](docs/INTELLECTUAL_PROPERTY_NOTICE.md) — DSG.PICS attribution/watermark notice
 - [GitBook — Cinema Proof Agent](https://dsg-cinema.gitbook.io/cinema-proof-agent) — published documentation
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — additional deployment notes
@@ -293,12 +402,13 @@ Canonical watermark: `DSG.PICS-IP-2026-V1`.
 © 2026 DSG.PICS. Original DSG-specific material is attributed to DSG.PICS, while third-party/open-source material remains governed by its respective licenses and notices. This attribution notice does not itself assert patent registration, trademark registration, external certification, or marketplace approval.
 
 - Project identity: `https://dsg.pics`
-- Issues: https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues
+- Issues: `https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/issues`
 - Support: `support@dsg.pics`
 
 ---
 
 `DSG.PICS-IP-WATERMARK:v1 · DSG.PICS-IP-2026-V1 · https://dsg.pics`
 
-**Last updated:** 28 August 2026  
-**Verification status:** Production Azure Cinema + native Z3 + external MCP `useZ3:true` execution proof **VERIFIED** within the runtime/MCP/Z3/deterministic/fail-closed scope described above.
+**Last updated:** 2 September 2026 (Asia/Bangkok)  
+**Current production source:** `46d4db76cb57a00df7ee536a35d666d2e4b90bd8`  
+**Verification status:** Azure Cinema + native Z3 production deployment **PASS** in GitHub Actions run `33537989165`, with production evidence artifact `9812708964`. Historical external MCP proof is retained separately and is not overstated as a fresh proof of the later production SHA.
