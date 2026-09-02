@@ -40,12 +40,13 @@ INVALID_PARAMS = -32602
 router = APIRouter(tags=["remote-mcp"])
 _api_key_var: ContextVar[Optional[str]] = ContextVar("dsg_remote_mcp_api_key", default=None)
 _public_origin_var: ContextVar[Optional[str]] = ContextVar("dsg_remote_mcp_public_origin", default=None)
+_agent_name_var: ContextVar[Optional[str]] = ContextVar("dsg_remote_mcp_agent_name", default=None)
 
 
 class ManagedRemoteSessionCreate(Strict):
-    plan_id: str = Field(min_length=1, max_length=64)
-    agent_identity: str = Field(min_length=1, max_length=255)
-    step_id: str = Field(min_length=1, max_length=64)
+    plan_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    agent_identity: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    step_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
     ttl_seconds: int = Field(default=900, ge=60, le=3600)
 
 
@@ -67,6 +68,63 @@ def _authorization_key(x_dsg_api_key: Optional[str], authorization: Optional[str
 
 def _current_api_key() -> Optional[str]:
     return _api_key_var.get()
+
+
+def _current_agent_name() -> Optional[str]:
+    return (_agent_name_var.get() or "").strip() or None
+
+
+def _saved_binding_context() -> dict[str, str]:
+    key = _current_api_key()
+    if not key:
+        return {}
+    try:
+        account_id = remote_pairing._account_id(key)
+        state = remote_pairing._read_state(account_id)
+    except HTTPException:
+        return {}
+    context = {
+        "plan_id": str(state.get("last_plan_id") or "").strip(),
+        "step_id": str(state.get("last_step_id") or "").strip(),
+        "agent_identity": str(state.get("last_agent_identity") or "").strip(),
+    }
+    return {key: value for key, value in context.items() if value}
+
+
+def _resolve_binding(args: ManagedRemoteSessionCreate) -> tuple[str, str, str]:
+    saved = _saved_binding_context()
+    plan_id = (args.plan_id or saved.get("plan_id") or "").strip()
+    step_id = (args.step_id or saved.get("step_id") or "").strip()
+    agent_identity = (
+        args.agent_identity
+        or _current_agent_name()
+        or saved.get("agent_identity")
+        or ""
+    ).strip()
+    missing = [
+        name
+        for name, value in (
+            ("plan_id", plan_id),
+            ("step_id", step_id),
+            ("agent_identity", agent_identity),
+        )
+        if not value
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "REMOTE_BINDING_CONTEXT_REQUIRED",
+                "message": (
+                    "Cinema automatically reuses a previous approved binding when available. "
+                    "For the first bind, the MCP client must use the approved plan context already "
+                    "present in the current workflow; do not ask the user to enter plan IDs, step IDs, "
+                    "agent names, or executor endpoints."
+                ),
+                "missing": missing,
+            },
+        )
+    return plan_id, step_id, agent_identity
 
 
 def _managed_executor():
@@ -137,6 +195,11 @@ async def _remote_contract(_: Any) -> dict[str, Any]:
         "provider_secret_exposed": False,
         "account_scoped_browser": True,
     }
+    value["connection_convenience"] = {
+        "pairing_identity_attached": True,
+        "previous_binding_reused": True,
+        "user_enters_internal_ids": False,
+    }
     return value
 
 
@@ -153,6 +216,13 @@ async def _remote_status(_: Any) -> dict[str, Any]:
             "live_view_url": None,
         }
     status["shared_browser"] = shared
+    paired_agent = _current_agent_name()
+    if paired_agent:
+        status["paired_agent_identity"] = paired_agent
+    previous = _saved_binding_context()
+    status["reconnect_available"] = bool(previous.get("plan_id") and previous.get("step_id"))
+    if previous:
+        status["previous_binding"] = previous
     return status
 
 
@@ -161,18 +231,19 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
     if not public_origin:
         raise HTTPException(status_code=503, detail="managed browser public origin is unavailable")
 
+    plan_id, step_id, agent_identity = _resolve_binding(args)
     executor = _managed_executor()
     capability = executor.allocate_capability(
-        plan_id=args.plan_id,
-        step_id=args.step_id,
-        agent_identity=args.agent_identity,
+        plan_id=plan_id,
+        step_id=step_id,
+        agent_identity=agent_identity,
         ttl_seconds=args.ttl_seconds,
     )
     endpoint = f"{public_origin}/remote-browser/{_managed_path()}/action/{capability}"
     request = remote_browser.RemoteSessionCreate(
-        plan_id=args.plan_id,
-        agent_identity=args.agent_identity,
-        step_id=args.step_id,
+        plan_id=plan_id,
+        agent_identity=agent_identity,
+        step_id=step_id,
         remote_endpoint=endpoint,
         ttl_seconds=args.ttl_seconds,
     )
@@ -194,6 +265,7 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
         created["shared_browser"] = shared
         created["managed_provider"] = str(shared.get("provider") or shared_browser.provider())
         created["endpoint_exposed"] = False
+        created["binding_context_reused"] = args.plan_id is None or args.step_id is None or args.agent_identity is None
         return created
     except Exception:
         executor.revoke_capability(capability)
@@ -257,7 +329,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_status",
-        "Check whether the user armed Remote, whether an agent session is connected, and whether the account shared browser is available.",
+        "Check whether Remote is armed, whether an agent session is connected, which paired agent identity Cinema already knows, and whether a previous approved binding can be reused automatically.",
         None,
         _remote_status,
         read_only=True,
@@ -266,7 +338,7 @@ TOOLS: tuple[_Tool, ...] = (
     ),
     _Tool(
         "remote_agent_connect",
-        "Bind an already-approved Cinema plan step to the user's managed shared browser. Supply only plan_id, agent_identity, step_id, and optional ttl_seconds. Cinema provisions the executor endpoint automatically; never ask the user for an endpoint.",
+        "Bind an already-approved Cinema plan step to the user's managed shared browser. Cinema supplies the paired agent identity and automatically reuses the previous approved plan/step binding when available. For a first bind, use plan_id and step_id from the approved plan context already present in the agent workflow; never ask the user to copy internal IDs, agent names, or endpoints.",
         ManagedRemoteSessionCreate,
         _remote_agent_connect,
         read_only=False,
@@ -350,6 +422,7 @@ async def handle_message(
     api_key: Optional[str],
     *,
     public_origin: Optional[str] = None,
+    agent_name: Optional[str] = None,
 ) -> JSONResponse:
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
         return JSONResponse(status_code=400, content=_error(None, INVALID_REQUEST, "a JSON-RPC 2.0 message is required"))
@@ -372,11 +445,11 @@ async def handle_message(
                     "serverInfo": {"name": SERVER_NAME, "version": API_VERSION},
                     "instructions": (
                         "The user controls Remote ON/OFF in Cinema. Check remote_status first. "
-                        "When Remote is armed, bind the approved plan step with remote_agent_connect; "
-                        "Cinema provisions the account shared browser and endpoint automatically. "
-                        "Then use remote_action without a per-click approval cycle while remaining inside "
-                        "the approved plan. The user, executor, and read-only verifier share one browser. "
-                        "Never send plaintext password/OTP/CAPTCHA/passkey/API-key values through tools."
+                        "Never ask the user to copy or enter plan_id, step_id, agent identity, pairing internals, or executor endpoints. "
+                        "Pairing supplies the agent identity automatically, and Cinema reuses the previous approved binding on reconnect. "
+                        "For the first bind, use plan_id and step_id from the approved plan context already present in the current agent workflow. "
+                        "Cinema provisions the account shared browser and endpoint automatically. Then use remote_action without a per-click approval cycle while remaining inside the approved plan. "
+                        "The user, executor, and read-only verifier share one browser. Never send plaintext password/OTP/CAPTCHA/passkey/API-key values through tools."
                     ),
                 },
             )
@@ -400,9 +473,11 @@ async def handle_message(
             return JSONResponse(status_code=400, content=_error(message_id, INVALID_PARAMS, "arguments must be an object"))
         api_token = _api_key_var.set(api_key)
         origin_token = _public_origin_var.set(public_origin)
+        agent_token = _agent_name_var.set((agent_name or "").strip() or None)
         try:
             payload = await _call_tool(str(name), arguments)
         finally:
+            _agent_name_var.reset(agent_token)
             _public_origin_var.reset(origin_token)
             _api_key_var.reset(api_token)
         return JSONResponse(content=_result(message_id, payload))
@@ -415,6 +490,7 @@ async def mcp_endpoint(
     request: Request,
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
+    x_dsg_agent_name: Optional[str] = Header(default=None, alias="X-DSG-Agent-Name"),
 ) -> JSONResponse:
     try:
         message = await request.json()
@@ -425,7 +501,12 @@ async def mcp_endpoint(
         public_origin = _request_public_origin(request)
     except HTTPException:
         public_origin = None
-    return await handle_message(message, api_key, public_origin=public_origin)
+    return await handle_message(
+        message,
+        api_key,
+        public_origin=public_origin,
+        agent_name=x_dsg_agent_name,
+    )
 
 
 def install(app) -> None:
