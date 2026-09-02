@@ -1,0 +1,147 @@
+name: Cinema Compliance Evidence Package
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'api_v1/compliance.py'
+      - 'docs/compliance/**'
+      - 'tests/test_compliance_api.py'
+      - '.github/workflows/compliance-evidence-package.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api_v1/compliance.py'
+      - 'docs/compliance/**'
+      - 'tests/test_compliance_api.py'
+      - '.github/workflows/compliance-evidence-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    name: Build truth-bounded compliance evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CINEMA_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install verification dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir -r requirements.txt -r requirements-cinema.txt pytest
+
+      - name: Run compliance truth-boundary tests
+        run: python -m pytest -q tests/test_compliance_api.py
+
+      - name: Build source evidence manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/compliance
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from api_v1 import compliance
+
+          status = compliance.compliance_status()
+          annex = compliance.annex_iv_evidence()
+          Path('evidence/compliance/local-status.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          Path('evidence/compliance/local-annex-iv.json').write_text(
+              json.dumps(annex, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          manifest = {
+              'source_sha': os.environ['GITHUB_SHA'],
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'tests': ['tests/test_compliance_api.py'],
+              'certification_claim': False,
+              'external_audit_claim': False,
+              'evidence_scope': 'internal technical and operating evidence only',
+          }
+          Path('evidence/compliance/manifest.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Probe current production compliance surface
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            status_code=$(curl --silent --show-error \
+              --output evidence/compliance/production-status.json \
+              --write-out '%{http_code}' \
+              "$CINEMA_URL/compliance/status" || true)
+            annex_code=$(curl --silent --show-error \
+              --output evidence/compliance/production-annex-iv.json \
+              --write-out '%{http_code}' \
+              "$CINEMA_URL/compliance/annex-iv" || true)
+            if [[ "$status_code" == '200' && "$annex_code" == '200' ]]; then
+              break
+            fi
+            if [[ "$attempt" == '30' ]]; then
+              echo 'Production compliance endpoints were not reachable.' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          jq -e '
+            .certification_status == "NOT_CERTIFIED" and
+            .truth_boundary.z3_is_conformity_assessment == false and
+            .truth_boundary.internal_proof_is_external_certification == false
+          ' evidence/compliance/production-status.json >/dev/null
+
+          jq -e '
+            .status == "READINESS_MAPPING" and
+            .summary.coverage_percent < 100 and
+            (.items | map(select(.status == "PARTIAL")) | length) > 0
+          ' evidence/compliance/production-annex-iv.json >/dev/null
+
+      - name: Write evidence summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          covered=$(jq -r '.summary.covered' evidence/compliance/local-annex-iv.json)
+          partial=$(jq -r '.summary.partial' evidence/compliance/local-annex-iv.json)
+          coverage=$(jq -r '.summary.coverage_percent' evidence/compliance/local-annex-iv.json)
+          {
+            echo '## Cinema compliance evidence package'
+            echo
+            echo "- Source SHA: \`$GITHUB_SHA\`"
+            echo '- Compliance tests: PASS'
+            echo "- Annex IV readiness mapping: ${covered} covered / ${partial} partial (${coverage}%)"
+            echo '- External certification: NOT ESTABLISHED'
+            echo '- Independent external audit: NOT CLAIMED'
+            if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
+              echo '- Production compliance surface: VERIFIED'
+            else
+              echo '- Production probe: skipped for PR; source package only'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compliance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-compliance-evidence-${{ github.run_id }}
+          path: evidence/compliance
+          if-no-files-found: error
+          retention-days: 30
