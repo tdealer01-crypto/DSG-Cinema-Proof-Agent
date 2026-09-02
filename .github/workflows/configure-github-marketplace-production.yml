@@ -164,6 +164,37 @@ jobs:
           test "$setup_code" = '302'
           grep -qi '^location: https://github.com/login/oauth/authorize?' "$setup_headers"
 
+          linked_accounts=$(jq -r '.linked_accounts // 0' /tmp/marketplace-status.json)
+          processed_deliveries=$(jq -r '.processed_deliveries // 0' /tmp/marketplace-status.json)
+          pending_deliveries=$(jq -r '.pending_deliveries // 0' /tmp/marketplace-status.json)
+          signed_delivery_observed=false
+          if (( processed_deliveries > 0 && linked_accounts > 0 )); then
+            signed_delivery_observed=true
+          fi
+
+          mkdir -p evidence/marketplace
+          jq \
+            --arg source_sha "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            --arg cinema_url "$CINEMA_URL" \
+            --argjson signed_delivery_observed "$signed_delivery_observed" \
+            '{
+              source_sha: $source_sha,
+              cinema_url: $cinema_url,
+              configuration_status: .status,
+              billing_channel: .billing_channel,
+              checks: .checks,
+              linked_accounts: (.linked_accounts // 0),
+              processed_deliveries: (.processed_deliveries // 0),
+              pending_deliveries: (.pending_deliveries // 0),
+              signed_marketplace_delivery_observed: $signed_delivery_observed,
+              paid_revenue_claim: false,
+              truth_boundary: {
+                config_ready_is_paid_revenue: false,
+                signed_delivery_is_invoice_payment_proof: false,
+                cinema_stripe_rebilling: false
+              }
+            }' /tmp/marketplace-status.json > evidence/marketplace/production-cutover.json
+
           {
             echo '## GitHub Marketplace production — READY'
             echo
@@ -174,5 +205,22 @@ jobs:
             echo "- Product console: \`$CINEMA_URL/app\`"
             echo '- Signed-webhook configuration: PASS'
             echo '- Setup URL → OAuth configuration: PASS'
+            echo "- Linked Marketplace accounts observed: $linked_accounts"
+            echo "- Processed signed deliveries observed: $processed_deliveries"
+            echo "- Pending deliveries: $pending_deliveries"
+            if [[ "$signed_delivery_observed" == 'true' ]]; then
+              echo '- Signed Marketplace delivery + linked account evidence: OBSERVED'
+            else
+              echo '- Signed Marketplace delivery + linked account evidence: PENDING'
+            fi
+            echo '- Paid revenue claim: NOT MADE by this workflow'
             echo '- GitHub-paid → Stripe rebilling: DISABLED by entitlement design'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Marketplace production evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-marketplace-production-${{ github.run_id }}
+          path: evidence/marketplace/production-cutover.json
+          if-no-files-found: error
+          retention-days: 30
