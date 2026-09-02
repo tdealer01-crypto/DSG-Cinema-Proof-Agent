@@ -13,7 +13,7 @@ __all__ = ["API_VERSION", "ENGINE_VERSION", "install", "router"]
 
 
 def install(app) -> None:
-    """Mount verification, control, evidence attestation, transport, billing, and Marketplace."""
+    """Mount verification, control, evidence attestation, transport, billing, Marketplace, and compliance."""
     import importlib
 
     router_module = importlib.import_module(f"{__name__}.router")
@@ -65,6 +65,9 @@ def install(app) -> None:
     # operation-specific inputs back into the same canonical MCP handlers, so
     # Custom Actions never need to preserve nested JSON-RPC params themselves.
     importlib.import_module(f"{__name__}.chatgpt_remote_actions").install(app)
+    # Compliance is Cinema-native and intentionally reports readiness evidence,
+    # not certification or legal conformity claims.
+    importlib.import_module(f"{__name__}.compliance").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.marketing_api").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
