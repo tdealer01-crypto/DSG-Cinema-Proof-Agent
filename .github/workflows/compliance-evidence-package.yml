@@ -15,6 +15,9 @@ on:
       - 'docs/compliance/**'
       - 'tests/test_compliance_api.py'
       - '.github/workflows/compliance-evidence-package.yml'
+  workflow_run:
+    workflows: ["Deploy Cinema + Z3 Production"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -22,15 +25,21 @@ permissions:
 
 jobs:
   evidence:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     name: Build truth-bounded compliance evidence
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       CINEMA_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      EVIDENCE_SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
     steps:
       - name: Checkout exact source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EVIDENCE_SOURCE_SHA }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,17 +68,22 @@ jobs:
 
           status = compliance.compliance_status()
           annex = compliance.annex_iv_evidence()
+          gaps = compliance.compliance_gaps()
           Path('evidence/compliance/local-status.json').write_text(
               json.dumps(status, indent=2, sort_keys=True) + '\n', encoding='utf-8'
           )
           Path('evidence/compliance/local-annex-iv.json').write_text(
               json.dumps(annex, indent=2, sort_keys=True) + '\n', encoding='utf-8'
           )
+          Path('evidence/compliance/local-gaps.json').write_text(
+              json.dumps(gaps, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
           manifest = {
-              'source_sha': os.environ['GITHUB_SHA'],
+              'source_sha': os.environ['EVIDENCE_SOURCE_SHA'],
               'repository': os.environ['GITHUB_REPOSITORY'],
               'run_id': os.environ['GITHUB_RUN_ID'],
               'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'event_name': os.environ['GITHUB_EVENT_NAME'],
               'tests': ['tests/test_compliance_api.py'],
               'certification_claim': False,
               'external_audit_claim': False,
@@ -94,11 +108,16 @@ jobs:
               --output evidence/compliance/production-annex-iv.json \
               --write-out '%{http_code}' \
               "$CINEMA_URL/compliance/annex-iv" || true)
-            if [[ "$status_code" == '200' && "$annex_code" == '200' ]]; then
+            gaps_code=$(curl --silent --show-error \
+              --output evidence/compliance/production-gaps.json \
+              --write-out '%{http_code}' \
+              "$CINEMA_URL/compliance/gaps" || true)
+            if [[ "$status_code" == '200' && "$annex_code" == '200' && "$gaps_code" == '200' ]]; then
               break
             fi
             if [[ "$attempt" == '30' ]]; then
-              echo 'Production compliance endpoints were not reachable.' >&2
+              echo 'Production compliance endpoints did not all become reachable.' >&2
+              printf 'status=%s annex=%s gaps=%s\n' "$status_code" "$annex_code" "$gaps_code" >&2
               exit 1
             fi
             sleep 10
@@ -106,6 +125,10 @@ jobs:
 
           jq -e '
             .certification_status == "NOT_CERTIFIED" and
+            .evidence_package.status == "AUTOMATED_INTERNAL_EVIDENCE" and
+            .evidence_package.source_sha_bound == true and
+            .evidence_package.external_certification_included == false and
+            .evidence_package.independent_external_audit_included == false and
             .truth_boundary.z3_is_conformity_assessment == false and
             .truth_boundary.internal_proof_is_external_certification == false
           ' evidence/compliance/production-status.json >/dev/null
@@ -116,6 +139,14 @@ jobs:
             (.items | map(select(.status == "PARTIAL")) | length) > 0
           ' evidence/compliance/production-annex-iv.json >/dev/null
 
+          jq -e '
+            .status == "ACTION_REQUIRED" and
+            .open_gap_count == 4 and
+            ([.gaps[].id] | sort == [5,7,8,9]) and
+            .truth_boundary.gap_list_is_certification_assessment == false and
+            .truth_boundary.closing_internal_gaps_equals_certification == false
+          ' evidence/compliance/production-gaps.json >/dev/null
+
       - name: Write evidence summary
         shell: bash
         run: |
@@ -123,16 +154,19 @@ jobs:
           covered=$(jq -r '.summary.covered' evidence/compliance/local-annex-iv.json)
           partial=$(jq -r '.summary.partial' evidence/compliance/local-annex-iv.json)
           coverage=$(jq -r '.summary.coverage_percent' evidence/compliance/local-annex-iv.json)
+          gaps=$(jq -r '.open_gap_count' evidence/compliance/local-gaps.json)
           {
             echo '## Cinema compliance evidence package'
             echo
-            echo "- Source SHA: \`$GITHUB_SHA\`"
+            echo "- Source SHA: \`$EVIDENCE_SOURCE_SHA\`"
+            echo "- Trigger: \`${{ github.event_name }}\`"
             echo '- Compliance tests: PASS'
             echo "- Annex IV readiness mapping: ${covered} covered / ${partial} partial (${coverage}%)"
+            echo "- Machine-readable open gaps: ${gaps}"
             echo '- External certification: NOT ESTABLISHED'
             echo '- Independent external audit: NOT CLAIMED'
             if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
-              echo '- Production compliance surface: VERIFIED'
+              echo '- Production compliance status/Annex IV/gaps surfaces: VERIFIED'
             else
               echo '- Production probe: skipped for PR; source package only'
             fi
