@@ -1,9 +1,26 @@
 const $ = id => document.getElementById(id);
+const KEY_SLOT = "dsg-one-key-session";
 let key = "";
 let busy = false;
 let generation = 0;
 let controller = new AbortController();
 let remoteBusy = false;
+
+function readSessionKey() {
+  try { return sessionStorage.getItem(KEY_SLOT) || ""; }
+  catch (_) { return ""; }
+}
+
+function rememberSessionKey(value) {
+  if (!value) return;
+  try { sessionStorage.setItem(KEY_SLOT, value); }
+  catch (_) {}
+}
+
+function forgetSessionKey() {
+  try { sessionStorage.removeItem(KEY_SLOT); }
+  catch (_) {}
+}
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}), "X-DSG-API-Key": key };
@@ -123,17 +140,18 @@ function reset() {
   remoteMessage("");
 }
 
-function clearCredentials() {
+function clearCredentials({ forgetSession = true } = {}) {
   generation += 1;
   controller.abort();
   controller = new AbortController();
   key = "";
   busy = false;
+  if (forgetSession) forgetSessionKey();
   reset();
 }
 
 function showError(error) {
-  clearCredentials();
+  clearCredentials({ forgetSession: true });
   $("message").textContent = error.message;
   $("message").className = "status error";
 }
@@ -185,9 +203,10 @@ async function load() {
   if (busy) return;
   const supplied = $("apiKey").value.trim();
   if (!supplied) return showError(new Error("API key required"));
-  clearCredentials();
+  clearCredentials({ forgetSession: true });
   const expectedGeneration = generation;
   key = supplied;
+  rememberSessionKey(supplied);
   busy = true;
   $("connect").disabled = true;
   try { await loadWithCurrentKey(expectedGeneration); }
@@ -195,13 +214,38 @@ async function load() {
   finally { if (expectedGeneration === generation) { busy = false; $("connect").disabled = false; } }
 }
 
+async function resumeSession() {
+  const recovered = readSessionKey();
+  if (!recovered || busy) return;
+  const expectedGeneration = generation;
+  key = recovered;
+  busy = true;
+  $("connect").disabled = true;
+  $("connection").textContent = "RECONNECTING";
+  try {
+    await loadWithCurrentKey(expectedGeneration);
+  } catch (error) {
+    if (expectedGeneration === generation && error.name !== "AbortError") showError(error);
+  } finally {
+    if (expectedGeneration === generation) {
+      busy = false;
+      $("connect").disabled = false;
+    }
+  }
+}
+
 $("connect").onclick = load;
 $("disconnect").onclick = () => {
-  clearCredentials();
-  $("message").textContent = "Disconnected. Credentials cleared from this page.";
+  clearCredentials({ forgetSession: true });
+  $("message").textContent = "Disconnected. Credentials cleared from this browser tab.";
   $("message").className = "status";
 };
-window.addEventListener("pagehide", clearCredentials);
+window.addEventListener("pagehide", () => {
+  controller.abort();
+  controller = new AbortController();
+  key = "";
+  busy = false;
+});
 
 $("firstProof").onclick = async () => {
   if (busy || !key) return;
@@ -252,12 +296,21 @@ $("activate").onclick = async () => {
     $("displayName").value = "";
     $("contactEmail").value = "";
     $("marketingConsent").checked = false;
-    $("message").textContent = `Account activated. Copy the key before continuing.${marketingMessage}`;
+    key = body.api_key;
+    rememberSessionKey(body.api_key);
+    await loadWithCurrentKey();
+    $("message").textContent = `Account activated and connected automatically. The key is shown once above for backup.${marketingMessage}`;
   } catch (error) { showError(error); }
   finally { busy = false; $("activate").disabled = false; }
 };
 
-$("useIssuedKey").onclick = () => { const issued = $("issuedKey").textContent; if (!issued) return; $("apiKey").value = issued; $("issuedKey").textContent = ""; $("newKey").hidden = true; load(); };
+$("useIssuedKey").onclick = () => {
+  const issued = $("issuedKey").textContent;
+  if (!issued) return;
+  $("apiKey").value = issued;
+  rememberSessionKey(issued);
+  load();
+};
 
 $("upgrade").onclick = async () => {
   if (busy) return; busy = true; $("upgrade").disabled = true;
@@ -321,3 +374,5 @@ $("remoteOff").onclick = async () => {
 setInterval(() => {
   if (key && !document.hidden) refreshRemoteStatus();
 }, 4000);
+
+resumeSession();

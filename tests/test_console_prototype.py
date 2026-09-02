@@ -97,7 +97,10 @@ def test_remote_dashboard_is_chat_driven_and_preserves_shared_browser_semantics(
     assert "takeover" not in response.text.lower()
     assert "resume agent" not in response.text.lower()
     assert "localStorage" not in script.text
-    assert "sessionStorage" not in script.text
+    assert "sessionStorage" in script.text
+    assert 'const KEY_SLOT = "dsg-one-key-session"' in script.text
+    assert "resumeSession();" in script.text
+    assert "Credentials cleared from this browser tab" in script.text
 
 
 def test_static_markup_shows_no_verification_state(markup: str):

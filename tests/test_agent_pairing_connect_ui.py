@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 from api_v1 import agent_pairing
 
 
@@ -31,3 +33,21 @@ def test_connect_agent_page_preserves_explicit_plan_approval_boundary() -> None:
     assert "Plan approval is never skipped" in html
     assert "plan_approval_required:true" in html
     assert "after APPROVED the agent binds to that exact step automatically" in html
+
+
+def test_connect_agent_reuses_valid_pairing_in_same_tab() -> None:
+    html = agent_pairing._CONNECT_HTML
+
+    assert "PAIR_EXPIRY_SLOT" in html
+    assert "function storedPair()" in html
+    assert "async function ensurePair(key)" in html
+    assert "pairing_reused:pairing.reused===true" in html
+
+
+def test_pairing_middleware_attaches_agent_identity_without_exposing_master_key() -> None:
+    source = inspect.getsource(agent_pairing.AgentPairingMiddleware)
+
+    assert "x-dsg-agent-name" in source
+    assert "pairing.agent_name" in source
+    assert "pairing.api_key" in source
+    assert "authorization" in source
