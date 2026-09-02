@@ -154,14 +154,19 @@ _CONNECT_HTML = """<!doctype html>
 <meta name=viewport content='width=device-width,initial-scale=1'>
 <title>DSG ONE — Connect Agent</title>
 <style>body{font:16px system-ui;background:#07101f;color:#e9f0ff;max-width:760px;margin:auto;padding:24px}input,button{font:inherit;padding:11px;border-radius:9px;border:1px solid #345;background:#0d1a30;color:#fff}input{width:100%;box-sizing:border-box}.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.card{border:1px solid #234;padding:18px;border-radius:14px;background:#0a1426}.ok{color:#66e2b5}.muted{color:#91a3c0;font-size:13px}code{word-break:break-all}</style>
-<h1>Connect Agent</h1><p class=muted>The master DSG key stays in this browser. The agent receives a short-lived pairing token only.</p>
-<div class=card><label>DSG API key</label><div class=row><input id=k type=password autocomplete=off><button id=show>Show</button><button id=copy>Copy</button></div><label>Agent name</label><div class=row><input id=a value='chat-agent'></div><button id=pair>Connect Agent</button><p id=s class=muted>Not paired.</p><pre id=o></pre></div>
+<h1>Connect Agent</h1><p class=muted>If you do not have a DSG API key, activate Free Evaluation here. The master DSG key stays in this browser tab; the agent receives a short-lived pairing token only.</p>
+<div class=card><label>DSG API key</label><div class=row><input id=k type=password autocomplete=off><button id=activate>Activate Free Key</button><button id=show>Show</button><button id=copy>Copy</button></div><label>Agent name</label><div class=row><input id=a value='chat-agent'></div><button id=pair>Connect Agent</button><p id=s class=muted>Not paired.</p><pre id=o></pre></div>
 <script>
 const k=document.querySelector('#k'),s=document.querySelector('#s'),o=document.querySelector('#o');
-try{k.value=localStorage.getItem('dsg-one-key')||''}catch(e){}
+const KEY_SLOT='dsg-one-key-session',ACTIVATION_SLOT='dsg-one-remote-activation-id';
+try{k.value=sessionStorage.getItem(KEY_SLOT)||''}catch(e){}
+function activationId(){try{let id=sessionStorage.getItem(ACTIVATION_SLOT);if(!id){id='remote-browser-'+(crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+Math.random().toString(36).slice(2));sessionStorage.setItem(ACTIVATION_SLOT,id)}return id}catch(e){return 'remote-browser-'+String(Date.now())+'-'+Math.random().toString(36).slice(2)}}
+function rememberKey(value){k.value=value;try{sessionStorage.setItem(KEY_SLOT,value)}catch(e){}}
+async function activateKey(){s.textContent='Activating Free Evaluation…';o.textContent='';const r=await fetch('/billing/activate',{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({channel:'remote_browser',activation_id:activationId(),display_name:'Cinema Remote Browser'})});let b={};try{b=await r.json()}catch(e){}if(!r.ok)throw new Error(JSON.stringify(b)||('HTTP '+r.status));if(!b.api_key)throw new Error('Activation returned no API key');rememberKey(b.api_key);s.innerHTML='<span class=ok>FREE KEY ACTIVE — kept only for this browser tab</span>';return b.api_key}
+document.querySelector('#activate').onclick=async()=>{try{await activateKey()}catch(e){s.textContent='ACTIVATION FAILED — '+e.message}};
 document.querySelector('#show').onclick=()=>{k.type=k.type==='password'?'text':'password';document.querySelector('#show').textContent=k.type==='password'?'Show':'Hide'};
-document.querySelector('#copy').onclick=async()=>{await navigator.clipboard.writeText(k.value);s.textContent='API key copied.'};
-document.querySelector('#pair').onclick=async()=>{s.textContent='Pairing…';o.textContent='';try{const r=await fetch('/remote-browser/agent-pair',{method:'POST',headers:{'Content-Type':'application/json','X-DSG-API-Key':k.value},body:JSON.stringify({agent_name:document.querySelector('#a').value||'chat-agent',ttl_seconds:600})});const b=await r.json();if(!r.ok)throw new Error(JSON.stringify(b));s.innerHTML='<span class=ok>PAIRED — token valid for 10 minutes</span>';o.textContent=JSON.stringify(b,null,2)}catch(e){s.textContent='PAIRING FAILED — '+e.message}};
+document.querySelector('#copy').onclick=async()=>{if(!k.value.trim()){s.textContent='No API key to copy. Activate Free Key first.';return}await navigator.clipboard.writeText(k.value);s.textContent='API key copied.'};
+document.querySelector('#pair').onclick=async()=>{s.textContent='Pairing…';o.textContent='';try{let key=k.value.trim();if(!key)key=await activateKey();const r=await fetch('/remote-browser/agent-pair',{method:'POST',headers:{'Content-Type':'application/json','X-DSG-API-Key':key},body:JSON.stringify({agent_name:document.querySelector('#a').value||'chat-agent',ttl_seconds:600})});const b=await r.json();if(!r.ok)throw new Error(JSON.stringify(b));s.innerHTML='<span class=ok>PAIRED — token valid for 10 minutes</span>';o.textContent=JSON.stringify(b,null,2)}catch(e){s.textContent='PAIRING FAILED — '+e.message}};
 </script>"""
 
 
