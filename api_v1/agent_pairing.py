@@ -4,6 +4,12 @@ The browser keeps the customer's DSG API key. Agents receive a short-lived
 pairing token instead. An ASGI middleware resolves a valid pairing token to the
 master key only inside the server before the existing /mcp route runs, so the
 model/tool payload never needs the master credential.
+
+When the user approves a plan, the middleware remembers the first approved
+step for that account. The next real MCP request made with the account's pairing
+token claims that exact approved binding automatically when Remote is ON. This
+removes plan/step/token plumbing from the user without fabricating an agent
+connection before an agent client actually contacts Cinema.
 """
 
 from __future__ import annotations
@@ -60,6 +66,112 @@ def _authenticated_account(api_key: Optional[str]):
     return key, authorization.account
 
 
+def _scope_header(scope, name: bytes) -> str:
+    for key, value in list(scope.get("headers") or []):
+        if key.lower() == name:
+            return value.decode("latin1").strip()
+    return ""
+
+
+def _approved_plan_id(path: str, method: str) -> Optional[str]:
+    if method.upper() != "POST" or not path.startswith("/api/v1/plans/") or not path.endswith("/approve"):
+        return None
+    middle = path[len("/api/v1/plans/") : -len("/approve")].strip("/")
+    return middle or None
+
+
+def _align_active_pairings(account_id: str, agent_name: str) -> None:
+    if not agent_name:
+        return
+    with _lock:
+        for digest, pairing in list(_pairings.items()):
+            if pairing.account_id != account_id:
+                continue
+            _pairings[digest] = _Pairing(
+                api_key=pairing.api_key,
+                account_id=pairing.account_id,
+                agent_name=agent_name,
+                expires_at=pairing.expires_at,
+            )
+
+
+def _remember_approved_binding(api_key: str, plan_id: str) -> None:
+    """Bind an authenticated approval event to the account's next remote claim."""
+    from . import remote_pairing
+
+    key, account = _authenticated_account(api_key)
+    record = service.get_plan_record(plan_id)
+    if str(record.get("status") or "") != service.STATUS_APPROVED:
+        return
+    document = service.plan_document(record)
+    if not document.steps:
+        return
+
+    first_step = document.steps[0]
+    state = remote_pairing._read_state(account.account_id)
+    state["last_plan_id"] = str(record["plan_id"])
+    state["last_step_id"] = str(first_step.step_id)
+    state["last_agent_identity"] = str(document.agent_identity)
+    state["approved_step_queue"] = [str(step.step_id) for step in document.steps]
+    state["binding_source"] = "approved_plan"
+    state.pop("last_auto_connect_error", None)
+    remote_pairing._write_state(account.account_id, state)
+    _align_active_pairings(account.account_id, str(document.agent_identity))
+
+    # Keep the validated key local to this helper; callers never receive it.
+    del key
+
+
+async def _auto_claim_if_ready(scope, pairing: _Pairing) -> None:
+    """Claim a waiting approved binding only after the paired agent really contacts MCP."""
+    from . import remote_mcp, remote_pairing
+
+    state = remote_pairing._read_state(pairing.account_id)
+    if not bool(state.get("enabled")):
+        return
+    if remote_pairing._active_sessions(state):
+        return
+
+    plan_id = str(state.get("last_plan_id") or "").strip()
+    step_id = str(state.get("last_step_id") or "").strip()
+    approved_agent = str(state.get("last_agent_identity") or pairing.agent_name or "").strip()
+    if not plan_id or not step_id or not approved_agent:
+        return
+
+    try:
+        public_origin = remote_mcp._request_public_origin(Request(scope))
+        api_token = remote_mcp._api_key_var.set(pairing.api_key)
+        origin_token = remote_mcp._public_origin_var.set(public_origin)
+        agent_token = remote_mcp._agent_name_var.set(approved_agent)
+        try:
+            await remote_mcp._remote_agent_connect(
+                remote_mcp.ManagedRemoteSessionCreate(
+                    plan_id=plan_id,
+                    step_id=step_id,
+                    agent_identity=approved_agent,
+                )
+            )
+        finally:
+            remote_mcp._agent_name_var.reset(agent_token)
+            remote_mcp._public_origin_var.reset(origin_token)
+            remote_mcp._api_key_var.reset(api_token)
+    except HTTPException as exc:
+        latest = remote_pairing._read_state(pairing.account_id)
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        latest["last_auto_connect_error"] = {
+            "status_code": exc.status_code,
+            "error": str(detail.get("error") or "REMOTE_AUTO_CONNECT_FAILED"),
+        }
+        remote_pairing._write_state(pairing.account_id, latest)
+    except Exception:
+        latest = remote_pairing._read_state(pairing.account_id)
+        latest["last_auto_connect_error"] = {
+            "status_code": 500,
+            "error": "REMOTE_AUTO_CONNECT_FAILED",
+        }
+        remote_pairing._write_state(pairing.account_id, latest)
+
+
 class PairAgentRequest(BaseModel):
     agent_name: str = Field(default="chat-agent", min_length=1, max_length=80)
     ttl_seconds: int = Field(default=600, ge=60, le=900)
@@ -75,21 +187,26 @@ def pair_agent(
     request: Request,
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ) -> dict:
+    from . import remote_pairing
+
     api_key, account = _authenticated_account(x_dsg_api_key)
     _cleanup()
+    state = remote_pairing._read_state(account.account_id)
+    approved_identity = str(state.get("last_agent_identity") or "").strip()
+    agent_name = approved_identity or body.agent_name
     token = _TOKEN_PREFIX + secrets.token_urlsafe(32)
     expires_at = time.time() + body.ttl_seconds
     with _lock:
         _pairings[_digest(token)] = _Pairing(
             api_key=api_key,
             account_id=account.account_id,
-            agent_name=body.agent_name,
+            agent_name=agent_name,
             expires_at=expires_at,
         )
     origin = str(request.base_url).rstrip("/")
     return {
         "paired": True,
-        "agent_name": body.agent_name,
+        "agent_name": agent_name,
         "pairing_token": token,
         "token_type": "Bearer",
         "expires_in": body.ttl_seconds,
@@ -97,7 +214,13 @@ def pair_agent(
         "mcp_endpoint": f"{origin}/mcp",
         "master_key_exposed_to_agent": False,
         "agent_context_attached": True,
-        "message": "Give the pairing token to the MCP client as a Bearer token. The master DSG API key remains in Cinema.",
+        "approved_identity_reused": bool(approved_identity),
+        "auto_claim_on_mcp_contact": True,
+        "message": (
+            "Give the pairing token to the MCP client as a Bearer token. The master DSG API key remains "
+            "in Cinema. When Remote is ON and an approved binding is ready, the agent's next MCP request "
+            "claims it automatically."
+        ),
     }
 
 
@@ -133,32 +256,58 @@ def resolve_pairing_token(token: str) -> Optional[str]:
 
 
 class AgentPairingMiddleware:
-    """Translate a short-lived Bearer pairing token to the existing MCP key header."""
+    """Translate pairing credentials and auto-claim an already-approved remote binding."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("path") != "/mcp":
+        if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
 
-        headers = list(scope.get("headers") or [])
-        authorization = next((value for key, value in headers if key.lower() == b"authorization"), b"")
-        raw = authorization.decode("latin1").strip()
-        if raw.lower().startswith("bearer "):
-            token = raw[7:].strip()
-            pairing = resolve_pairing(token)
-            if pairing is not None:
-                filtered = [
-                    (key, value)
-                    for key, value in headers
-                    if key.lower() not in {b"authorization", b"x-dsg-api-key", b"x-dsg-agent-name"}
-                ]
-                filtered.append((b"x-dsg-api-key", pairing.api_key.encode("latin1")))
-                filtered.append((b"x-dsg-agent-name", pairing.agent_name.encode("latin1")))
-                scope = {**scope, "headers": filtered}
-        await self.app(scope, receive, send)
+        path = str(scope.get("path") or "")
+        method = str(scope.get("method") or "GET")
+        plan_id = _approved_plan_id(path, method)
+        approval_key = _scope_header(scope, b"x-dsg-api-key") if plan_id else ""
+
+        if path == "/mcp":
+            headers = list(scope.get("headers") or [])
+            authorization = next((value for key, value in headers if key.lower() == b"authorization"), b"")
+            raw = authorization.decode("latin1").strip()
+            if raw.lower().startswith("bearer "):
+                token = raw[7:].strip()
+                pairing = resolve_pairing(token)
+                if pairing is not None:
+                    await _auto_claim_if_ready(scope, pairing)
+                    # Approval may have aligned the pairing identity since the token was minted.
+                    pairing = resolve_pairing(token) or pairing
+                    filtered = [
+                        (key, value)
+                        for key, value in headers
+                        if key.lower() not in {b"authorization", b"x-dsg-api-key", b"x-dsg-agent-name"}
+                    ]
+                    filtered.append((b"x-dsg-api-key", pairing.api_key.encode("latin1")))
+                    filtered.append((b"x-dsg-agent-name", pairing.agent_name.encode("latin1")))
+                    scope = {**scope, "headers": filtered}
+
+        response_status: Optional[int] = None
+
+        async def tracked_send(message):
+            nonlocal response_status
+            if message.get("type") == "http.response.start":
+                response_status = int(message.get("status") or 0)
+            await send(message)
+
+        await self.app(scope, receive, tracked_send)
+
+        if plan_id and approval_key and response_status is not None and 200 <= response_status < 300:
+            try:
+                _remember_approved_binding(approval_key, plan_id)
+            except Exception:
+                # The approval response is already authoritative. Pairing convenience must never
+                # rewrite or mask the approval result; a later explicit MCP connect can still work.
+                pass
 
 
 _CONNECT_HTML = """<!doctype html>
@@ -166,7 +315,7 @@ _CONNECT_HTML = """<!doctype html>
 <title>DSG ONE — Connect Agent</title>
 <style>body{font:16px system-ui;background:#07101f;color:#e9f0ff;max-width:760px;margin:auto;padding:24px}input,button{font:inherit;padding:11px;border-radius:9px;border:1px solid #345;background:#0d1a30;color:#fff}input{width:100%;box-sizing:border-box}.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.card{border:1px solid #234;padding:18px;border-radius:14px;background:#0a1426}.ok{color:#66e2b5}.muted{color:#91a3c0;font-size:13px}.primary{background:#f5f7ff;color:#07101f;font-weight:700;border-color:#f5f7ff}details{margin-top:18px}code{word-break:break-all}</style>
 <h1>Connect Agent</h1>
-<p class=muted>One click prepares Cinema for your agent. If needed, Cinema activates Free Evaluation, turns Remote ON, creates a short-lived pairing token, and verifies MCP. The master DSG key stays in this browser tab; the agent receives a short-lived pairing token only. Plan approval is never skipped.</p>
+<p class=muted>One click prepares Cinema for your agent. If needed, Cinema activates Free Evaluation, turns Remote ON, creates a short-lived pairing token, and verifies MCP. The master DSG key stays in this browser tab; the agent receives a short-lived pairing token only. Plan approval is never skipped. After approval, the agent's next MCP request claims the approved step automatically.</p>
 <div class=card>
 <button id=pair class=primary>Connect Agent</button>
 <p id=s class=muted>Ready to connect.</p>
@@ -190,7 +339,7 @@ async function enableRemote(key){s.textContent='Turning Remote ON…';const b=aw
 async function pairAgent(key){s.textContent='Creating secure agent pairing…';const b=await jsonFetch('/remote-browser/agent-pair',{method:'POST',headers:{'Content-Type':'application/json','X-DSG-API-Key':key},body:JSON.stringify({agent_name:document.querySelector('#a').value||'chat-agent',ttl_seconds:600})});if(!b.pairing_token)throw new Error('Pairing returned no token');rememberPair(b.pairing_token,b.expires_at_unix);return b}
 async function checkStatus(token){s.textContent='Verifying MCP connection…';const rpc={jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'remote_status',arguments:{}}};const b=await jsonFetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(rpc)});const result=b.result||{};if(result.isError===true)throw new Error(JSON.stringify(result.structuredContent||result.content||result));return result.structuredContent||{}}
 async function ensurePair(key){const existing=storedPair();if(existing){try{existing.status=await checkStatus(existing.pairing_token);copyPair.disabled=false;return existing}catch(e){clearPair()}}return await pairAgent(key)}
-async function connectAgent(){if(running)return;running=true;pairButton.disabled=true;o.textContent='';try{const key=await ensureKey();await enableRemote(key);const pairing=await ensurePair(key);const status=pairing.status||await checkStatus(pairing.pairing_token);const summary={remote_enabled:status.remote_enabled===true,agent_connection:status.agent_connection||'waiting',active_sessions:status.active_sessions||0,shared_browser_connected:!!(status.shared_browser&&status.shared_browser.connected),mcp_endpoint:pairing.mcp_endpoint,pairing_expires_in:pairing.expires_in,pairing_reused:pairing.reused===true,master_key_exposed_to_agent:false,plan_approval_required:true};o.textContent=JSON.stringify(summary,null,2);if(!summary.remote_enabled)throw new Error('Remote status did not stay enabled');s.innerHTML='<span class=ok>READY — Cinema is paired and Remote is ON.</span> Approve the plan when Cinema shows it; after APPROVED the agent binds to that exact step automatically.'}catch(e){s.textContent='CONNECT FAILED — '+e.message}finally{running=false;pairButton.disabled=false}}
+async function connectAgent(){if(running)return;running=true;pairButton.disabled=true;o.textContent='';try{const key=await ensureKey();await enableRemote(key);const pairing=await ensurePair(key);const status=pairing.status||await checkStatus(pairing.pairing_token);const summary={remote_enabled:status.remote_enabled===true,agent_connection:status.agent_connection||'waiting',active_sessions:status.active_sessions||0,shared_browser_connected:!!(status.shared_browser&&status.shared_browser.connected),mcp_endpoint:pairing.mcp_endpoint,pairing_expires_in:pairing.expires_in,pairing_reused:pairing.reused===true,master_key_exposed_to_agent:false,plan_approval_required:true,auto_claim_on_agent_contact:true};o.textContent=JSON.stringify(summary,null,2);if(!summary.remote_enabled)throw new Error('Remote status did not stay enabled');s.innerHTML='<span class=ok>READY — Cinema is paired and Remote is ON.</span> Approve the plan when Cinema shows it; the agent claims that approved step automatically on its next MCP request.'}catch(e){s.textContent='CONNECT FAILED — '+e.message}finally{running=false;pairButton.disabled=false}}
 document.querySelector('#activate').onclick=async()=>{try{await activateKey();s.innerHTML='<span class=ok>FREE KEY ACTIVE — kept only for this browser tab</span>'}catch(e){s.textContent='ACTIVATION FAILED — '+e.message}};
 document.querySelector('#show').onclick=()=>{k.type=k.type==='password'?'text':'password';document.querySelector('#show').textContent=k.type==='password'?'Show':'Hide'};
 document.querySelector('#copy').onclick=async()=>{if(!k.value.trim()){s.textContent='No API key to copy. Connect Agent first.';return}await navigator.clipboard.writeText(k.value);s.textContent='API key copied.'};
