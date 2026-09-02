@@ -49,6 +49,12 @@ function activationId() {
 function manualKeyPresent() {
   return Boolean((byId("apiKey")?.value || "").trim());
 }
+function retryRun() {
+  const run = byId("btnRun");
+  if (!run) return;
+  run.disabled = false;
+  run.click();
+}
 function dsgRequest(urlLike) {
   try {
     const target = new URL(typeof urlLike === "string" ? urlLike : urlLike.url, location.href);
@@ -177,15 +183,15 @@ async function refreshUsage() {
   } catch (_) {}
 }
 
-async function activateFreeEvaluation({ retryRun = false } = {}) {
+async function activateFreeEvaluation({ retryRun: shouldRetryRun = false } = {}) {
   if (freeKey()) {
     await refreshUsage();
-    if (retryRun) byId("btnRun")?.click();
+    if (shouldRetryRun) retryRun();
     return;
   }
   if (activating) {
     await activating;
-    if (retryRun) byId("btnRun")?.click();
+    if (shouldRetryRun) retryRun();
     return;
   }
 
@@ -226,7 +232,7 @@ async function activateFreeEvaluation({ retryRun = false } = {}) {
 
   try {
     await activating;
-    if (retryRun) byId("btnRun")?.click();
+    if (shouldRetryRun) retryRun();
   } catch (error) {
     updateEvaluationStatus("needs-activation", "Free Evaluation could not be activated", error.message || "Retry activation or open Developer Settings.");
     const notice = byId("activationNotice");
@@ -247,10 +253,8 @@ function installCaptureHandlers() {
       run.disabled = true;
       try {
         await activateFreeEvaluation({ retryRun: true });
-      } finally {
-        // The original console owns final readiness state. Only restore the
-        // control if the page is still connected/ready enough to have enabled it.
-        if (!run.disabled || freeKey()) run.disabled = false;
+      } catch (_) {
+        run.disabled = false;
       }
     }, true);
   }
@@ -292,7 +296,7 @@ def free_evaluation_script() -> Response:
     return Response(
         _SCRIPT,
         media_type="application/javascript",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -313,7 +317,7 @@ class OneClickEvaluationMiddleware(BaseHTTPMiddleware):
                 html = html.replace(marker, injected, 1)
             return HTMLResponse(
                 html,
-                headers={"Cache-Control": "no-store"},
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
             )
         return await call_next(request)
 
