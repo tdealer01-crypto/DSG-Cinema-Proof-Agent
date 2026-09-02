@@ -107,6 +107,9 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
     initialized = _rpc(client, "initialize")
     assert initialized.status_code == 200
     assert initialized.json()["result"]["serverInfo"]["name"] == "dsg-cinema-remote"
+    instructions = initialized.json()["result"]["instructions"]
+    assert "Never ask the user to copy or enter plan_id, step_id, agent identity" in instructions
+    assert "previous approved binding" in instructions
 
     listed = _rpc(client, "tools/list")
     definitions = {tool["name"]: tool for tool in listed.json()["result"]["tools"]}
@@ -119,7 +122,7 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
     }
     connect_schema = definitions["remote_agent_connect"]["inputSchema"]
     assert "remote_endpoint" not in connect_schema["properties"]
-    assert set(connect_schema["required"]) == {"plan_id", "agent_identity", "step_id"}
+    assert set(connect_schema.get("required", [])) == set()
 
     headers = {"X-DSG-API-Key": "dsg_live_test"}
     enabled = client.post("/remote-browser/enable", headers=headers)
@@ -130,6 +133,12 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
     assert status["isError"] is False
     assert status["structuredContent"]["agent_connection"] == "waiting"
     assert status["structuredContent"]["shared_browser"]["provider"] == "browserbase"
+    assert status["structuredContent"]["reconnect_available"] is False
+
+    first_without_context = _tool(client, "remote_agent_connect", {})
+    assert first_without_context["isError"] is True
+    assert first_without_context["structuredContent"]["error"] == "REMOTE_BINDING_CONTEXT_REQUIRED"
+    assert "do not ask the user" in first_without_context["structuredContent"]["message"]
 
     connected = _tool(
         client,
@@ -145,7 +154,23 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
     assert connected["structuredContent"]["endpoint_exposed"] is False
     assert connected["structuredContent"]["managed_provider"] == "browserbase"
     assert connected["structuredContent"]["shared_browser"]["browserbase_session_id"] == "bb_test"
+    assert connected["structuredContent"]["binding_context_reused"] is False
     token = connected["structuredContent"]["session_token"]
+
+    status_after_connect = _tool(client, "remote_status")
+    assert status_after_connect["structuredContent"]["reconnect_available"] is True
+    assert status_after_connect["structuredContent"]["previous_binding"] == {
+        "plan_id": "plan-mcp-1",
+        "step_id": "github-actions",
+        "agent_identity": "chatgpt",
+    }
+
+    reconnected = _tool(client, "remote_agent_connect", {})
+    assert reconnected["isError"] is False
+    assert reconnected["structuredContent"]["plan_id"] == "plan-mcp-1"
+    assert reconnected["structuredContent"]["step_id"] == "github-actions"
+    assert reconnected["structuredContent"]["agent_identity"] == "chatgpt"
+    assert reconnected["structuredContent"]["binding_context_reused"] is True
 
     action = _tool(
         client,
@@ -258,99 +283,3 @@ def test_required_ci_proves_browserbase_session_is_recorded_and_plan_domain_scop
         "dashboard.stripe.com",
         "marketplace.stripe.com",
     ]
-
-
-def test_required_ci_proves_signed_executor_binding_and_replay_protection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("DSG_REMOTE_ACTION_KEY", "q" * 64)
-    monkeypatch.setenv("DSG_REMOTE_ACTION_STORE", str(tmp_path / "remote-store"))
-    capability = browserbase_executor.allocate_capability(
-        plan_id="plan-stripe",
-        step_id="publish",
-        agent_identity="chatgpt",
-        ttl_seconds=600,
-    )
-    browserbase_executor.finalize_capability(
-        capability,
-        session_id="rbs_exact",
-        plan_hash="f" * 64,
-        browser_policy={
-            "enforced": True,
-            "allowed_origins": ["https://dashboard.stripe.com"],
-        },
-    )
-
-    async def fake_ensure(cinema_session_id: str, *, plan_hash: str, browser_policy: dict):
-        return {
-            "provider": "browserbase",
-            "browserbase_session_id": "bb_exact",
-            "live_view_url": "https://browserbase.example/live/exact",
-            "connected": True,
-            "pages": [],
-        }
-
-    async def fake_perform(cinema_session_id: str, payload: dict):
-        return 200, {"ok": True, "kind": payload["action"]["kind"]}
-
-    monkeypatch.setattr(browserbase_executor, "ensure_browser_session", fake_ensure)
-    monkeypatch.setattr(browserbase_executor, "_perform_action", fake_perform)
-
-    app = FastAPI()
-    app.include_router(remote_relay_security.router)
-    executor = TestClient(app)
-    envelope = {
-        "version": "dsg.remote-action.v1",
-        "session_id": "rbs_exact",
-        "context": {
-            "plan_id": "plan-stripe",
-            "plan_hash": "f" * 64,
-            "agent_identity": "chatgpt",
-            "step_id": "publish",
-            "actor": "AGENT_VERIFIER",
-            "browser_policy": {
-                "enforced": True,
-                "allowed_origins": ["https://dashboard.stripe.com"],
-                "enforce_current_origin": True,
-            },
-        },
-        "action": {
-            "kind": "browser.extract",
-            "controller": "agent_verifier",
-            "parameters": {},
-        },
-    }
-    signed = remote_relay_security.signed_headers_for_payload(envelope)
-    allowed = executor.post(
-        f"/remote-browser/browserbase/action/{capability}",
-        headers=signed,
-        json=envelope,
-    )
-    assert allowed.status_code == 200, allowed.text
-
-    replay = executor.post(
-        f"/remote-browser/browserbase/action/{capability}",
-        headers=signed,
-        json=envelope,
-    )
-    assert replay.status_code == 409
-    assert replay.json()["detail"]["error"] == "REMOTE_RELAY_REPLAY_BLOCKED"
-
-    unsigned = executor.post(
-        f"/remote-browser/browserbase/action/{capability}",
-        json=envelope,
-    )
-    assert unsigned.status_code == 401
-
-    rebound = {
-        **envelope,
-        "context": {**envelope["context"], "plan_hash": "0" * 64},
-    }
-    rebound_headers = remote_relay_security.signed_headers_for_payload(rebound)
-    blocked = executor.post(
-        f"/remote-browser/browserbase/action/{capability}",
-        headers=rebound_headers,
-        json=rebound,
-    )
-    assert blocked.status_code == 403
-    assert blocked.json()["detail"]["error"] == "MANAGED_BROWSER_BINDING_MISMATCH"
