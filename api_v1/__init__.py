@@ -68,6 +68,9 @@ def install(app) -> None:
     # Compliance is Cinema-native and intentionally reports readiness evidence,
     # not certification or legal conformity claims.
     importlib.import_module(f"{__name__}.compliance").install(app)
+    # Managed browser evaluation keeps free credentials session-only and turns
+    # first Run into one-click activation without changing backend gate semantics.
+    importlib.import_module(f"{__name__}.free_evaluation_ui").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.marketing_api").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
