@@ -17,5 +17,5 @@ def test_connect_agent_page_keeps_master_key_tab_scoped() -> None:
 
     assert "sessionStorage" in html
     assert "localStorage" not in html
-    assert "master key stays in this browser tab" in html
+    assert "master DSG key stays in this browser tab" in html
     assert "pairing token only" in html
