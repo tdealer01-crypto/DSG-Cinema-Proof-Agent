@@ -55,8 +55,8 @@ _ITEMS = (
         "id": 8,
         "title": "Post-market monitoring",
         "status": "PARTIAL",
-        "evidence": ["docs/compliance/post-market-monitoring.md"],
-        "gap": "recurring production monitoring reports and metrics baseline",
+        "evidence": ["docs/compliance/post-market-monitoring.md", ".github/workflows/compliance-evidence-package.yml"],
+        "gap": "recurring production monitoring history and approved metrics baseline",
     },
     {
         "id": 9,
@@ -81,6 +81,18 @@ def _summary() -> dict[str, int | float]:
     }
 
 
+def _evidence_package() -> dict[str, object]:
+    return {
+        "status": "AUTOMATED_INTERNAL_EVIDENCE",
+        "workflow": ".github/workflows/compliance-evidence-package.yml",
+        "artifact_prefix": "cinema-compliance-evidence-",
+        "source_sha_bound": True,
+        "production_probe_on_main": True,
+        "external_certification_included": False,
+        "independent_external_audit_included": False,
+    }
+
+
 @router.get("/status")
 def compliance_status():
     return {
@@ -89,6 +101,7 @@ def compliance_status():
         "eu_ai_act_classification": "USE_CASE_ASSESSMENT_REQUIRED",
         "iso_42001": "AIMS_DOCUMENTED_EXTERNAL_CERTIFICATION_NOT_ESTABLISHED",
         "annex_iv": _summary(),
+        "evidence_package": _evidence_package(),
         "truth_boundary": {
             "z3_is_conformity_assessment": False,
             "internal_proof_is_external_certification": False,
@@ -104,7 +117,32 @@ def annex_iv_evidence():
         "status": "READINESS_MAPPING",
         "summary": _summary(),
         "items": list(_ITEMS),
+        "evidence_package": _evidence_package(),
         "note": "Technical evidence mapping only; not a declaration of conformity or certification.",
+    }
+
+
+@router.get("/gaps")
+def compliance_gaps():
+    gaps = [
+        {
+            "id": item["id"],
+            "title": item["title"],
+            "gap": item["gap"],
+            "evidence": item["evidence"],
+        }
+        for item in _ITEMS
+        if item["status"] == "PARTIAL"
+    ]
+    return {
+        "product": "DSG Cinema",
+        "status": "ACTION_REQUIRED" if gaps else "PASS",
+        "open_gap_count": len(gaps),
+        "gaps": gaps,
+        "truth_boundary": {
+            "gap_list_is_certification_assessment": False,
+            "closing_internal_gaps_equals_certification": False,
+        },
     }
 
 
