@@ -154,7 +154,7 @@ _CONNECT_HTML = """<!doctype html>
 <meta name=viewport content='width=device-width,initial-scale=1'>
 <title>DSG ONE — Connect Agent</title>
 <style>body{font:16px system-ui;background:#07101f;color:#e9f0ff;max-width:760px;margin:auto;padding:24px}input,button{font:inherit;padding:11px;border-radius:9px;border:1px solid #345;background:#0d1a30;color:#fff}input{width:100%;box-sizing:border-box}.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.card{border:1px solid #234;padding:18px;border-radius:14px;background:#0a1426}.ok{color:#66e2b5}.muted{color:#91a3c0;font-size:13px}code{word-break:break-all}</style>
-<h1>Connect Agent</h1><p class=muted>If you do not have a DSG API key, activate Free Evaluation here. The master key stays in this browser tab; the agent receives a short-lived pairing token only.</p>
+<h1>Connect Agent</h1><p class=muted>If you do not have a DSG API key, activate Free Evaluation here. The master DSG key stays in this browser tab; the agent receives a short-lived pairing token only.</p>
 <div class=card><label>DSG API key</label><div class=row><input id=k type=password autocomplete=off><button id=activate>Activate Free Key</button><button id=show>Show</button><button id=copy>Copy</button></div><label>Agent name</label><div class=row><input id=a value='chat-agent'></div><button id=pair>Connect Agent</button><p id=s class=muted>Not paired.</p><pre id=o></pre></div>
 <script>
 const k=document.querySelector('#k'),s=document.querySelector('#s'),o=document.querySelector('#o');
