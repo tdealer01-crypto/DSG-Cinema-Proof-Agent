@@ -96,6 +96,7 @@ def pair_agent(
         "expires_at_unix": int(expires_at),
         "mcp_endpoint": f"{origin}/mcp",
         "master_key_exposed_to_agent": False,
+        "agent_context_attached": True,
         "message": "Give the pairing token to the MCP client as a Bearer token. The master DSG API key remains in Cinema.",
     }
 
@@ -115,7 +116,7 @@ def revoke_pairing(
     return {"revoked": removed}
 
 
-def resolve_pairing_token(token: str) -> Optional[str]:
+def resolve_pairing(token: str) -> Optional[_Pairing]:
     if not token.startswith(_TOKEN_PREFIX):
         return None
     _cleanup()
@@ -123,7 +124,12 @@ def resolve_pairing_token(token: str) -> Optional[str]:
         pairing = _pairings.get(_digest(token))
     if pairing is None or pairing.expires_at <= time.time():
         return None
-    return pairing.api_key
+    return pairing
+
+
+def resolve_pairing_token(token: str) -> Optional[str]:
+    pairing = resolve_pairing(token)
+    return pairing.api_key if pairing is not None else None
 
 
 class AgentPairingMiddleware:
@@ -142,10 +148,15 @@ class AgentPairingMiddleware:
         raw = authorization.decode("latin1").strip()
         if raw.lower().startswith("bearer "):
             token = raw[7:].strip()
-            api_key = resolve_pairing_token(token)
-            if api_key:
-                filtered = [(key, value) for key, value in headers if key.lower() not in {b"authorization", b"x-dsg-api-key"}]
-                filtered.append((b"x-dsg-api-key", api_key.encode("latin1")))
+            pairing = resolve_pairing(token)
+            if pairing is not None:
+                filtered = [
+                    (key, value)
+                    for key, value in headers
+                    if key.lower() not in {b"authorization", b"x-dsg-api-key", b"x-dsg-agent-name"}
+                ]
+                filtered.append((b"x-dsg-api-key", pairing.api_key.encode("latin1")))
+                filtered.append((b"x-dsg-agent-name", pairing.agent_name.encode("latin1")))
                 scope = {**scope, "headers": filtered}
         await self.app(scope, receive, send)
 
@@ -164,23 +175,26 @@ _CONNECT_HTML = """<!doctype html>
 </div>
 <script>
 const k=document.querySelector('#k'),s=document.querySelector('#s'),o=document.querySelector('#o'),pairButton=document.querySelector('#pair'),copyPair=document.querySelector('#copyPair');
-const KEY_SLOT='dsg-one-key-session',PAIR_SLOT='dsg-one-agent-pairing-token',ACTIVATION_SLOT='dsg-one-remote-activation-id';
+const KEY_SLOT='dsg-one-key-session',PAIR_SLOT='dsg-one-agent-pairing-token',PAIR_EXPIRY_SLOT='dsg-one-agent-pairing-expiry',ACTIVATION_SLOT='dsg-one-remote-activation-id';
 let running=false;
 try{k.value=sessionStorage.getItem(KEY_SLOT)||''}catch(e){}
 function activationId(){try{let id=sessionStorage.getItem(ACTIVATION_SLOT);if(!id){id='remote-browser-'+(crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+Math.random().toString(36).slice(2));sessionStorage.setItem(ACTIVATION_SLOT,id)}return id}catch(e){return 'remote-browser-'+String(Date.now())+'-'+Math.random().toString(36).slice(2)}}
 function rememberKey(value){k.value=value;try{sessionStorage.setItem(KEY_SLOT,value)}catch(e){}}
-function rememberPair(value){try{sessionStorage.setItem(PAIR_SLOT,value)}catch(e){}copyPair.disabled=!value}
+function rememberPair(value,expiresAt){try{sessionStorage.setItem(PAIR_SLOT,value);sessionStorage.setItem(PAIR_EXPIRY_SLOT,String(expiresAt||0))}catch(e){}copyPair.disabled=!value}
+function clearPair(){try{sessionStorage.removeItem(PAIR_SLOT);sessionStorage.removeItem(PAIR_EXPIRY_SLOT)}catch(e){}copyPair.disabled=true}
+function storedPair(){try{const token=sessionStorage.getItem(PAIR_SLOT)||'',exp=Number(sessionStorage.getItem(PAIR_EXPIRY_SLOT)||0);if(token&&exp>(Date.now()/1000)+30)return{pairing_token:token,expires_at_unix:exp,expires_in:Math.max(0,Math.floor(exp-Date.now()/1000)),mcp_endpoint:location.origin+'/mcp',reused:true};clearPair()}catch(e){}return null}
 async function jsonFetch(path,options={}){const r=await fetch(path,options);let b={};try{b=await r.json()}catch(e){}if(!r.ok)throw new Error((b.detail&&JSON.stringify(b.detail))||JSON.stringify(b)||('HTTP '+r.status));return b}
 async function activateKey(){s.textContent='Activating Free Evaluation…';const b=await jsonFetch('/billing/activate',{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({channel:'remote_browser',activation_id:activationId(),display_name:'Cinema Remote Browser'})});if(!b.api_key)throw new Error('Activation returned no API key');rememberKey(b.api_key);return b.api_key}
 async function ensureKey(){const existing=k.value.trim();return existing||await activateKey()}
 async function enableRemote(key){s.textContent='Turning Remote ON…';const b=await jsonFetch('/remote-browser/enable',{method:'POST',headers:{'Accept':'application/json','X-DSG-API-Key':key}});if(b.remote_enabled!==true)throw new Error('Cinema did not confirm Remote ON');return b}
-async function pairAgent(key){s.textContent='Creating secure agent pairing…';const b=await jsonFetch('/remote-browser/agent-pair',{method:'POST',headers:{'Content-Type':'application/json','X-DSG-API-Key':key},body:JSON.stringify({agent_name:document.querySelector('#a').value||'chat-agent',ttl_seconds:600})});if(!b.pairing_token)throw new Error('Pairing returned no token');rememberPair(b.pairing_token);return b}
+async function pairAgent(key){s.textContent='Creating secure agent pairing…';const b=await jsonFetch('/remote-browser/agent-pair',{method:'POST',headers:{'Content-Type':'application/json','X-DSG-API-Key':key},body:JSON.stringify({agent_name:document.querySelector('#a').value||'chat-agent',ttl_seconds:600})});if(!b.pairing_token)throw new Error('Pairing returned no token');rememberPair(b.pairing_token,b.expires_at_unix);return b}
 async function checkStatus(token){s.textContent='Verifying MCP connection…';const rpc={jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'remote_status',arguments:{}}};const b=await jsonFetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(rpc)});const result=b.result||{};if(result.isError===true)throw new Error(JSON.stringify(result.structuredContent||result.content||result));return result.structuredContent||{}}
-async function connectAgent(){if(running)return;running=true;pairButton.disabled=true;o.textContent='';try{const key=await ensureKey();const remote=await enableRemote(key);const pairing=await pairAgent(key);const status=await checkStatus(pairing.pairing_token);const summary={remote_enabled:status.remote_enabled===true,agent_connection:status.agent_connection||'waiting',active_sessions:status.active_sessions||0,shared_browser_connected:!!(status.shared_browser&&status.shared_browser.connected),mcp_endpoint:pairing.mcp_endpoint,pairing_expires_in:pairing.expires_in,master_key_exposed_to_agent:false,plan_approval_required:true};o.textContent=JSON.stringify(summary,null,2);if(!summary.remote_enabled)throw new Error('Remote status did not stay enabled');s.innerHTML='<span class=ok>READY — Cinema is paired and Remote is ON.</span> Approve the plan when Cinema shows it; after APPROVED the agent binds to that exact step automatically.'}catch(e){s.textContent='CONNECT FAILED — '+e.message}finally{running=false;pairButton.disabled=false}}
+async function ensurePair(key){const existing=storedPair();if(existing){try{existing.status=await checkStatus(existing.pairing_token);copyPair.disabled=false;return existing}catch(e){clearPair()}}return await pairAgent(key)}
+async function connectAgent(){if(running)return;running=true;pairButton.disabled=true;o.textContent='';try{const key=await ensureKey();await enableRemote(key);const pairing=await ensurePair(key);const status=pairing.status||await checkStatus(pairing.pairing_token);const summary={remote_enabled:status.remote_enabled===true,agent_connection:status.agent_connection||'waiting',active_sessions:status.active_sessions||0,shared_browser_connected:!!(status.shared_browser&&status.shared_browser.connected),mcp_endpoint:pairing.mcp_endpoint,pairing_expires_in:pairing.expires_in,pairing_reused:pairing.reused===true,master_key_exposed_to_agent:false,plan_approval_required:true};o.textContent=JSON.stringify(summary,null,2);if(!summary.remote_enabled)throw new Error('Remote status did not stay enabled');s.innerHTML='<span class=ok>READY — Cinema is paired and Remote is ON.</span> Approve the plan when Cinema shows it; after APPROVED the agent binds to that exact step automatically.'}catch(e){s.textContent='CONNECT FAILED — '+e.message}finally{running=false;pairButton.disabled=false}}
 document.querySelector('#activate').onclick=async()=>{try{await activateKey();s.innerHTML='<span class=ok>FREE KEY ACTIVE — kept only for this browser tab</span>'}catch(e){s.textContent='ACTIVATION FAILED — '+e.message}};
 document.querySelector('#show').onclick=()=>{k.type=k.type==='password'?'text':'password';document.querySelector('#show').textContent=k.type==='password'?'Show':'Hide'};
 document.querySelector('#copy').onclick=async()=>{if(!k.value.trim()){s.textContent='No API key to copy. Connect Agent first.';return}await navigator.clipboard.writeText(k.value);s.textContent='API key copied.'};
-copyPair.onclick=async()=>{let token='';try{token=sessionStorage.getItem(PAIR_SLOT)||''}catch(e){}if(!token){s.textContent='No active pairing token. Connect Agent first.';return}await navigator.clipboard.writeText(token);s.textContent='Short-lived pairing token copied.'};
+copyPair.onclick=async()=>{const pairing=storedPair();if(!pairing){s.textContent='No active pairing token. Connect Agent first.';return}await navigator.clipboard.writeText(pairing.pairing_token);s.textContent='Short-lived pairing token copied.'};
 pairButton.onclick=connectAgent;
 if(new URLSearchParams(location.search).get('auto')==='1')connectAgent();
 </script>"""
@@ -196,4 +210,4 @@ def install(app) -> None:
     app.include_router(router)
 
 
-__all__ = ["AgentPairingMiddleware", "PairAgentRequest", "install", "resolve_pairing_token", "router"]
+__all__ = ["AgentPairingMiddleware", "PairAgentRequest", "install", "resolve_pairing", "resolve_pairing_token", "router"]
