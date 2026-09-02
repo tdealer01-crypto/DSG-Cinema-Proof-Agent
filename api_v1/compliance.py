@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI
 
-router = APIRouter(prefix="/api/v1/compliance", tags=["compliance"])
+# Compliance readiness is a management/evidence surface, not part of the exact
+# independent-verification OpenAPI contract under /api/v1.
+router = APIRouter(prefix="/compliance", tags=["compliance"])
 
 _ITEMS = (
     {
