@@ -1,0 +1,355 @@
+name: Provision Stable Production Pairing Key
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/production-agent-pairing-stable-key.yml'
+  workflow_run:
+    workflows: ['Deploy Cinema + Z3 Production']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-agent-pairing-stable-key
+  cancel-in-progress: false
+
+jobs:
+  provision-and-prove:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      CINEMA_APP: dsg-cinema-production
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      REVENUE_STORAGE_ACCOUNT: ${{ vars.DSG_REVENUE_STORAGE_ACCOUNT || 'dsgrevenuestore' }}
+      REVENUE_SHARE_NAME: revenue
+      PAIRING_SECRET_NAME: agent-pairing-key
+
+    steps:
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve production app and current revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+
+          CINEMA_FQDN=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query properties.configuration.ingress.fqdn --output tsv)
+          BASELINE_REVISION=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query properties.latestReadyRevisionName --output tsv)
+          test -n "$CINEMA_FQDN"
+          test -n "$BASELINE_REVISION"
+
+          echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
+          echo "BASELINE_REVISION=$BASELINE_REVISION" >> "$GITHUB_ENV"
+
+      - name: Ensure a stable dedicated pairing encryption key
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PAIRING_KEY=$(az containerapp secret show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --secret-name "$PAIRING_SECRET_NAME" --query value --output tsv 2>/dev/null || true)
+          CREATED=0
+          MIGRATED_FROM_CINEMA_SECRET=0
+
+          if [[ -z "$PAIRING_KEY" ]]; then
+            # Preserve all currently unexpired pairing records during the one-time
+            # migration. Before this workflow exists, agent_pairing.py derives its
+            # AES-GCM key from CINEMA_API_SECRET when no dedicated key is set.
+            # Seeding the new stable secret from the live cinema-secret keeps those
+            # ciphertexts decryptable, then future Cinema secret rotations no
+            # longer affect pairing tokens.
+            PAIRING_KEY=$(az containerapp secret show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --secret-name cinema-secret --query value --output tsv 2>/dev/null || true)
+            if [[ -n "$PAIRING_KEY" ]]; then
+              MIGRATED_FROM_CINEMA_SECRET=1
+            else
+              PAIRING_KEY=$(openssl rand -hex 32)
+            fi
+            CREATED=1
+          fi
+
+          if [[ ${#PAIRING_KEY} -lt 32 ]]; then
+            echo 'Stable DSG agent pairing key must contain at least 32 characters.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$PAIRING_KEY"
+          KEY_FINGERPRINT=$(printf '%s' "$PAIRING_KEY" | sha256sum | awk '{print $1}')
+
+          if [[ "$CREATED" == "1" ]]; then
+            az containerapp secret set \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --secrets "$PAIRING_SECRET_NAME=$PAIRING_KEY" --output none
+          fi
+
+          CURRENT_PAIRING_REF=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query "properties.template.containers[0].env[?name=='DSG_AGENT_PAIRING_KEY'].secretRef | [0]" \
+            --output tsv 2>/dev/null || true)
+
+          if [[ "$CURRENT_PAIRING_REF" != "$PAIRING_SECRET_NAME" ]]; then
+            az containerapp update \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --set-env-vars DSG_AGENT_PAIRING_KEY="secretref:$PAIRING_SECRET_NAME" \
+              --output none
+          fi
+
+          echo "PAIRING_KEY_FINGERPRINT=$KEY_FINGERPRINT" >> "$GITHUB_ENV"
+          echo "PAIRING_KEY_CREATED=$CREATED" >> "$GITHUB_ENV"
+          echo "PAIRING_KEY_MIGRATED_FROM_CINEMA_SECRET=$MIGRATED_FROM_CINEMA_SECRET" >> "$GITHUB_ENV"
+
+      - name: Wait until the dedicated key revision is ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          READY_REVISION=''
+          for attempt in $(seq 1 72); do
+            READY_REVISION=$(az containerapp show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query properties.latestReadyRevisionName --output tsv 2>/dev/null || true)
+            PAIRING_REF=$(az containerapp show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query "properties.template.containers[0].env[?name=='DSG_AGENT_PAIRING_KEY'].secretRef | [0]" \
+              --output tsv 2>/dev/null || true)
+            CODE=$(curl --silent --show-error --output /tmp/pairing-health.json --write-out '%{http_code}' "$CINEMA_URL/health" || true)
+            if [[ -n "$READY_REVISION" && "$PAIRING_REF" == "$PAIRING_SECRET_NAME" && "$CODE" == "200" ]]; then
+              break
+            fi
+            [[ "$attempt" == "72" ]] && exit 1
+            sleep 5
+          done
+          test -n "$READY_REVISION"
+          echo "KEY_READY_REVISION=$READY_REVISION" >> "$GITHUB_ENV"
+
+      - name: Verify the stable secret value did not change during binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY_AFTER=$(az containerapp secret show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --secret-name "$PAIRING_SECRET_NAME" --query value --output tsv)
+          test -n "$KEY_AFTER"
+          echo "::add-mask::$KEY_AFTER"
+          AFTER_FINGERPRINT=$(printf '%s' "$KEY_AFTER" | sha256sum | awk '{print $1}')
+          test "$AFTER_FINGERPRINT" = "$PAIRING_KEY_FINGERPRINT"
+
+      - name: Issue a pre-roll production pairing token
+        if: github.event_name != 'workflow_run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTIVATION_ID="pairing-roll-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ACTIVATE_CODE=$(curl --silent --show-error \
+            --output /tmp/roll-activate.json --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/billing/activate" \
+            --header 'Accept: application/json' \
+            --header 'Content-Type: application/json' \
+            --data "{\"channel\":\"remote_browser\",\"activation_id\":\"$ACTIVATION_ID\",\"display_name\":\"Production Pairing Rolling Revision Proof\"}")
+          if [[ "$ACTIVATE_CODE" != "201" ]]; then
+            echo "Activation returned HTTP $ACTIVATE_CODE" >&2
+            jq '{decision,activated,retry_after_seconds}' /tmp/roll-activate.json >&2 2>/dev/null || true
+            exit 1
+          fi
+          API_KEY=$(jq -r '.api_key // empty' /tmp/roll-activate.json)
+          test -n "$API_KEY"
+          echo "::add-mask::$API_KEY"
+
+          PAIR_CODE=$(curl --silent --show-error \
+            --output /tmp/roll-pair.json --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/remote-browser/agent-pair" \
+            --header 'Accept: application/json' \
+            --header 'Content-Type: application/json' \
+            --header "X-DSG-API-Key: $API_KEY" \
+            --data '{"agent_name":"production-rolling-proof","ttl_seconds":900}')
+          if [[ "$PAIR_CODE" != "201" ]]; then
+            echo "Pairing returned HTTP $PAIR_CODE" >&2
+            jq '{detail,paired,durable_pairing_store}' /tmp/roll-pair.json >&2 2>/dev/null || true
+            exit 1
+          fi
+          TOKEN=$(jq -r '.pairing_token // empty' /tmp/roll-pair.json)
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          TOKEN_HASH=$(printf '%s' "$TOKEN" | sha256sum | awk '{print $1}')
+
+          printf '%s' "$API_KEY" > /tmp/rolling-proof-api-key
+          printf '%s' "$TOKEN" > /tmp/rolling-proof-token
+          echo "TOKEN_HASH=$TOKEN_HASH" >> "$GITHUB_ENV"
+
+      - name: Prove the pre-roll record is durable and secret-free
+        if: github.event_name != 'workflow_run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_KEY=$(cat /tmp/rolling-proof-api-key)
+          TOKEN=$(cat /tmp/rolling-proof-token)
+          STORAGE_KEY=$(az storage account keys list \
+            --resource-group "$RESOURCE_GROUP" --account-name "$REVENUE_STORAGE_ACCOUNT" \
+            --query '[0].value' --output tsv)
+          test -n "$STORAGE_KEY"
+          echo "::add-mask::$STORAGE_KEY"
+          PAIR_PATH="remote-action/agent-pairings/${TOKEN_HASH}.json"
+          az storage file download \
+            --account-name "$REVENUE_STORAGE_ACCOUNT" --account-key "$STORAGE_KEY" \
+            --share-name "$REVENUE_SHARE_NAME" --path "$PAIR_PATH" \
+            --dest /tmp/rolling-record-before.json --output none
+
+          jq -e --arg digest "$TOKEN_HASH" '
+            .version == 1 and .token_hash == $digest and
+            (.api_key_ciphertext | type == "string" and length > 20) and
+            .claimed_at == null and .status == "ACTIVE"
+          ' /tmp/rolling-record-before.json >/dev/null
+          ! grep -F -- "$TOKEN" /tmp/rolling-record-before.json
+          ! grep -F -- "$API_KEY" /tmp/rolling-record-before.json
+
+      - name: Force a real new production revision without changing the pairing key
+        if: github.event_name != 'workflow_run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLD_REVISION=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query properties.latestReadyRevisionName --output tsv)
+          test -n "$OLD_REVISION"
+
+          az containerapp update \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --set-env-vars DSG_PAIRING_ROLLING_PROOF="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output none
+
+          NEW_REVISION=''
+          for attempt in $(seq 1 72); do
+            NEW_REVISION=$(az containerapp show \
+              --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+              --query properties.latestReadyRevisionName --output tsv 2>/dev/null || true)
+            CODE=$(curl --silent --show-error --output /tmp/roll-health.json --write-out '%{http_code}' "$CINEMA_URL/health" || true)
+            if [[ -n "$NEW_REVISION" && "$NEW_REVISION" != "$OLD_REVISION" && "$CODE" == "200" ]]; then
+              break
+            fi
+            [[ "$attempt" == "72" ]] && exit 1
+            sleep 5
+          done
+          test -n "$NEW_REVISION"
+          test "$NEW_REVISION" != "$OLD_REVISION"
+
+          PAIRING_REF=$(az containerapp show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --query "properties.template.containers[0].env[?name=='DSG_AGENT_PAIRING_KEY'].secretRef | [0]" \
+            --output tsv)
+          test "$PAIRING_REF" = "$PAIRING_SECRET_NAME"
+
+          KEY_AFTER_ROLL=$(az containerapp secret show \
+            --resource-group "$RESOURCE_GROUP" --name "$CINEMA_APP" \
+            --secret-name "$PAIRING_SECRET_NAME" --query value --output tsv)
+          echo "::add-mask::$KEY_AFTER_ROLL"
+          ROLL_FINGERPRINT=$(printf '%s' "$KEY_AFTER_ROLL" | sha256sum | awk '{print $1}')
+          test "$ROLL_FINGERPRINT" = "$PAIRING_KEY_FINGERPRINT"
+
+          echo "OLD_REVISION=$OLD_REVISION" >> "$GITHUB_ENV"
+          echo "NEW_REVISION=$NEW_REVISION" >> "$GITHUB_ENV"
+
+      - name: Claim the pre-roll token through the new revision MCP
+        if: github.event_name != 'workflow_run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN=$(cat /tmp/rolling-proof-token)
+          RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote_status","arguments":{}}}'
+          MCP_CODE=$(curl --silent --show-error \
+            --output /tmp/mcp-after-roll.json --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/mcp" \
+            --header 'Accept: application/json' \
+            --header 'Content-Type: application/json' \
+            --header "Authorization: Bearer $TOKEN" \
+            --data "$RPC")
+          test "$MCP_CODE" = "200"
+          jq -e '.result != null and (.result.isError // false) == false' /tmp/mcp-after-roll.json >/dev/null
+
+          STORAGE_KEY=$(az storage account keys list \
+            --resource-group "$RESOURCE_GROUP" --account-name "$REVENUE_STORAGE_ACCOUNT" \
+            --query '[0].value' --output tsv)
+          echo "::add-mask::$STORAGE_KEY"
+          PAIR_PATH="remote-action/agent-pairings/${TOKEN_HASH}.json"
+          az storage file download \
+            --account-name "$REVENUE_STORAGE_ACCOUNT" --account-key "$STORAGE_KEY" \
+            --share-name "$REVENUE_SHARE_NAME" --path "$PAIR_PATH" \
+            --dest /tmp/rolling-record-after.json --output none
+          jq -e '.claimed_at != null and (.claimed_at | type) == "number"' /tmp/rolling-record-after.json >/dev/null
+
+      - name: Revoke proof token and write non-secret rolling evidence
+        if: github.event_name != 'workflow_run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_KEY=$(cat /tmp/rolling-proof-api-key)
+          TOKEN=$(cat /tmp/rolling-proof-token)
+          REVOKE_CODE=$(curl --silent --show-error \
+            --output /tmp/roll-revoke.json --write-out '%{http_code}' \
+            --request POST "$CINEMA_URL/remote-browser/agent-pair/revoke" \
+            --header 'Content-Type: application/json' \
+            --header "X-DSG-API-Key: $API_KEY" \
+            --data "{\"pairing_token\":\"$TOKEN\"}")
+          test "$REVOKE_CODE" = "200"
+          jq -e '.revoked == true' /tmp/roll-revoke.json >/dev/null
+
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg cinema_url "$CINEMA_URL" \
+            --arg token_hash "$TOKEN_HASH" \
+            --arg old_revision "$OLD_REVISION" \
+            --arg new_revision "$NEW_REVISION" \
+            --argjson created "$PAIRING_KEY_CREATED" \
+            --argjson migrated "$PAIRING_KEY_MIGRATED_FROM_CINEMA_SECRET" \
+            '{
+              commit: $commit,
+              environment: "production",
+              cinema_url: $cinema_url,
+              token_hash: $token_hash,
+              dedicated_pairing_secret_ref: "agent-pairing-key",
+              stable_pairing_key_created: ($created == 1),
+              migrated_from_previous_cinema_secret_without_breaking_existing_ciphertext: ($migrated == 1),
+              pairing_token_persisted: false,
+              api_key_persisted_plaintext: false,
+              old_revision: $old_revision,
+              new_revision: $new_revision,
+              real_revision_changed: ($old_revision != $new_revision),
+              pairing_key_value_unchanged_across_revision: true,
+              pre_roll_token_claimed_on_new_revision: true,
+              claimed_at_persisted: true,
+              proof_token_revoked: true,
+              verdict: "PAIRING_SURVIVED_REAL_PRODUCTION_ROLLING_REVISION_WITH_STABLE_DEDICATED_KEY"
+            }' > production-pairing-rolling-evidence.json
+
+          rm -f \
+            /tmp/rolling-proof-api-key /tmp/rolling-proof-token \
+            /tmp/roll-activate.json /tmp/roll-pair.json /tmp/roll-revoke.json \
+            /tmp/rolling-record-before.json /tmp/rolling-record-after.json
+
+      - name: Upload production rolling pairing evidence
+        if: github.event_name != 'workflow_run'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-pairing-rolling-evidence-${{ github.sha }}
+          path: production-pairing-rolling-evidence.json
+          if-no-files-found: error
+          retention-days: 30
