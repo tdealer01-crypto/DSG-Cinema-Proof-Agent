@@ -34,6 +34,9 @@ COPY openapi ./openapi
 COPY stripe-app ./stripe-app
 COPY market_ready_payload ./market_ready_payload
 COPY tools ./tools
+# OWNER service configuration is deliberately hash-only. Copy only this exact
+# non-secret file rather than the whole config directory into the runtime image.
+COPY config/owner-service-accounts.json ./config/owner-service-accounts.json
 
 # Reconstruct the exact sandbox-tested HTML/CSS/JS from deterministic payload
 # chunks. The build fails on any byte drift. config.js is the documented
