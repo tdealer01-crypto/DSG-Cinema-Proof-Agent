@@ -1,7 +1,0 @@
-DSG ONE product landing contract
-
-- Root/index with no checkout state and no hash redirects to product.html.
-- index.html#verify keeps the existing live verification page.
-- ?checkout=success or ?checkout=cancelled keeps the existing commerce return flow.
-- landing/index.html and azure-landing/index.html remain byte-identical.
-- landing/product.html and azure-landing/product.html are intended to remain byte-identical.
