@@ -18,6 +18,8 @@ client = TestClient(cinema_main.app)
 def isolated_dashboard(tmp_path, monkeypatch):
     root = tmp_path / "dashboard"
     root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("DSG_REMOTE_ACTION_STORE", str(tmp_path / "remote-store"))
+    monkeypatch.setenv("DSG_REMOTE_ACTION_KEY", "e" * 64)
     monkeypatch.setattr(dashboard_chat, "_root", lambda: root)
     monkeypatch.setattr(
         agent_pairing,
