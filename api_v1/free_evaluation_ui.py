@@ -17,6 +17,7 @@ _SCRIPT = r'''(() => {
 const FREE_KEY = "dsg-one-free-session-key";
 const FREE_ACTIVATION = "dsg-one-free-activation-id";
 const FREE_PLAN = "dsg-one-free-plan";
+const APPROVED_PLAN = "dsg-one-approved-plan-session";
 const nativeFetch = window.fetch.bind(window);
 let activating = null;
 
@@ -48,6 +49,9 @@ function activationId() {
 }
 function manualKeyPresent() {
   return Boolean((byId("apiKey")?.value || "").trim());
+}
+function activeDsgKey() {
+  return (byId("apiKey")?.value || "").trim() || freeKey();
 }
 function retryRun() {
   const run = byId("btnRun");
@@ -243,6 +247,242 @@ async function activateFreeEvaluation({ retryRun: shouldRetryRun = false } = {})
   }
 }
 
+async function ensureDsgKey() {
+  let key = activeDsgKey();
+  if (key) return key;
+  await activateFreeEvaluation({ retryRun: false });
+  key = activeDsgKey();
+  if (!key) throw new Error("No DSG credential is available for this browser session.");
+  return key;
+}
+
+function currentPlanDefinition() {
+  const raw = byId("runInput")?.value || "";
+  let definition;
+  try { definition = JSON.parse(raw); }
+  catch (error) { throw new Error(`The run definition is not valid JSON: ${error.message}`); }
+  if (!definition?.plan || !Array.isArray(definition.plan.steps)) {
+    throw new Error("The run definition needs a plan with steps before it can be approved.");
+  }
+  return definition;
+}
+
+function readApprovedPlan() {
+  try {
+    const raw = sessionStorage.getItem(APPROVED_PLAN);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) { return null; }
+}
+function saveApprovedPlan(record) {
+  try { sessionStorage.setItem(APPROVED_PLAN, JSON.stringify(record)); } catch (_) {}
+}
+function clearApprovedPlan() {
+  try { sessionStorage.removeItem(APPROVED_PLAN); } catch (_) {}
+}
+function sameApprovedPlan(record, definition) {
+  return Boolean(record && definition && record.plan_json === JSON.stringify(definition.plan));
+}
+
+function ensureGovernanceStatus() {
+  let host = byId("governanceActionStatus");
+  if (host) return host;
+  const actions = byId("btnRun")?.closest(".actions");
+  if (!actions?.parentNode) return null;
+  host = document.createElement("div");
+  host.id = "governanceActionStatus";
+  host.className = "note";
+  host.style.marginTop = "12px";
+  host.innerHTML = '<div><strong data-role="title">Plan approval</strong><div data-role="detail" style="margin-top:4px">Review the run definition, then approve the exact DSG-computed plan hash.</div></div>';
+  actions.parentNode.insertBefore(host, actions.nextSibling);
+  return host;
+}
+
+function setGovernanceStatus(title, detail, state = "") {
+  const host = ensureGovernanceStatus();
+  if (!host) return;
+  host.dataset.state = state;
+  const titleNode = host.querySelector('[data-role="title"]');
+  const detailNode = host.querySelector('[data-role="detail"]');
+  if (titleNode) titleNode.textContent = title;
+  if (detailNode) detailNode.textContent = detail;
+}
+
+async function keyedJson(path, { method = "GET", body } = {}, key) {
+  const headers = { Accept: "application/json", "X-DSG-API-Key": key };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const response = await nativeFetch(`${configuredBase()}${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    cache: "no-store"
+  });
+  let payload = null;
+  try { payload = await response.json(); } catch (_) {}
+  if (!response.ok) {
+    const code = jsonErrorCode(payload) || `HTTP_${response.status}`;
+    const message = payload?.message || payload?.detail?.message || payload?.detail || "Request failed.";
+    throw new Error(`${code}: ${typeof message === "string" ? message : JSON.stringify(message)}`);
+  }
+  return payload;
+}
+
+async function approveCurrentPlan() {
+  const button = byId("btnApprovePlan");
+  if (button) button.disabled = true;
+  try {
+    const definition = currentPlanDefinition();
+    const existing = readApprovedPlan();
+    if (sameApprovedPlan(existing, definition) && existing?.approved?.status === "APPROVED") {
+      setGovernanceStatus("APPROVED", `Plan ${existing.created.plan_id} is already locked to ${existing.created.plan_hash}.`, "approved");
+      if (button) button.textContent = "✓ APPROVED";
+      return existing;
+    }
+
+    setGovernanceStatus("Creating plan…", "DSG is computing the authoritative plan hash from the exact JSON shown above.", "busy");
+    const key = await ensureDsgKey();
+    const created = await keyedJson("/api/v1/plans", { method: "POST", body: definition.plan }, key);
+    if (!created?.plan_id || !created?.plan_hash) throw new Error("Plan creation returned no plan_id or plan_hash.");
+
+    setGovernanceStatus("Waiting for approval…", `Plan ${created.plan_id} · hash ${created.plan_hash}`, "busy");
+    const approved = await keyedJson(`/api/v1/plans/${encodeURIComponent(created.plan_id)}/approve`, {
+      method: "POST",
+      body: {
+        approver: (byId("approver")?.value || "").trim() || "unknown-approver",
+        plan_hash: created.plan_hash
+      }
+    }, key);
+    if (approved?.status !== "APPROVED") throw new Error("Cinema did not return status APPROVED for the exact plan hash.");
+
+    const record = {
+      plan_json: JSON.stringify(definition.plan),
+      created,
+      approved,
+      approved_at: new Date().toISOString()
+    };
+    saveApprovedPlan(record);
+    setGovernanceStatus("APPROVED", `Plan ${created.plan_id} locked to ${created.plan_hash}. Run full flow will reuse this real approval.`, "approved");
+    if (button) button.textContent = "✓ APPROVED";
+    return record;
+  } catch (error) {
+    setGovernanceStatus("Approval failed", error.message || "The plan could not be approved.", "error");
+    if (button) button.textContent = "✓ Approve Plan";
+    throw error;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function installApprovedPlanReuse() {
+  const originalApi = window.api;
+  if (typeof originalApi !== "function" || originalApi.__dsgApprovedPlanReuse) return;
+
+  const governedApi = async function(path, options = {}) {
+    const record = readApprovedPlan();
+    let definition = null;
+    try { definition = currentPlanDefinition(); } catch (_) {}
+    if (sameApprovedPlan(record, definition)) {
+      const method = String(options.method || "GET").toUpperCase();
+      if (path === "/api/v1/plans" && method === "POST") return record.created;
+      if (path === `/api/v1/plans/${record.created.plan_id}/approve` && method === "POST") return record.approved;
+    }
+    return originalApi(path, options);
+  };
+  governedApi.__dsgApprovedPlanReuse = true;
+  window.api = governedApi;
+}
+
+function ensureSharedBrowserOverlay() {
+  let overlay = byId("dsgSharedBrowserOverlay");
+  if (overlay) return overlay;
+  overlay = document.createElement("div");
+  overlay.id = "dsgSharedBrowserOverlay";
+  overlay.hidden = true;
+  overlay.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(3,8,18,.94);padding:10px;display:flex;flex-direction:column;gap:8px";
+  overlay.innerHTML = '<div style="display:flex;gap:8px;align-items:center"><strong>DSG Shared Browser</strong><span id="dsgSharedBrowserMeta" class="muted" style="flex:1"></span><button class="btn" id="btnCloseSharedBrowser">Close</button></div><iframe id="dsgSharedBrowserFrame" title="DSG Shared Browser" style="width:100%;height:calc(100vh - 58px);border:1px solid rgba(94,124,190,.32);border-radius:10px;background:#111"></iframe>';
+  document.body.appendChild(overlay);
+  byId("btnCloseSharedBrowser")?.addEventListener("click", () => {
+    overlay.hidden = true;
+    overlay.style.display = "none";
+    const frame = byId("dsgSharedBrowserFrame");
+    if (frame) frame.src = "about:blank";
+  });
+  return overlay;
+}
+
+async function openSharedBrowser() {
+  const button = byId("btnSharedBrowser");
+  if (button) button.disabled = true;
+  try {
+    setGovernanceStatus("Opening shared browser…", "Requesting a short-lived same-origin viewer from Cinema.", "busy");
+    const key = await ensureDsgKey();
+    const live = await keyedJson("/remote-browser/browserbase/live-frame", { method: "GET" }, key);
+    if (live?.connected !== true || !live?.embed_url) {
+      const reason = live?.prerequisite || "Remote is not connected yet. Turn Remote ON and connect the approved agent session first.";
+      throw new Error(typeof reason === "string" ? reason : JSON.stringify(reason));
+    }
+
+    const overlay = ensureSharedBrowserOverlay();
+    const frame = byId("dsgSharedBrowserFrame");
+    const meta = byId("dsgSharedBrowserMeta");
+    if (meta) meta.textContent = `${live.provider || "managed"} · ${live.browser_session_id || live.browserbase_session_id || "shared session"}`;
+    if (frame) frame.src = new URL(live.embed_url, configuredBase()).toString();
+    overlay.hidden = false;
+    overlay.style.display = "flex";
+    setGovernanceStatus("Shared browser connected", "The browser below is the same managed session shared with the agent; no DSG master key is placed in the viewer URL.", "approved");
+  } catch (error) {
+    setGovernanceStatus("Shared browser unavailable", error.message || "Cinema could not open the shared browser.", "error");
+    throw error;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function ensureGovernanceControls() {
+  const actions = byId("btnRun")?.closest(".actions");
+  if (!actions || byId("btnApprovePlan")) return;
+
+  const approve = document.createElement("button");
+  approve.className = "btn";
+  approve.id = "btnApprovePlan";
+  approve.type = "button";
+  approve.textContent = "✓ Approve Plan";
+  approve.addEventListener("click", () => approveCurrentPlan().catch(() => {}));
+
+  const browser = document.createElement("button");
+  browser.className = "btn";
+  browser.id = "btnSharedBrowser";
+  browser.type = "button";
+  browser.textContent = "▣ Shared Browser";
+  browser.addEventListener("click", () => openSharedBrowser().catch(() => {}));
+
+  const reset = byId("btnReset");
+  actions.insertBefore(approve, reset || null);
+  actions.insertBefore(browser, reset || null);
+  ensureGovernanceStatus();
+
+  const definition = (() => { try { return currentPlanDefinition(); } catch (_) { return null; } })();
+  const record = readApprovedPlan();
+  if (sameApprovedPlan(record, definition) && record?.approved?.status === "APPROVED") {
+    approve.textContent = "✓ APPROVED";
+    setGovernanceStatus("APPROVED", `Plan ${record.created.plan_id} is already approved for this browser session.`, "approved");
+  }
+
+  byId("runInput")?.addEventListener("input", () => {
+    const current = (() => { try { return currentPlanDefinition(); } catch (_) { return null; } })();
+    const approved = readApprovedPlan();
+    if (!sameApprovedPlan(approved, current)) {
+      approve.textContent = "✓ Approve Plan";
+      setGovernanceStatus("Plan changed — approval required", "Approve the exact current plan before relying on the approval state.", "pending");
+    }
+  });
+
+  reset?.addEventListener("click", () => {
+    clearApprovedPlan();
+    approve.textContent = "✓ Approve Plan";
+    setGovernanceStatus("Plan approval", "Sample reset. Approve the exact plan hash when ready.", "pending");
+  });
+}
+
 function installCaptureHandlers() {
   const run = byId("btnRun");
   if (run) {
@@ -272,7 +512,9 @@ function installCaptureHandlers() {
   if (disconnect) {
     disconnect.addEventListener("click", () => {
       clearFreeKey();
+      clearApprovedPlan();
       updateEvaluationStatus("needs-activation", "Free evaluation not activated", "Session credential cleared. Run again to activate Free Evaluation.");
+      setGovernanceStatus("Plan approval", "Session credential and cached approval UI state cleared.", "pending");
     }, true);
   }
 }
@@ -280,6 +522,8 @@ function installCaptureHandlers() {
 function bootstrap() {
   updateSettingsCopy();
   ensureEvaluationStatus();
+  ensureGovernanceControls();
+  installApprovedPlanReuse();
   installCaptureHandlers();
   if (freeKey()) refreshUsage();
   else updateEvaluationStatus("needs-activation", "Free evaluation not activated", "Your first Run activates a session-only free key automatically.");
@@ -304,8 +548,8 @@ class OneClickEvaluationMiddleware(BaseHTTPMiddleware):
     """Inject the managed free-evaluation controller into the existing console.
 
     The underlying console file stays the exact verification UI used by contract
-    tests. This layer changes credential UX only; it does not change authorization
-    or verification semantics.
+    tests. This layer changes credential and explicit approval/browser UX only;
+    it does not change authorization or verification semantics.
     """
 
     async def dispatch(self, request: Request, call_next):
