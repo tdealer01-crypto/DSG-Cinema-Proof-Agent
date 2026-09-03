@@ -79,8 +79,10 @@ def install(app) -> None:
     # Managed browser evaluation keeps free credentials session-only and turns
     # first Run into one-click activation without changing backend gate semantics.
     importlib.import_module(f"{__name__}.free_evaluation_ui").install(app)
-    # Market-ready install surface: Web / AI / CLI entry paths share one
-    # fail-honest provisioner, Doctor, lifecycle and first installation proof.
+    # Market-Ready exact UI and installation platform. This mount occurs before
+    # cinema_main's legacy /dashboard route, making the sandbox-tested product
+    # shell the canonical same-origin customer surface while preserving rollback.
+    importlib.import_module(f"{__name__}.market_ready_ui").install(app)
     importlib.import_module(f"{__name__}.market_ready_platform").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.marketing_api").install(app)
