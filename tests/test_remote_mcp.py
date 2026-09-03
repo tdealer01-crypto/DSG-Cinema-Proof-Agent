@@ -121,6 +121,7 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
         "remote_agent_connect",
         "remote_action",
         "remote_disconnect",
+        "remote_agent_run_plan",
         "dashboard_chat_receive",
         "dashboard_chat_reply",
         "dashboard_chat_create_plan",
