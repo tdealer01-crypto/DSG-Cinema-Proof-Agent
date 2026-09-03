@@ -1,6 +1,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+DASHBOARD = "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/dashboard"
 
 
 def _html() -> str:
@@ -13,19 +14,39 @@ def test_dsg_live_landing_source_and_deploy_copy_match():
     ).read_bytes()
 
 
-def test_dsg_live_landing_exposes_the_approved_customer_flow():
+def test_dsg_live_landing_points_customers_to_one_dashboard():
+    html = _html()
+    assert DASHBOARD in html
+    assert html.count(DASHBOARD) >= 4
+    assert "Open Live Dashboard" in html
+    assert "Launch customer dashboard" in html
+    assert "Use the product from one URL" in html
+    assert "The normal customer flow stays on" in html
+    assert "Agent Chat" in html
+    assert "User + Agent" in html
+
+
+def test_dsg_live_landing_exposes_current_five_monitor_views():
+    html = _html()
+    for value in (
+        "ACTION",
+        "PLAN ALIGNMENT",
+        "PERMISSION",
+        "EVIDENCE",
+        "EXECUTION / AUDIT",
+    ):
+        assert value in html
+    assert "USER / AGENT · current action" in html
+    assert "PASS / WAITING_PERMISSION" in html
+    assert "RUNNING / SUCCESS / BLOCKED / FAILED" in html
+
+
+def test_dsg_live_landing_keeps_plugin_and_control_paths():
     html = _html()
     required = [
         "Install → Authorize → Live",
-        "LIVE ACTION",
-        "PLAN CHECK",
-        "DSG EFFECT",
-        "WHY",
-        "EVIDENCE",
         "DEFAULT · OBSERVE",
         "OPT-IN · ENFORCE",
-        "PASS / OUTSIDE PLAN / MISSING PERMISSION",
-        "CONTINUE · EXECUTE · WAIT · STOP",
         "Replay is verification only",
         "copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent",
         "copilot plugin install dsg-governance@dsg-agent-plugins",
