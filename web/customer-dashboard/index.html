@@ -185,32 +185,6 @@
   </section>
 </main>
 
-<script>
-(() => {
-  function endpointUrl() { return location.origin + '/mcp'; }
-  function selectEndpoint(input) { input.focus(); input.select(); try { input.setSelectionRange(0, input.value.length); } catch (_) {} }
-  function remoteMessage(text, error = false) {
-    const message = document.getElementById('remoteMessage'); if (!message) return;
-    message.textContent = text; message.className = error ? 'status error' : 'status';
-  }
-  async function copyText(input, value, success) {
-    input.value = value; let copied = false;
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') { try { await navigator.clipboard.writeText(value); copied = true; } catch (_) {} }
-    if (!copied) { selectEndpoint(input); try { copied = document.execCommand('copy'); } catch (_) { copied = false; } }
-    remoteMessage(copied ? success : 'Copy was blocked. The value is selected — long-press it and tap Copy.', !copied);
-  }
-  document.addEventListener('DOMContentLoaded', () => {
-    const endpoint = document.getElementById('mcpEndpoint');
-    if (endpoint) { endpoint.value = endpointUrl(); endpoint.addEventListener('click', () => selectEndpoint(endpoint)); }
-    const copyEndpoint = document.getElementById('copyMcpEndpoint');
-    if (copyEndpoint) copyEndpoint.addEventListener('click', () => copyText(endpoint, endpointUrl(), 'MCP endpoint copied.'));
-    const copyPair = document.getElementById('copyPairingToken');
-    if (copyPair) copyPair.addEventListener('click', () => {
-      const input = document.getElementById('pairingToken'); if (input && input.value) copyText(input, input.value, 'Short-lived pairing token copied.');
-    });
-  });
-})();
-</script>
 <script src="/dashboard-assets/dashboard.js"></script>
 <script src="/dashboard-assets/browserbase-live.js"></script>
 </body>
