@@ -83,7 +83,7 @@ def install(app) -> None:
     # cinema_main's legacy /dashboard route, making the sandbox-tested product
     # shell the canonical same-origin customer surface while preserving rollback.
     importlib.import_module(f"{__name__}.market_ready_ui").install(app)
-    importlib.import_module(f"{__name__}.market_ready_platform").install(app)
+    importlib.import_module(f"{__name__}.market_ready_bootstrap").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.marketing_api").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
