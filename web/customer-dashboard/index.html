@@ -9,19 +9,19 @@
 <body>
 <main class="wrap">
   <header class="top">
-    <div class="brand"><i></i>DSG ONE Customer</div>
+    <div class="brand"><i></i>DSG ONE</div>
     <span class="status" id="connection">NOT CONNECTED</span>
   </header>
 
   <section class="card activation">
-    <div class="label">Activate free account</div>
-    <p class="status">No card required. Your API key is shown once.</p>
+    <div class="label">Account</div>
+    <p class="status">Activate once or reconnect with your DSG API key. The key stays in this browser tab only.</p>
     <div class="activation-form">
       <input id="displayName" autocomplete="organization" placeholder="Organization or team name">
       <input id="contactEmail" type="email" autocomplete="email" placeholder="Email (optional)">
-      <button class="btn secondary" id="activate">Activate</button>
+      <button class="btn secondary" id="activate">Activate free account</button>
     </div>
-    <label class="status"><input id="marketingConsent" type="checkbox"> Email me DSG product updates, onboarding tips, and relevant offers. Optional; not required to use DSG.</label>
+    <label class="status"><input id="marketingConsent" type="checkbox"> Email me DSG product updates, onboarding tips, and relevant offers. Optional.</label>
     <div id="newKey" class="one-time-key" hidden>
       <p class="status">Copy this key now. It cannot be shown again.</p>
       <code id="issuedKey"></code>
@@ -40,6 +40,107 @@
     <div class="card"><div class="label">Proof usage</div><div class="value" id="usage">—</div></div>
     <div class="card"><div class="label">Remaining</div><div class="value" id="remaining">—</div></div>
 
+    <div class="card wide chat-card" id="agentChatCard">
+      <div class="remote-head">
+        <div>
+          <div class="label">Agent Chat</div>
+          <div class="value remote-value">Talk to your paired agent here</div>
+        </div>
+        <span class="remote-state" id="chatAgentState">AGENT OFFLINE</span>
+      </div>
+      <p class="status">This is the customer conversation surface. Messages are delivered only to a real paired MCP agent; Cinema does not fabricate agent replies.</p>
+      <div id="chatMessages" class="chat-messages" aria-live="polite">
+        <div class="chat-empty">Connect your account, then connect an agent. Your conversation stays on this page.</div>
+      </div>
+      <div class="chat-compose">
+        <textarea id="chatInput" rows="3" maxlength="8000" placeholder="Message your agent…" disabled></textarea>
+        <button class="btn" id="chatSend" type="button" disabled>Send</button>
+      </div>
+      <p class="status" id="chatStatus"></p>
+    </div>
+
+    <div class="card wide remote-card">
+      <div class="remote-head">
+        <div>
+          <div class="label">Shared Browser</div>
+          <div class="value remote-value">One screen · User + Agent</div>
+          <p class="status">You and the approved agent operate the same browser session. User input stays direct; agent input remains plan-bound and audited.</p>
+        </div>
+        <span class="remote-state" id="remoteState">REMOTE OFF</span>
+      </div>
+
+      <div class="remote-simple">
+        <div>
+          <div class="label">Agent connection</div>
+          <div class="value remote-value" id="remoteAgentState">—</div>
+        </div>
+        <div>
+          <div class="label">Connection</div>
+          <p class="status" id="remoteHint">Connect Agent prepares Remote ON and a short-lived pairing credential without leaving this dashboard.</p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" type="button" id="connectAgent" disabled>Connect Agent</button>
+        <button class="btn" id="remoteOn" disabled>Remote ON</button>
+        <button class="btn secondary" id="remoteOff" disabled>Remote OFF</button>
+      </div>
+      <div id="remoteSession" class="remote-session status">Remote is off.</div>
+
+      <details class="advanced">
+        <summary>Advanced agent connection</summary>
+        <p class="status">Only use this when your agent client is not already linked. Normal users do not need MCP URLs, plan IDs or step IDs.</p>
+        <div class="mcp-endpoint">
+          <div class="label">MCP endpoint</div>
+          <div class="activation-form">
+            <input id="mcpEndpoint" type="text" inputmode="url" autocomplete="off" readonly aria-label="MCP endpoint" value="/mcp">
+            <button class="btn secondary" id="copyMcpEndpoint" type="button">Copy endpoint</button>
+          </div>
+        </div>
+        <div id="pairingAdvanced" hidden>
+          <div class="label">Short-lived pairing token</div>
+          <div class="activation-form">
+            <input id="pairingToken" type="password" autocomplete="off" readonly aria-label="Pairing token">
+            <button class="btn secondary" id="copyPairingToken" type="button">Copy token</button>
+          </div>
+          <p class="status">The master DSG key is never exposed to the agent. Pairing tokens expire automatically.</p>
+        </div>
+      </details>
+
+      <div class="remote-evidence">
+        <div class="label">Latest evidence</div>
+        <pre id="remoteEvidence">No remote action evidence yet.</pre>
+      </div>
+      <p class="status" id="remoteMessage"></p>
+    </div>
+
+    <div class="card wide monitor-card" id="liveMonitor">
+      <div class="remote-head">
+        <div>
+          <div class="label">Live Monitor</div>
+          <div class="value remote-value">Five views · same execution</div>
+        </div>
+        <span class="remote-state" id="monitorConnection">WAITING</span>
+      </div>
+      <div class="monitor-stack">
+        <section class="monitor-panel" data-monitor="action">
+          <div class="monitor-number">1</div><div><div class="label">ACTION</div><div class="monitor-state" id="monitorActionState">WAITING</div><div class="status" id="monitorActionDetail">No browser action yet.</div></div>
+        </section>
+        <section class="monitor-panel" data-monitor="plan_alignment">
+          <div class="monitor-number">2</div><div><div class="label">PLAN ALIGNMENT</div><div class="monitor-state" id="monitorPlanState">PENDING</div><div class="status" id="monitorPlanDetail">No approved plan is bound yet.</div></div>
+        </section>
+        <section class="monitor-panel" data-monitor="permission">
+          <div class="monitor-number">3</div><div><div class="label">PERMISSION</div><div class="monitor-state" id="monitorPermissionState">REMOTE_OFF</div><div class="status" id="monitorPermissionDetail">Remote authority is off.</div></div>
+        </section>
+        <section class="monitor-panel" data-monitor="evidence">
+          <div class="monitor-number">4</div><div><div class="label">EVIDENCE</div><div class="monitor-state" id="monitorEvidenceState">PENDING</div><div class="status" id="monitorEvidenceDetail">No completed action evidence yet.</div></div>
+        </section>
+        <section class="monitor-panel" data-monitor="execution_audit">
+          <div class="monitor-number">5</div><div><div class="label">EXECUTION / AUDIT</div><div class="monitor-state" id="monitorExecutionState">WAITING</div><div class="status" id="monitorExecutionDetail">No agent execution has been recorded yet.</div></div>
+        </section>
+      </div>
+    </div>
+
     <div class="card wide">
       <div class="label">Billing status</div>
       <div class="steps">
@@ -54,52 +155,6 @@
       <div class="progress"><i id="progressBar"></i></div>
       <div id="progressText">Connect to load progress</div>
       <div class="steps" id="steps"></div>
-    </div>
-
-    <div class="card wide remote-card">
-      <div class="remote-head">
-        <div>
-          <div class="label">Remote Browser</div>
-          <p class="status">สั่งงานกับ Agent ในแชทตามปกติ หน้านี้ใช้แค่เปิดหรือปิดสิทธิ์ Remote เท่านั้น</p>
-        </div>
-        <span class="remote-state" id="remoteState">REMOTE OFF</span>
-      </div>
-
-      <div class="remote-simple">
-        <div>
-          <div class="label">Agent connection</div>
-          <div class="value remote-value" id="remoteAgentState">—</div>
-        </div>
-        <div>
-          <div class="label">What to do</div>
-          <p class="status" id="remoteHint">Press Connect Agent once. Cinema handles Free Evaluation, Remote ON, secure pairing, and MCP verification automatically. Plan approval remains explicit. Plan, step and managed browser environment are prepared by Cinema automatically.</p>
-        </div>
-      </div>
-
-      <div class="actions">
-        <button class="btn" type="button" onclick="location.href='/remote-browser/connect-agent?auto=1'">Connect Agent</button>
-      </div>
-      <p class="status">One click prepares the secure agent connection. You do not need to create keys, enable Remote, or run MCP commands manually.</p>
-
-      <div class="mcp-endpoint">
-        <div class="label">MCP endpoint</div>
-        <div class="activation-form">
-          <input id="mcpEndpoint" type="text" inputmode="url" autocomplete="off" readonly aria-label="MCP endpoint" value="/mcp">
-          <button class="btn secondary" id="copyMcpEndpoint" type="button">Copy endpoint</button>
-        </div>
-        <p class="status">Advanced setup only. If copy is blocked on mobile, tap the URL; it will be selected so you can long-press and tap Copy.</p>
-      </div>
-
-      <div class="actions">
-        <button class="btn" id="remoteOn" disabled>Remote ON</button>
-        <button class="btn secondary" id="remoteOff" disabled>Remote OFF</button>
-      </div>
-      <div id="remoteSession" class="remote-session status">Remote is off.</div>
-      <div class="remote-evidence">
-        <div class="label">Latest evidence</div>
-        <pre id="remoteEvidence">No remote action evidence yet.</pre>
-      </div>
-      <p class="status" id="remoteMessage"></p>
     </div>
 
     <div class="card wide">
@@ -118,7 +173,7 @@
     </div>
 
     <div class="card wide">
-      <div class="label">Next action</div>
+      <div class="label">Account actions</div>
       <p id="next">Connect your account to continue.</p>
       <div class="actions">
         <button class="btn" id="firstProof" disabled>Run first proof</button>
@@ -132,62 +187,27 @@
 
 <script>
 (() => {
-  function endpointUrl() {
-    return location.origin + '/mcp';
-  }
-
-  function selectEndpoint(input) {
-    input.focus();
-    input.select();
-    try { input.setSelectionRange(0, input.value.length); } catch (_) {}
-  }
-
+  function endpointUrl() { return location.origin + '/mcp'; }
+  function selectEndpoint(input) { input.focus(); input.select(); try { input.setSelectionRange(0, input.value.length); } catch (_) {} }
   function remoteMessage(text, error = false) {
-    const message = document.getElementById('remoteMessage');
-    if (!message) return;
-    message.textContent = text;
-    message.className = error ? 'status error' : 'status';
+    const message = document.getElementById('remoteMessage'); if (!message) return;
+    message.textContent = text; message.className = error ? 'status error' : 'status';
   }
-
-  async function copyMcpEndpoint() {
-    const input = document.getElementById('mcpEndpoint');
-    if (!input) return;
-    const url = endpointUrl();
-    input.value = url;
-
-    let copied = false;
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      try {
-        await navigator.clipboard.writeText(url);
-        copied = true;
-      } catch (_) {}
-    }
-
-    if (!copied) {
-      selectEndpoint(input);
-      try { copied = document.execCommand('copy'); } catch (_) { copied = false; }
-    }
-
-    if (copied) {
-      remoteMessage('MCP endpoint copied.');
-      return;
-    }
-
-    selectEndpoint(input);
-    remoteMessage('Copy was blocked by this browser. The full MCP URL is selected — long-press it and tap Copy.', true);
+  async function copyText(input, value, success) {
+    input.value = value; let copied = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') { try { await navigator.clipboard.writeText(value); copied = true; } catch (_) {} }
+    if (!copied) { selectEndpoint(input); try { copied = document.execCommand('copy'); } catch (_) { copied = false; } }
+    remoteMessage(copied ? success : 'Copy was blocked. The value is selected — long-press it and tap Copy.', !copied);
   }
-
   document.addEventListener('DOMContentLoaded', () => {
-    const input = document.getElementById('mcpEndpoint');
-    const button = document.getElementById('copyMcpEndpoint');
-    if (input) {
-      input.value = endpointUrl();
-      input.addEventListener('click', () => selectEndpoint(input));
-      input.addEventListener('focus', () => {
-        try { input.setSelectionRange(0, input.value.length); } catch (_) {}
-      });
-    }
-    if (button) button.addEventListener('click', copyMcpEndpoint);
+    const endpoint = document.getElementById('mcpEndpoint');
+    if (endpoint) { endpoint.value = endpointUrl(); endpoint.addEventListener('click', () => selectEndpoint(endpoint)); }
+    const copyEndpoint = document.getElementById('copyMcpEndpoint');
+    if (copyEndpoint) copyEndpoint.addEventListener('click', () => copyText(endpoint, endpointUrl(), 'MCP endpoint copied.'));
+    const copyPair = document.getElementById('copyPairingToken');
+    if (copyPair) copyPair.addEventListener('click', () => {
+      const input = document.getElementById('pairingToken'); if (input && input.value) copyText(input, input.value, 'Short-lived pairing token copied.');
+    });
   });
 })();
 </script>
