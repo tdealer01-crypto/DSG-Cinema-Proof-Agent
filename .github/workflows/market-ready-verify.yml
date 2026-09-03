@@ -1,0 +1,53 @@
+name: Verify Market-Ready Product
+
+on:
+  pull_request:
+    paths:
+      - 'api_v1/market_ready_*'
+      - 'market_ready_payload/**'
+      - 'tools/dsgctl.py'
+      - 'Dockerfile.cinema'
+      - 'tests/test_market_ready_platform.py'
+      - '.github/workflows/market-ready-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api_v1/market_ready_*'
+      - 'market_ready_payload/**'
+      - 'tools/dsgctl.py'
+      - 'Dockerfile.cinema'
+      - 'tests/test_market_ready_platform.py'
+      - '.github/workflows/market-ready-verify.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Cinema test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+      - name: Reconstruct exact sandbox-tested product shell
+        run: python market_ready_payload/reconstruct.py
+      - name: Verify exact source hashes and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum market_ready_ui/index.html | cut -d' ' -f1)" = '103d08d706838a629b041f60ebb959682b8de0413bcf8746e6d542a7c4de0c2f'
+          test "$(sha256sum market_ready_ui/styles.css | cut -d' ' -f1)" = '3a3bc80a48497d55d4d94638fde5eb1f3ad6604300e28f97f6b488c13678a1f9'
+          test "$(sha256sum market_ready_ui/app.js | cut -d' ' -f1)" = '16782b85e755820a2fb567ad507372dd27e98cf8068a4841eb781950ee710a35'
+          node --check market_ready_ui/app.js
+          python -m py_compile api_v1/market_ready_platform.py api_v1/market_ready_ui.py tools/dsgctl.py
+      - name: Run Market-Ready provisioner tests
+        run: python -m pytest -q tests/test_market_ready_platform.py
