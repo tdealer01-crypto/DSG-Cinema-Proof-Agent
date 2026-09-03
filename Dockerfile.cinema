@@ -32,6 +32,13 @@ COPY api_v1 ./api_v1
 COPY web ./web
 COPY openapi ./openapi
 COPY stripe-app ./stripe-app
+COPY market_ready_payload ./market_ready_payload
+COPY tools ./tools
+
+# Reconstruct the exact sandbox-tested HTML/CSS/JS from deterministic payload
+# chunks. The build fails on any byte drift. config.js is the documented
+# same-origin production adaptation (apiBase="") rather than the sandbox /dsg proxy.
+RUN python market_ready_payload/reconstruct.py
 
 ENV PORT=8000
 EXPOSE 8000
