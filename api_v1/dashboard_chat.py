@@ -27,7 +27,7 @@ from pydantic import Field
 
 from . import agent_pairing, remote_browser, remote_pairing, service
 from .canonical import utc_now
-from .models import ApprovePlanRequest, Strict
+from .models import ApprovePlanRequest, PlanDocument, Strict
 
 router = APIRouter(prefix="/dashboard/api", tags=["dashboard"])
 _lock = threading.RLock()
@@ -56,6 +56,11 @@ class ChatReplyArgs(Strict):
 class ChatApprovalArgs(Strict):
     plan_id: str = Field(min_length=1, max_length=64)
     plan_hash: str = Field(min_length=64, max_length=128)
+    summary: str = Field(min_length=1, max_length=4000)
+
+
+class ChatPlanArgs(Strict):
+    plan: PlanDocument
     summary: str = Field(min_length=1, max_length=4000)
 
 
@@ -386,6 +391,29 @@ async def _mcp_reply(args: ChatReplyArgs) -> dict[str, Any]:
     return {"ok": True, "message": _append_message(account_id, role="agent", text=args.text.strip(), agent_name=agent_name)}
 
 
+async def _mcp_create_plan(args: ChatPlanArgs) -> dict[str, Any]:
+    """Create a draft plan and expose it as a user approval card.
+
+    The paired agent may propose a plan, but only the dashboard user can approve
+    it.  Binding is recorded by ``decide_approval`` after that approval.
+    """
+    key, account_id, agent_name = _mcp_account()
+    plan = service.create_plan(args.plan)
+    message = _append_message(
+        account_id,
+        role="agent",
+        text=f"Plan proposed: {args.summary}",
+        agent_name=agent_name,
+        approval={
+            "status": "pending",
+            "plan_id": plan["plan_id"],
+            "plan_hash": plan["plan_hash"],
+            "summary": args.summary,
+        },
+    )
+    return {"ok": True, "plan": plan, "message": message, "requires_user_approval": True}
+
+
 async def _mcp_request_approval(args: ChatApprovalArgs) -> dict[str, Any]:
     _, account_id, agent_name = _mcp_account()
     record = service.get_plan_record(args.plan_id)
@@ -423,6 +451,15 @@ def install_mcp_tools() -> None:
             "Send an agent reply into the user's unified /dashboard conversation. Do not claim an action succeeded unless Cinema evidence supports it.",
             ChatReplyArgs,
             _mcp_reply,
+            read_only=False,
+            idempotent=False,
+            open_world=False,
+        ),
+        remote_mcp._Tool(
+            "dashboard_chat_create_plan",
+            "Create a detailed universal task plan from the paired agent and show an approval card. The user must approve before remote browser execution.",
+            ChatPlanArgs,
+            _mcp_create_plan,
             read_only=False,
             idempotent=False,
             open_world=False,
