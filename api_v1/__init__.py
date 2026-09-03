@@ -84,6 +84,10 @@ def install(app) -> None:
     # shell the canonical same-origin customer surface while preserving rollback.
     importlib.import_module(f"{__name__}.market_ready_ui").install(app)
     importlib.import_module(f"{__name__}.market_ready_bootstrap").install(app)
+    # OWNER service keys stay on the normal DSG account auth path while brokering
+    # admin/provider capabilities server-side. The external agent never receives
+    # DSG backend/admin master secrets and existing approval gates remain active.
+    importlib.import_module(f"{__name__}.owner_service").install(app)
     importlib.import_module("revenue.checkout").install(app)
     importlib.import_module("revenue.marketing_api").install(app)
     importlib.import_module("revenue.github_marketplace").install(app)
