@@ -1,35 +1,47 @@
-"""Short-lived agent pairing credentials for Cinema MCP.
+"""Short-lived durable agent pairing credentials for Cinema MCP.
 
 The browser keeps the customer's DSG API key. Agents receive a short-lived
-pairing token instead. An ASGI middleware resolves a valid pairing token to the
-master key only inside the server before the existing /mcp route runs, so the
-model/tool payload never needs the master credential.
+pairing token instead. Pairing records are stored on Cinema's durable
+remote-action volume so any production replica can resolve the same token.
 
-When the user approves a plan, the middleware remembers the first approved
-step for that account. The next real MCP request made with the account's pairing
-token claims that exact approved binding automatically when Remote is ON. This
-removes plan/step/token plumbing from the user without fabricating an agent
-connection before an agent client actually contacts Cinema.
+Security properties:
+- only SHA-256(token) is persisted; the plaintext pairing token is never stored;
+- the master DSG API key is AES-GCM encrypted before persistence;
+- pairing files use cross-process lock directories plus atomic replace;
+- the first successful resolution records an atomic claimed_at marker;
+- expiry/revocation are checked from durable state on every resolution.
+
+An ASGI middleware resolves a valid pairing token to the master key only inside
+Cinema before the existing /mcp route runs, so the model/tool payload never
+needs the master credential.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
+import os
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Any, Iterator, Optional
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from revenue import api as billing
-from . import service
+from . import remote_browser, service
 
 router = APIRouter(prefix="/remote-browser", tags=["agent-pairing"])
 _TOKEN_PREFIX = "dsg_pair_"
+_PAIRING_RECORD_VERSION = 1
+_PAIRING_AAD_VERSION = "dsg.agent-pairing.v1"
 _lock = threading.RLock()
 
 
@@ -41,19 +53,326 @@ class _Pairing:
     expires_at: float
 
 
-_pairings: dict[str, _Pairing] = {}
-
-
 def _digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _pairing_secret() -> bytes:
+    raw = (
+        os.getenv("DSG_AGENT_PAIRING_KEY")
+        or os.getenv("DSG_REMOTE_ACTION_KEY")
+        or os.getenv("CINEMA_API_SECRET")
+        or ""
+    ).strip()
+    if len(raw) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "AGENT_PAIRING_KEY_UNAVAILABLE",
+                "message": (
+                    "DSG_AGENT_PAIRING_KEY, DSG_REMOTE_ACTION_KEY, or CINEMA_API_SECRET "
+                    "must contain at least 32 characters"
+                ),
+            },
+        )
+    return hashlib.sha256((_PAIRING_AAD_VERSION + "\0" + raw).encode("utf-8")).digest()
+
+
+def _pairing_dir() -> Path:
+    root = remote_browser._ensure_store() / "agent-pairings"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".locks").mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "AGENT_PAIRING_STORAGE_UNAVAILABLE",
+                "message": "Cinema cannot durably store agent pairing credentials",
+            },
+        ) from exc
+    return root
+
+
+def _safe_digest(value: str) -> str:
+    digest = value.lower().strip()
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise ValueError("invalid pairing digest")
+    return digest
+
+
+def _record_path(digest: str) -> Path:
+    return _pairing_dir() / f"{_safe_digest(digest)}.json"
+
+
+@contextmanager
+def _record_lock(digest: str, timeout_seconds: float = 3.0) -> Iterator[None]:
+    root = _pairing_dir() / ".locks"
+    lock_path = root / f"{_safe_digest(digest)}.lock"
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            lock_path.mkdir()
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock_path.stat().st_mtime > 15.0:
+                    lock_path.rmdir()
+                    continue
+            except (FileNotFoundError, OSError):
+                pass
+            if time.monotonic() >= deadline:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "AGENT_PAIRING_STORAGE_BUSY",
+                        "message": "Cinema could not acquire the durable pairing record lock",
+                    },
+                )
+            time.sleep(0.01)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "AGENT_PAIRING_STORAGE_UNAVAILABLE",
+                    "message": "Cinema cannot lock the durable pairing store",
+                },
+            ) from exc
+    try:
+        yield
+    finally:
+        try:
+            lock_path.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def _b64encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64decode(value: str) -> bytes:
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def _aad(digest: str, account_id: str, expires_at: float) -> bytes:
+    return (
+        f"{_PAIRING_AAD_VERSION}:{_safe_digest(digest)}:{account_id}:{int(expires_at)}"
+    ).encode("utf-8")
+
+
+def _encrypt_api_key(digest: str, pairing: _Pairing) -> str:
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(_pairing_secret()).encrypt(
+        nonce,
+        pairing.api_key.encode("utf-8"),
+        _aad(digest, pairing.account_id, pairing.expires_at),
+    )
+    return _b64encode(nonce + ciphertext)
+
+
+def _decrypt_api_key(digest: str, record: dict[str, Any]) -> Optional[str]:
+    try:
+        raw = _b64decode(str(record["api_key_ciphertext"]))
+        if len(raw) < 29:
+            return None
+        nonce, ciphertext = raw[:12], raw[12:]
+        plaintext = AESGCM(_pairing_secret()).decrypt(
+            nonce,
+            ciphertext,
+            _aad(digest, str(record["account_id"]), float(record["expires_at"])),
+        )
+        key = plaintext.decode("utf-8")
+        return key or None
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+    except Exception:
+        return None
+
+
+def _load_json(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
+    temp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+    )
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    try:
+        temp.write_text(text, encoding="utf-8")
+        os.replace(temp, path)
+    except OSError as exc:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "AGENT_PAIRING_STORAGE_UNAVAILABLE",
+                "message": "Cinema could not persist the durable pairing record",
+            },
+        ) from exc
+
+
+class _DurablePairingRegistry:
+    """Minimal dict-compatible registry backed by the shared remote-action store."""
+
+    def _decode(
+        self,
+        digest: str,
+        record: Optional[dict[str, Any]],
+        *,
+        now: Optional[float] = None,
+    ) -> Optional[_Pairing]:
+        if not record:
+            return None
+        try:
+            if int(record.get("version", 0)) != _PAIRING_RECORD_VERSION:
+                return None
+            if str(record.get("token_hash") or "") != _safe_digest(digest):
+                return None
+            expires_at = float(record["expires_at"])
+            current = time.time() if now is None else now
+            if expires_at <= current:
+                return None
+            if str(record.get("status") or "ACTIVE") == "REVOKED":
+                return None
+            account_id = str(record["account_id"])
+            agent_name = str(record["agent_name"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        api_key = _decrypt_api_key(digest, record)
+        if not api_key:
+            return None
+        return _Pairing(
+            api_key=api_key,
+            account_id=account_id,
+            agent_name=agent_name,
+            expires_at=expires_at,
+        )
+
+    def __setitem__(self, digest: str, pairing: _Pairing) -> None:
+        digest = _safe_digest(digest)
+        with _record_lock(digest):
+            path = _record_path(digest)
+            previous = _load_json(path) or {}
+            payload = {
+                "version": _PAIRING_RECORD_VERSION,
+                "token_hash": digest,
+                "account_id": pairing.account_id,
+                "agent_name": pairing.agent_name,
+                "expires_at": pairing.expires_at,
+                "created_at": float(previous.get("created_at") or time.time()),
+                "claimed_at": previous.get("claimed_at"),
+                "status": "ACTIVE",
+                "api_key_ciphertext": _encrypt_api_key(digest, pairing),
+            }
+            _atomic_write(path, payload)
+
+    def get(self, digest: str, default=None):
+        try:
+            digest = _safe_digest(digest)
+        except ValueError:
+            return default
+        path = _record_path(digest)
+        with _record_lock(digest):
+            record = _load_json(path)
+            pairing = self._decode(digest, record)
+            if pairing is None:
+                return default
+            if record is not None and record.get("claimed_at") is None:
+                record["claimed_at"] = time.time()
+                _atomic_write(path, record)
+            return pairing
+
+    def __getitem__(self, digest: str) -> _Pairing:
+        marker = object()
+        value = self.get(digest, marker)
+        if value is marker:
+            raise KeyError(digest)
+        return value
+
+    def pop(self, digest: str, default=None):
+        try:
+            digest = _safe_digest(digest)
+        except ValueError:
+            return default
+        path = _record_path(digest)
+        with _record_lock(digest):
+            record = _load_json(path)
+            pairing = self._decode(digest, record)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return default
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "AGENT_PAIRING_STORAGE_UNAVAILABLE",
+                        "message": "Cinema could not revoke the durable pairing record",
+                    },
+                ) from exc
+            return pairing if pairing is not None else default
+
+    def items(self):
+        root = _pairing_dir()
+        result: list[tuple[str, _Pairing]] = []
+        for path in root.glob("*.json"):
+            digest = path.stem
+            try:
+                digest = _safe_digest(digest)
+            except ValueError:
+                continue
+            with _record_lock(digest):
+                pairing = self._decode(digest, _load_json(path))
+            if pairing is not None:
+                result.append((digest, pairing))
+        return result
+
+    def clear(self) -> None:
+        root = _pairing_dir()
+        for path in root.glob("*.json"):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+_pairings = _DurablePairingRegistry()
+
+
 def _cleanup(now: Optional[float] = None) -> None:
     current = time.time() if now is None else now
-    with _lock:
-        expired = [key for key, value in _pairings.items() if value.expires_at <= current]
-        for key in expired:
-            _pairings.pop(key, None)
+    root = _pairing_dir()
+    for path in root.glob("*.json"):
+        digest = path.stem
+        try:
+            digest = _safe_digest(digest)
+        except ValueError:
+            continue
+        with _record_lock(digest):
+            record = _load_json(path)
+            try:
+                expired = not record or float(record.get("expires_at", 0)) <= current
+            except (TypeError, ValueError):
+                expired = True
+            if expired:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def _authenticated_account(api_key: Optional[str]):
@@ -117,8 +436,6 @@ def _remember_approved_binding(api_key: str, plan_id: str) -> None:
     state.pop("last_auto_connect_error", None)
     remote_pairing._write_state(account.account_id, state)
     _align_active_pairings(account.account_id, str(document.agent_identity))
-
-    # Keep the validated key local to this helper; callers never receive it.
     del key
 
 
@@ -191,13 +508,7 @@ def pair_agent(
 
     api_key, account = _authenticated_account(x_dsg_api_key)
     _cleanup()
-    # Pairing must remain available even when the durable Remote store is not
-    # ready yet. Approved-binding reuse is an additive convenience, not a new
-    # prerequisite for issuing a short-lived pairing token.
-    try:
-        state = remote_pairing._read_state(account.account_id)
-    except HTTPException:
-        state = {}
+    state = remote_pairing._read_state(account.account_id)
     approved_identity = str(state.get("last_agent_identity") or "").strip()
     agent_name = approved_identity or body.agent_name
     token = _TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -222,10 +533,13 @@ def pair_agent(
         "agent_context_attached": True,
         "approved_identity_reused": bool(approved_identity),
         "auto_claim_on_mcp_contact": True,
+        "durable_pairing_store": True,
+        "pairing_token_persisted": False,
+        "api_key_persisted_plaintext": False,
         "message": (
             "Give the pairing token to the MCP client as a Bearer token. The master DSG API key remains "
-            "in Cinema. When Remote is ON and an approved binding is ready, the agent's next MCP request "
-            "claims it automatically."
+            "encrypted in Cinema's durable pairing store. When Remote is ON and an approved binding is "
+            "ready, the agent's next MCP request claims it automatically."
         ),
     }
 
@@ -288,10 +602,7 @@ class AgentPairingMiddleware:
                     try:
                         await _auto_claim_if_ready(scope, pairing)
                     except HTTPException:
-                        # Legacy MCP pairing must continue even if Remote durable
-                        # state is unavailable; explicit connect remains possible.
                         pass
-                    # Approval may have aligned the pairing identity since the token was minted.
                     pairing = resolve_pairing(token) or pairing
                     filtered = [
                         (key, value)
@@ -316,8 +627,6 @@ class AgentPairingMiddleware:
             try:
                 _remember_approved_binding(approval_key, plan_id)
             except Exception:
-                # The approval response is already authoritative. Pairing convenience must never
-                # rewrite or mask the approval result; a later explicit MCP connect can still work.
                 pass
 
 
@@ -370,4 +679,11 @@ def install(app) -> None:
     app.include_router(router)
 
 
-__all__ = ["AgentPairingMiddleware", "PairAgentRequest", "install", "resolve_pairing", "resolve_pairing_token", "router"]
+__all__ = [
+    "AgentPairingMiddleware",
+    "PairAgentRequest",
+    "install",
+    "resolve_pairing",
+    "resolve_pairing_token",
+    "router",
+]
