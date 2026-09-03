@@ -376,7 +376,7 @@ async def _mcp_receive(args: ChatReceiveArgs) -> dict[str, Any]:
     state = _read(account_id)
     items = [
         item for item in state.get("messages", [])
-        if int(item.get("seq", 0)) > args.after_seq and item.get("role") in {"user", "system"}
+        if int(item.get("seq", 0)) > args.after_seq and item.get("role") in {"user", "agent", "system"}
     ]
     return {"messages": items[: args.limit], "last_seq": int(state.get("seq", 0)), "instruction": "Reply with dashboard_chat_reply. If an exact plan needs user approval, call dashboard_chat_request_approval."}
 
