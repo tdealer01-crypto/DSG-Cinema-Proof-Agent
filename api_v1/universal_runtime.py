@@ -1,34 +1,34 @@
 """Plan-bound universal execution tools for paired Cinema agents.
 
 Browser work remains on the existing shared Remote Browser surface. This module
-adds workspace file, Python and command execution behind the *same stored Cinema
-plan/approval boundary* so an agent can perform code-oriented work without
-inventing a second approval model.
+adds workspace file, Python and command execution behind the same stored Cinema
+plan/approval boundary.
 
-Security boundary:
-- the agent supplies only ``plan_id`` and ``step_id``;
-- action/target/parameters are re-read from the approved stored plan;
-- the local subprocess adapter is disabled unless ``DSG_UNIVERSAL_LOCAL_EXECUTOR``
-  is explicitly enabled. Production should replace it with an isolated sandbox
-  executor rather than running arbitrary code in the Cinema web process;
-- filesystem paths are confined to an account-scoped workspace;
-- subprocesses receive a minimal environment, bounded output and a hard timeout;
-- every attempt writes hash-chained durable evidence consumed by the dashboard.
+Execution modes:
+- production: signed HTTP calls to an isolated sandbox configured through
+  ``DSG_UNIVERSAL_EXECUTOR_URL`` + ``DSG_UNIVERSAL_EXECUTOR_SECRET``;
+- tests/local sandbox only: in-process subprocess adapter enabled explicitly by
+  ``DSG_UNIVERSAL_LOCAL_EXECUTOR=1``.
+
+The agent supplies only plan_id + step_id. Action, target, code, command, path and
+content are re-read from the already-approved stored plan before execution.
 """
-
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import shlex
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import Field
 
@@ -41,26 +41,12 @@ _lock = threading.RLock()
 _MAX_OUTPUT = 20_000
 _TIMEOUT_SECONDS = 45
 _LOCAL_EXECUTOR_ENV = "DSG_UNIVERSAL_LOCAL_EXECUTOR"
+_REMOTE_EXECUTOR_URL_ENV = "DSG_UNIVERSAL_EXECUTOR_URL"
+_REMOTE_EXECUTOR_SECRET_ENV = "DSG_UNIVERSAL_EXECUTOR_SECRET"
 
-_SUPPORTED_ACTIONS = {
-    "fs.list",
-    "fs.read",
-    "fs.write",
-    "python.run",
-    "shell.exec",
-}
+_SUPPORTED_ACTIONS = {"fs.list", "fs.read", "fs.write", "python.run", "shell.exec"}
 _ALLOWED_COMMANDS = {"git", "ls", "pwd", "cat", "pytest", "python", "python3", Path(sys.executable).name}
-_ALLOWED_GIT_SUBCOMMANDS = {
-    "status",
-    "diff",
-    "log",
-    "show",
-    "branch",
-    "rev-parse",
-    "init",
-    "add",
-    "commit",
-}
+_ALLOWED_GIT_SUBCOMMANDS = {"status", "diff", "log", "show", "branch", "rev-parse", "init", "add", "commit"}
 
 
 class UniversalExecuteArgs(Strict):
@@ -70,6 +56,16 @@ class UniversalExecuteArgs(Strict):
 
 def _enabled() -> bool:
     return (os.getenv(_LOCAL_EXECUTOR_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _remote_config() -> tuple[str, str] | None:
+    url = (os.getenv(_REMOTE_EXECUTOR_URL_ENV) or "").strip().rstrip("/")
+    secret = (os.getenv(_REMOTE_EXECUTOR_SECRET_ENV) or "").strip()
+    if not url and not secret:
+        return None
+    if not url or len(secret) < 32 or not url.startswith("https://"):
+        raise HTTPException(status_code=503, detail={"error": "UNIVERSAL_REMOTE_EXECUTOR_MISCONFIGURED"})
+    return url, secret
 
 
 def _account_context(api_key: Optional[str] = None) -> tuple[str, str]:
@@ -134,11 +130,7 @@ def _resolve_step(plan_id: str, step_id: str, agent_name: str) -> tuple[dict[str
     if agent_name and document.agent_identity != agent_name:
         raise HTTPException(
             status_code=403,
-            detail={
-                "error": "AGENT_IDENTITY_MISMATCH",
-                "approved_agent": document.agent_identity,
-                "paired_agent": agent_name,
-            },
+            detail={"error": "AGENT_IDENTITY_MISMATCH", "approved_agent": document.agent_identity, "paired_agent": agent_name},
         )
     step = next((item for item in document.steps if item.step_id == step_id), None)
     if step is None:
@@ -190,14 +182,10 @@ def _run_process(command: list[str], workspace: Path) -> dict[str, Any]:
         )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail={"error": "SANDBOX_TIMEOUT"}) from exc
-    return {
-        "returncode": completed.returncode,
-        "stdout": _clip(completed.stdout or ""),
-        "stderr": _clip(completed.stderr or ""),
-    }
+    return {"returncode": completed.returncode, "stdout": _clip(completed.stdout or ""), "stderr": _clip(completed.stderr or "")}
 
 
-def _execute(account_id: str, step: PlanStep) -> dict[str, Any]:
+def _execute_local(account_id: str, step: PlanStep) -> dict[str, Any]:
     workspace = _workspace(account_id)
     params = dict(step.parameters)
     action = step.action
@@ -235,11 +223,64 @@ def _execute(account_id: str, step: PlanStep) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail={"error": "INVALID_SHELL_COMMAND"}) from exc
         if not command or Path(command[0]).name not in _ALLOWED_COMMANDS:
             raise HTTPException(status_code=403, detail={"error": "SHELL_COMMAND_NOT_ALLOWED"})
-        if Path(command[0]).name == "git":
-            if len(command) < 2 or command[1] not in _ALLOWED_GIT_SUBCOMMANDS:
-                raise HTTPException(status_code=403, detail={"error": "GIT_SUBCOMMAND_NOT_ALLOWED"})
+        if Path(command[0]).name == "git" and (len(command) < 2 or command[1] not in _ALLOWED_GIT_SUBCOMMANDS):
+            raise HTTPException(status_code=403, detail={"error": "GIT_SUBCOMMAND_NOT_ALLOWED"})
         return _run_process(command, workspace)
     raise HTTPException(status_code=409, detail={"error": "UNIVERSAL_ACTION_NOT_SUPPORTED", "action": action})
+
+
+def _execute_remote(account_id: str, plan_id: str, record: dict[str, Any], step: PlanStep) -> dict[str, Any]:
+    config = _remote_config()
+    if config is None:
+        raise HTTPException(status_code=503, detail={"error": "UNIVERSAL_SANDBOX_EXECUTOR_REQUIRED"})
+    url, secret = config
+    timestamp = int(time.time())
+    nonce = uuid.uuid4().hex
+    payload = {
+        "account_hash": _account_hash(account_id),
+        "plan_id": plan_id,
+        "plan_hash": str(record.get("plan_hash") or ""),
+        "step_id": step.step_id,
+        "action": step.action,
+        "target": step.target,
+        "parameters": dict(step.parameters),
+        "timestamp": timestamp,
+        "nonce": nonce,
+    }
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    try:
+        response = httpx.post(
+            f"{url}/execute",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-DSG-Signature": signature,
+                "X-DSG-Timestamp": str(timestamp),
+                "X-DSG-Nonce": nonce,
+            },
+            timeout=_TIMEOUT_SECONDS + 10,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail={"error": "UNIVERSAL_SANDBOX_UNREACHABLE"}) from exc
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail={"error": "UNIVERSAL_SANDBOX_INVALID_RESPONSE"}) from exc
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else None
+        if not isinstance(detail, dict):
+            detail = {"error": "UNIVERSAL_SANDBOX_REJECTED"}
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    if not isinstance(data, dict) or data.get("ok") is not True or not isinstance(data.get("output"), dict):
+        raise HTTPException(status_code=502, detail={"error": "UNIVERSAL_SANDBOX_INVALID_RESPONSE"})
+    return data["output"]
+
+
+def _execute(account_id: str, plan_id: str, record: dict[str, Any], step: PlanStep) -> dict[str, Any]:
+    if _remote_config() is not None:
+        return _execute_remote(account_id, plan_id, record, step)
+    return _execute_local(account_id, step)
 
 
 def _event_files(account_id: str) -> list[Path]:
@@ -303,12 +344,20 @@ def latest_event(account_id: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _executor_state() -> dict[str, Any]:
+    remote = _remote_config()
+    if remote is not None:
+        return {"executor": "remote-isolated-sandbox", "remote_executor_configured": True, "local_executor_enabled": False}
+    if _enabled():
+        return {"executor": "local-sandbox", "remote_executor_configured": False, "local_executor_enabled": True}
+    return {"executor": "external-sandbox-required", "remote_executor_configured": False, "local_executor_enabled": False}
+
+
 async def _runtime_status(_: Any) -> dict[str, Any]:
     account_id, _ = _account_context()
     return {
         "ok": True,
-        "executor": "local-sandbox" if _enabled() else "external-sandbox-required",
-        "local_executor_enabled": _enabled(),
+        **_executor_state(),
         "workspace": "account-scoped",
         "actions": sorted(_SUPPORTED_ACTIONS),
         "browser_execution": "use remote_action on the existing shared browser",
@@ -322,7 +371,7 @@ async def _execute_step(args: UniversalExecuteArgs) -> dict[str, Any]:
     event_id = f"uevt_{uuid.uuid4().hex}"
     started_at = utc_now()
     try:
-        output = _execute(account_id, step)
+        output = _execute(account_id, args.plan_id, record, step)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
         failed = _write_event(
@@ -427,8 +476,7 @@ async def runtime_status(x_dsg_api_key: Optional[str] = Header(default=None, ali
     account_id, _ = _account_context(x_dsg_api_key)
     return {
         "ok": True,
-        "executor": "local-sandbox" if _enabled() else "external-sandbox-required",
-        "local_executor_enabled": _enabled(),
+        **_executor_state(),
         "actions": sorted(_SUPPORTED_ACTIONS),
         "browser_execution": "remote_action",
         "evidence": verify_evidence(account_id),
@@ -440,11 +488,4 @@ def install(app) -> None:
     install_mcp_tools()
 
 
-__all__ = [
-    "UniversalExecuteArgs",
-    "install",
-    "install_mcp_tools",
-    "latest_event",
-    "router",
-    "verify_evidence",
-]
+__all__ = ["UniversalExecuteArgs", "install", "install_mcp_tools", "latest_event", "router", "verify_evidence"]
