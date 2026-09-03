@@ -694,6 +694,17 @@ async def contract() -> dict[str, Any]:
     return {
         "protocol": REMOTE_PROTOCOL_VERSION,
         "semantics": "approved plan grants remote execution authority; no per-click approval cycle",
+        "autonomous_execution": {
+            "approval_scope": "one approval covers the complete plan and all predeclared fallback steps",
+            "agent_responsibility": "the connected agent plans, executes, verifies, and reports the task end to end",
+            "fallback_behavior": (
+                "on blocked, unavailable, timeout, or non-matching result, continue to the next approved fallback "
+                "step without requesting approval again"
+            ),
+            "stop_conditions": "stop on the first verified success or after every approved fallback is exhausted",
+            "new_approval_required_only_for": "out-of-plan scope, secrets, login, purchase, payment, or high-risk action",
+            "evidence": "record every attempted primary and fallback step and its outcome",
+        },
         "controllers": [
             "user",
             "agent_executor",
