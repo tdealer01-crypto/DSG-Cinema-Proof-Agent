@@ -42,14 +42,24 @@ def test_customer_dashboard_is_served_from_the_api_origin():
     response = client.get("/dashboard")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "DSG ONE Customer" in response.text
-    assert "Activate free account" in response.text
-    assert 'id="disconnect"' in response.text
-    assert 'id="remoteOn"' in response.text
-    assert 'id="remoteOff"' in response.text
-    assert 'id="remoteEvidence"' in response.text
-    assert 'id="agentChatCard"' in response.text
-    assert 'id="liveMonitor"' in response.text
+    assert "Govern AI agent work without slowing it down." in response.text
+    assert "AI AGENT CHAT" in response.text
+    assert "SHARED BROWSER" in response.text
+    assert "One execution · five views" in response.text
+    for required_id in (
+        'id="connectAgentTop"',
+        'id="remoteToggle"',
+        'id="chatInput"',
+        'id="chatSend"',
+        'id="browserFrame"',
+        'id="monitorActionState"',
+        'id="monitorPlanState"',
+        'id="monitorPermissionState"',
+        'id="monitorEvidenceState"',
+        'id="monitorExecutionState"',
+        'id="installTitle"',
+    ):
+        assert required_id in response.text
     for forbidden in (
         'id="remotePlanId"',
         'id="remoteAgentId"',
@@ -62,9 +72,13 @@ def test_customer_dashboard_is_served_from_the_api_origin():
         assert forbidden not in response.text
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
-    script = client.get("/dashboard-assets/dashboard.js")
+
+    script = client.get("/app.js")
+    config = client.get("/config.js")
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("application/javascript")
+    assert config.status_code == 200
+    assert config.text == 'window.DSG_CONFIG = { apiBase: "" };\n'
     for endpoint in (
         "/onboarding/status",
         "/billing/usage",
@@ -90,19 +104,13 @@ def test_customer_dashboard_is_served_from_the_api_origin():
 
 def test_remote_dashboard_is_chat_driven_and_preserves_shared_browser_semantics():
     response = client.get("/dashboard")
-    script = client.get("/dashboard-assets/dashboard.js")
-    live_script = client.get("/dashboard-assets/browserbase-live.js")
-    assert "Talk to your paired agent here" in response.text
-    assert "Messages are delivered only to a real paired MCP agent" in response.text
-    assert "One screen · User + Agent" in response.text
-    assert "same browser session" in response.text
-    assert "without leaving this dashboard" in response.text
+    script = client.get("/app.js")
+    assert "AI AGENT CHAT" in response.text
+    assert "SHARED BROWSER" in response.text
+    assert "User + Agent" in response.text
+    assert "both you and the agent use the same session" in response.text
     assert "remoteEndpoint" not in response.text
-    assert "your browser session stays live" in script.text
-    assert live_script.status_code == 200
-    assert "/remote-browser/browserbase/live-frame" in live_script.text
-    assert "/remote-browser/browserbase/embed/" in live_script.text
-    assert "same browser session" in live_script.text
+    assert "/remote-browser/browserbase/live-view" in script.text
     assert "takeover" not in response.text.lower()
     assert "resume agent" not in response.text.lower()
     assert "location.href='/remote-browser/connect-agent" not in response.text
@@ -110,8 +118,7 @@ def test_remote_dashboard_is_chat_driven_and_preserves_shared_browser_semantics(
     assert "localStorage" not in script.text
     assert "sessionStorage" in script.text
     assert 'const KEY_SLOT = "dsg-one-key-session"' in script.text
-    assert "resumeSession();" in script.text
-    assert "Credentials cleared from this browser tab" in script.text
+    assert "Disconnected. Session credentials cleared from this browser tab." in script.text
 
 
 def test_static_markup_shows_no_verification_state(markup: str):

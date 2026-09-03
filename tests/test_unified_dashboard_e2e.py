@@ -47,34 +47,37 @@ def test_user_has_one_dashboard_for_chat_browser_approval_and_five_monitors():
     assert response.status_code == 200
     html = response.text
 
-    assert "Agent Chat" in html
-    assert "Shared Browser" in html
-    assert "One screen · User + Agent" in html
-    assert 'id="connectAgent"' in html
+    assert "AI AGENT CHAT" in html
+    assert "SHARED BROWSER" in html
+    assert "User + Agent" in html
+    assert "One execution · five views" in html
+    assert 'id="connectAgentTop"' in html
     assert 'id="chatInput"' in html
     assert 'id="chatSend"' in html
-    assert 'id="liveMonitor"' in html
+    assert 'id="browserFrame"' in html
 
-    for label in ["ACTION", "PLAN ALIGNMENT", "PERMISSION", "EVIDENCE", "EXECUTION / AUDIT"]:
+    for label in ["01 · ACTION", "02 · PLAN", "03 · PERMISSION", "04 · EVIDENCE", "05 · AUDIT"]:
         assert label in html
 
-    # Normal customer flow stays on /dashboard. The old helper remains an
-    # internal compatibility route but the dashboard no longer navigates to it.
+    # Normal customer flow stays on /dashboard. The legacy helper/assets remain
+    # rollback compatibility only; the canonical shell does not navigate away.
     assert "location.href='/remote-browser/connect-agent" not in html
     assert 'onclick="location.href=' not in html
-    assert "Advanced agent connection" in html
+    assert "Advanced / manual setup" in html
 
 
 def test_dashboard_javascript_runs_one_page_pairing_chat_and_monitor_flow():
-    script = (ROOT / "web" / "customer-dashboard" / "dashboard.js").read_text(encoding="utf-8")
+    response = client.get("/app.js")
+    assert response.status_code == 200
+    script = response.text
 
     required = [
-        'api("/remote-browser/enable"',
-        'api("/remote-browser/agent-pair"',
-        'api("/dashboard/api/chat/messages"',
-        'api("/dashboard/api/chat/approval"',
-        'api("/dashboard/api/monitor"',
-        '$("connectAgent").onclick',
+        'request("/remote-browser/enable"',
+        'request("/remote-browser/agent-pair"',
+        'request("/dashboard/api/chat/messages',
+        'request("/dashboard/api/chat/approval"',
+        'request("/dashboard/api/monitor"',
+        '$("connectAgentTop").onclick',
         '$("chatSend").onclick',
     ]
     for value in required:
@@ -85,6 +88,8 @@ def test_dashboard_javascript_runs_one_page_pairing_chat_and_monitor_flow():
     assert 'Authorization": "Bearer ' not in script
     assert "method:'tools/call'" not in script
     assert "location.href='/remote-browser/connect-agent" not in script
+    assert "localStorage" not in script
+    assert "sessionStorage" in script
 
 
 def test_chat_round_trip_uses_real_paired_mcp_tools():
