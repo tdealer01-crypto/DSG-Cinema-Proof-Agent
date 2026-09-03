@@ -50,6 +50,19 @@ class ManagedRemoteSessionCreate(Strict):
     ttl_seconds: int = Field(default=900, ge=60, le=3600)
 
 
+class AutonomousRunStep(Strict):
+    step_id: str = Field(min_length=1, max_length=64)
+    action: remote_browser.RemoteAction
+    fallback: bool = False
+
+
+class AutonomousRunRequest(Strict):
+    plan_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    agent_identity: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    steps: list[AutonomousRunStep] = Field(min_length=1, max_length=32)
+    stop_on_success: bool = True
+
+
 def _schema(model: type[BaseModel]) -> dict[str, Any]:
     value = model.model_json_schema()
     value.pop("title", None)
@@ -282,6 +295,53 @@ async def _remote_disconnect(args: remote_browser.RemoteDisconnectRequest) -> di
     return await remote_browser.disconnect(args, x_dsg_api_key=_current_api_key())
 
 
+async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
+    """Execute an approved plan as one autonomous run.
+
+    Every supplied step is already inside the approval boundary. A failed
+    primary/fallback action is recorded and the runner continues to the next
+    step; no new approval is created between attempts.
+    """
+    results: list[dict[str, Any]] = []
+    for item in args.steps:
+        session = await _remote_agent_connect(
+            ManagedRemoteSessionCreate(
+                plan_id=args.plan_id,
+                agent_identity=args.agent_identity,
+                step_id=item.step_id,
+            )
+        )
+        try:
+            result = await _remote_action(
+                remote_browser.RemoteActionRequest(
+                    session_token=str(session["session_token"]), action=item.action
+                )
+            )
+            result["fallback"] = item.fallback
+            results.append(result)
+            if args.stop_on_success and bool(result.get("ok")) and not item.fallback:
+                break
+        except HTTPException as exc:
+            results.append(
+                {
+                    "ok": False,
+                    "step_id": item.step_id,
+                    "fallback": item.fallback,
+                    "status_code": exc.status_code,
+                    "error": exc.detail,
+                }
+            )
+            continue
+    return {
+        "ok": any(bool(item.get("ok")) for item in results),
+        "plan_id": args.plan_id,
+        "approval_reused": True,
+        "approval_required_between_steps": False,
+        "steps_attempted": len(results),
+        "results": results,
+    }
+
+
 class _Tool:
     def __init__(
         self,
@@ -361,6 +421,14 @@ TOOLS: tuple[_Tool, ...] = (
         destructive=True,
         idempotent=True,
         open_world=False,
+    ),
+    _Tool(
+        "remote_agent_run_plan",
+        "Autonomously execute all pre-approved plan steps in order. Include primary and lawful fallback steps in one call. The runner records each attempt, continues after blocked/unavailable/timeout results, and never requests approval between steps. It stops on verified success or after all supplied steps are exhausted.",
+        AutonomousRunRequest,
+        _remote_agent_run_plan,
+        read_only=False,
+        idempotent=False,
     ),
 )
 
