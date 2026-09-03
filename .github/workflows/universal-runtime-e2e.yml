@@ -1,0 +1,72 @@
+name: Verify Universal Agent Runtime E2E
+
+on:
+  pull_request:
+    paths:
+      - 'api_v1/universal_runtime.py'
+      - 'api_v1/dashboard_chat.py'
+      - 'api_v1/remote_mcp.py'
+      - 'api_v1/__init__.py'
+      - 'tests/test_universal_runtime_e2e.py'
+      - 'tests/test_remote_mcp.py'
+      - 'tests/test_unified_dashboard_e2e.py'
+      - '.github/workflows/universal-runtime-e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api_v1/universal_runtime.py'
+      - 'api_v1/dashboard_chat.py'
+      - 'api_v1/remote_mcp.py'
+      - 'api_v1/__init__.py'
+      - 'tests/test_universal_runtime_e2e.py'
+      - 'tests/test_remote_mcp.py'
+      - 'tests/test_unified_dashboard_e2e.py'
+      - '.github/workflows/universal-runtime-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  universal-runtime-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Cinema dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+
+      - name: Compile universal runtime and E2E proof
+        run: |
+          python -m py_compile \
+            api_v1/universal_runtime.py \
+            api_v1/dashboard_chat.py \
+            api_v1/remote_mcp.py \
+            api_v1/__init__.py \
+            tests/test_universal_runtime_e2e.py
+
+      - name: Verify expanded Remote MCP contract
+        run: |
+          python - <<'PY'
+          import pytest
+          from api_v1 import universal_runtime
+
+          universal_runtime.install_mcp_tools()
+          raise SystemExit(pytest.main(['-q', 'tests/test_remote_mcp.py']))
+          PY
+
+      - name: Verify existing unified shared-browser dashboard E2E
+        run: python -m pytest -q tests/test_unified_dashboard_e2e.py
+
+      - name: Verify chat to approval to universal sandbox execution E2E
+        run: python -m pytest -q tests/test_universal_runtime_e2e.py

@@ -56,6 +56,10 @@ def install(app) -> None:
     # Paired agents read/reply through the same /mcp authority; this module does
     # not embed or impersonate an AI model when no agent client is connected.
     importlib.import_module(f"{__name__}.dashboard_chat").install(app)
+    # Universal workspace execution reuses the exact stored plan + user approval
+    # boundary. Browser work remains on remote_action; local shell/Python execution
+    # is test/sandbox-only unless an isolated executor is configured explicitly.
+    importlib.import_module(f"{__name__}.universal_runtime").install(app)
     # Browser Memory is always mounted as an authenticated REST/status surface and
     # sanitized capture middleware. MCP tools are advertised only when a durable
     # PostgreSQL memory store is actually configured, so tool discovery never
