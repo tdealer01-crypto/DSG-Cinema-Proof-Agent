@@ -1,0 +1,118 @@
+name: Attest Production Market-Ready UI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/attest-production-market-ready-ui.yml'
+  workflow_run:
+    workflows: ['Deploy Cinema + Z3 Production']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CINEMA_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      PRODUCTION_DEPLOY_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Reconstruct exact Market-Ready source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python market_ready_payload/reconstruct.py
+          test "$(sha256sum market_ready_ui/index.html | cut -d' ' -f1)" = '103d08d706838a629b041f60ebb959682b8de0413bcf8746e6d542a7c4de0c2f'
+          test "$(sha256sum market_ready_ui/styles.css | cut -d' ' -f1)" = '3a3bc80a48497d55d4d94638fde5eb1f3ad6604300e28f97f6b488c13678a1f9'
+          test "$(sha256sum market_ready_ui/app.js | cut -d' ' -f1)" = '16782b85e755820a2fb567ad507372dd27e98cf8068a4841eb781950ee710a35'
+          test "$(sha256sum market_ready_ui/config.js | cut -d' ' -f1)" = '8d2858079c900fb3deaf4e0e54bea9296ae1e2d617334d1f270705ff8c33f9ab'
+
+      - name: Attest live production bytes and security headers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fetch_and_attest() {
+            local name="$1"
+            local route="$2"
+            local expected="$3"
+            local body="/tmp/live-$name"
+            local headers="/tmp/live-$name.headers"
+
+            curl --fail-with-body --silent --show-error \
+              --retry 12 --retry-all-errors --retry-delay 5 \
+              --dump-header "$headers" \
+              "$CINEMA_URL$route" \
+              --output "$body"
+
+            local actual
+            actual=$(sha256sum "$body" | cut -d' ' -f1)
+            if [[ "$actual" != "$expected" ]]; then
+              echo "Production hash mismatch for $route: $actual != $expected" >&2
+              exit 1
+            fi
+
+            tr -d '\r' < "$headers" | grep -qi '^cache-control: no-store$'
+            tr -d '\r' < "$headers" | grep -qi '^x-content-type-options: nosniff$'
+          }
+
+          fetch_and_attest index.html /dashboard 103d08d706838a629b041f60ebb959682b8de0413bcf8746e6d542a7c4de0c2f
+          fetch_and_attest styles.css /styles.css 3a3bc80a48497d55d4d94638fde5eb1f3ad6604300e28f97f6b488c13678a1f9
+          fetch_and_attest app.js /app.js 16782b85e755820a2fb567ad507372dd27e98cf8068a4841eb781950ee710a35
+          fetch_and_attest config.js /config.js 8d2858079c900fb3deaf4e0e54bea9296ae1e2d617334d1f270705ff8c33f9ab
+
+          tr -d '\r' < /tmp/live-index.html.headers | grep -qi "^content-security-policy: .*script-src 'self'"
+          if tr -d '\r' < /tmp/live-index.html.headers | grep -qi "content-security-policy: .*'unsafe-inline'"; then
+            echo 'Production dashboard CSP unexpectedly permits unsafe-inline scripts.' >&2
+            exit 1
+          fi
+
+          grep -Fq '<script src="/config.js"></script>' /tmp/live-index.html
+          grep -Fq '<script src="/app.js"></script>' /tmp/live-index.html
+          grep -Fq 'window.DSG_CONFIG = { apiBase: "" };' /tmp/live-config.js
+
+          ATTESTED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          jq -n \
+            --arg source_commit "$SOURCE_SHA" \
+            --arg deploy_run_id "$PRODUCTION_DEPLOY_RUN_ID" \
+            --arg cinema_url "$CINEMA_URL" \
+            --arg attested_at "$ATTESTED_AT" \
+            '{
+              source_commit:$source_commit,
+              production_deploy_run_id:(if $deploy_run_id == "" then null else $deploy_run_id end),
+              environment:"production",
+              cinema_url:$cinema_url,
+              attested_at:$attested_at,
+              exact_byte_match:true,
+              dashboard_http_verified:true,
+              csp_fail_closed:true,
+              cache_control_no_store:true,
+              x_content_type_options_nosniff:true,
+              ui_hashes:{
+                dashboard:"103d08d706838a629b041f60ebb959682b8de0413bcf8746e6d542a7c4de0c2f",
+                styles:"3a3bc80a48497d55d4d94638fde5eb1f3ad6604300e28f97f6b488c13678a1f9",
+                app_js:"16782b85e755820a2fb567ad507372dd27e98cf8068a4841eb781950ee710a35",
+                config_js:"8d2858079c900fb3deaf4e0e54bea9296ae1e2d617334d1f270705ff8c33f9ab"
+              }
+            }' > production_ui_attestation.json
+          cat production_ui_attestation.json
+
+      - name: Upload production UI attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-ui-attestation-${{ env.SOURCE_SHA }}
+          path: production_ui_attestation.json
+          if-no-files-found: error
+          retention-days: 30
