@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from api_v1 import (
     browserbase_executor,
+    dashboard_chat,
     remote_browser,
     remote_mcp,
     remote_pairing,
@@ -80,6 +81,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = FastAPI()
     app.include_router(remote_pairing.router)
     app.include_router(remote_mcp.router)
+    dashboard_chat.install_mcp_tools()
     app.state.observed_endpoints = observed_endpoints
     return TestClient(app)
 
@@ -121,6 +123,7 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
         "remote_disconnect",
         "dashboard_chat_receive",
         "dashboard_chat_reply",
+        "dashboard_chat_create_plan",
         "dashboard_chat_request_approval",
     }
     connect_schema = definitions["remote_agent_connect"]["inputSchema"]
