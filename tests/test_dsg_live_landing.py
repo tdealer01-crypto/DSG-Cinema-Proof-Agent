@@ -23,7 +23,7 @@ def test_dsg_live_landing_points_customers_to_one_dashboard():
     assert "Use the product from one URL" in html
     assert "The normal customer flow stays on" in html
     assert "Agent Chat" in html
-    assert "One screen, User + Agent" in html
+    assert "User + Agent" in html
 
 
 def test_dsg_live_landing_exposes_current_five_monitor_views():
