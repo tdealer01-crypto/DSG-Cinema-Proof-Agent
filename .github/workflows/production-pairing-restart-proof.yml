@@ -78,7 +78,11 @@ jobs:
             --header 'Accept: application/json' \
             --header 'Content-Type: application/json' \
             --data "{\"channel\":\"remote_browser\",\"activation_id\":\"$ACTIVATION_ID\",\"display_name\":\"Production Pairing Restart Proof\"}")
-          test "$ACTIVATE_CODE" = "200"
+          if [[ "$ACTIVATE_CODE" != "201" ]]; then
+            echo "Activation returned HTTP $ACTIVATE_CODE" >&2
+            jq '{decision,activated,retry_after_seconds}' /tmp/activate.json >&2 2>/dev/null || true
+            exit 1
+          fi
           API_KEY=$(jq -r '.api_key // empty' /tmp/activate.json)
           test -n "$API_KEY"
           echo "::add-mask::$API_KEY"
@@ -90,7 +94,11 @@ jobs:
             --header 'Content-Type: application/json' \
             --header "X-DSG-API-Key: $API_KEY" \
             --data '{"agent_name":"production-restart-proof","ttl_seconds":900}')
-          test "$PAIR_CODE" = "201"
+          if [[ "$PAIR_CODE" != "201" ]]; then
+            echo "Pairing returned HTTP $PAIR_CODE" >&2
+            jq '{detail,paired,durable_pairing_store}' /tmp/pair.json >&2 2>/dev/null || true
+            exit 1
+          fi
           TOKEN=$(jq -r '.pairing_token // empty' /tmp/pair.json)
           test -n "$TOKEN"
           echo "::add-mask::$TOKEN"
