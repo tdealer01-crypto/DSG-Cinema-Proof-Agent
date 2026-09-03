@@ -121,10 +121,14 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
         "remote_agent_connect",
         "remote_action",
         "remote_disconnect",
+        "remote_agent_run_plan",
         "dashboard_chat_receive",
         "dashboard_chat_reply",
         "dashboard_chat_create_plan",
         "dashboard_chat_request_approval",
+        "universal_runtime_status",
+        "universal_execute_step",
+        "universal_evidence_verify",
     }
     connect_schema = definitions["remote_agent_connect"]["inputSchema"]
     assert "remote_endpoint" not in connect_schema["properties"]
@@ -132,6 +136,9 @@ def test_mcp_lists_remote_tools_hides_endpoint_and_supports_managed_flow(client:
     assert definitions["dashboard_chat_receive"]["annotations"]["readOnlyHint"] is True
     assert definitions["dashboard_chat_reply"]["annotations"]["readOnlyHint"] is False
     assert definitions["dashboard_chat_request_approval"]["annotations"]["readOnlyHint"] is False
+    assert definitions["universal_runtime_status"]["annotations"]["readOnlyHint"] is True
+    assert definitions["universal_execute_step"]["annotations"]["readOnlyHint"] is False
+    assert definitions["universal_evidence_verify"]["annotations"]["readOnlyHint"] is True
 
     headers = {"X-DSG-API-Key": "dsg_live_test"}
     enabled = client.post("/remote-browser/enable", headers=headers)
