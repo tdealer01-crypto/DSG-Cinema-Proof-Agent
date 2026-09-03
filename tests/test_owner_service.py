@@ -143,3 +143,13 @@ def test_repository_owner_config_is_hash_only():
         assert set(record).isdisjoint({"api_key", "secret", "plaintext_key"})
         assert len(record["secret_hash"]) == 64
         assert len(record["key_id"]) == 16
+
+
+def test_cinema_image_packages_only_owner_hash_config():
+    dockerfile = Path("Dockerfile.cinema").read_text(encoding="utf-8")
+    assert (
+        "COPY config/owner-service-accounts.json ./config/owner-service-accounts.json"
+        in dockerfile
+    )
+    assert "COPY config ./config" not in dockerfile
+    assert "COPY config/ ./config" not in dockerfile
