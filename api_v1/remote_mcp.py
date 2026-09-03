@@ -619,6 +619,12 @@ async def mcp_endpoint(
     except Exception:
         return JSONResponse(status_code=400, content=_error(None, INVALID_REQUEST, "request body must be JSON"))
     api_key = _authorization_key(x_dsg_api_key, authorization)
+    # Pairing credentials are intentionally the only credential exposed to an
+    # agent. Resolve them at the MCP boundary to the account API key used by
+    # internal billing/plan authorization; never make downstream tools treat a
+    # short-lived dsg_pair_* token as a master key.
+    if api_key:
+        api_key = agent_pairing.resolve_pairing_token(api_key) or api_key
     try:
         public_origin = _request_public_origin(request)
     except HTTPException:
