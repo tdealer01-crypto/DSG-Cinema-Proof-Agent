@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import API_VERSION
 from . import (
+    agent_pairing,
     azure_local_browser,
     azure_managed_executor,
     browserbase_executor,
@@ -244,6 +245,8 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
     if not public_origin:
         raise HTTPException(status_code=503, detail="managed browser public origin is unavailable")
 
+    canonical_key, _ = agent_pairing._authenticated_account(_current_api_key())
+    canonical_key = str(canonical_key)
     plan_id, step_id, agent_identity = _resolve_binding(args)
     executor = _managed_executor()
     capability = executor.allocate_capability(
@@ -263,7 +266,7 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
 
     created: dict[str, Any] | None = None
     try:
-        created = await remote_pairing.agent_connect(request, x_dsg_api_key=_current_api_key())
+        created = await remote_pairing.agent_connect(request, x_dsg_api_key=canonical_key)
         executor.finalize_capability(
             capability,
             session_id=str(created["session_id"]),
@@ -288,11 +291,62 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
 
 
 async def _remote_action(args: remote_browser.RemoteActionRequest) -> dict[str, Any]:
-    return await remote_browser.execute_action(args, x_dsg_api_key=_current_api_key())
+    canonical_key, _ = agent_pairing._authenticated_account(_current_api_key())
+    canonical_key = str(canonical_key)
+    return await remote_browser.execute_action(args, x_dsg_api_key=canonical_key)
 
 
 async def _remote_disconnect(args: remote_browser.RemoteDisconnectRequest) -> dict[str, Any]:
-    return await remote_browser.disconnect(args, x_dsg_api_key=_current_api_key())
+    canonical_key, _ = agent_pairing._authenticated_account(_current_api_key())
+    canonical_key = str(canonical_key)
+    return await remote_browser.disconnect(args, x_dsg_api_key=canonical_key)
+
+
+async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
+    """Execute an approved plan as one autonomous run.
+
+    Every supplied step is already inside the approval boundary. A failed
+    primary/fallback action is recorded and the runner continues to the next
+    step; no new approval is created between attempts.
+    """
+    results: list[dict[str, Any]] = []
+    for item in args.steps:
+        session = await _remote_agent_connect(
+            ManagedRemoteSessionCreate(
+                plan_id=args.plan_id,
+                agent_identity=args.agent_identity,
+                step_id=item.step_id,
+            )
+        )
+        try:
+            result = await _remote_action(
+                remote_browser.RemoteActionRequest(
+                    session_token=str(session["session_token"]), action=item.action
+                )
+            )
+            result["fallback"] = item.fallback
+            results.append(result)
+            if args.stop_on_success and bool(result.get("ok")) and not item.fallback:
+                break
+        except HTTPException as exc:
+            results.append(
+                {
+                    "ok": False,
+                    "step_id": item.step_id,
+                    "fallback": item.fallback,
+                    "status_code": exc.status_code,
+                    "error": exc.detail,
+                }
+            )
+            continue
+    return {
+        "ok": any(bool(item.get("ok")) for item in results),
+        "plan_id": args.plan_id,
+        "approval_reused": True,
+        "approval_required_between_steps": False,
+        "steps_attempted": len(results),
+        "results": results,
+    }
 
 
 async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
