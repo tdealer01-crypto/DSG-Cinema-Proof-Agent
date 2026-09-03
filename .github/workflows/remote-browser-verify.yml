@@ -6,6 +6,7 @@ on:
       - 'api_v1/remote_browser.py'
       - 'api_v1/remote_transport.py'
       - 'api_v1/remote_pairing.py'
+      - 'api_v1/agent_pairing.py'
       - 'api_v1/remote_mcp.py'
       - 'api_v1/dashboard_chat.py'
       - 'api_v1/chatgpt_remote_actions.py'
@@ -14,6 +15,8 @@ on:
       - 'web/customer-dashboard/**'
       - 'tests/test_remote_browser.py'
       - 'tests/test_remote_pairing.py'
+      - 'tests/test_agent_pairing.py'
+      - 'tests/test_agent_auto_claim.py'
       - 'tests/test_remote_mcp.py'
       - 'tests/test_unified_dashboard_e2e.py'
       - 'tests/test_chatgpt_remote_actions.py'
@@ -27,6 +30,7 @@ on:
       - 'api_v1/remote_browser.py'
       - 'api_v1/remote_transport.py'
       - 'api_v1/remote_pairing.py'
+      - 'api_v1/agent_pairing.py'
       - 'api_v1/remote_mcp.py'
       - 'api_v1/dashboard_chat.py'
       - 'api_v1/chatgpt_remote_actions.py'
@@ -35,6 +39,8 @@ on:
       - 'web/customer-dashboard/**'
       - 'tests/test_remote_browser.py'
       - 'tests/test_remote_pairing.py'
+      - 'tests/test_agent_pairing.py'
+      - 'tests/test_agent_auto_claim.py'
       - 'tests/test_remote_mcp.py'
       - 'tests/test_unified_dashboard_e2e.py'
       - 'tests/test_chatgpt_remote_actions.py'
@@ -66,26 +72,31 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-cinema.txt pytest
 
-      - name: Compile remote transport, pairing, dashboard chat, MCP and ChatGPT bridge
+      - name: Compile remote transport, durable pairing, dashboard chat, MCP and ChatGPT bridge
         run: |
           python -m py_compile \
             api_v1/remote_browser.py \
             api_v1/remote_transport.py \
             api_v1/remote_pairing.py \
+            api_v1/agent_pairing.py \
             api_v1/remote_mcp.py \
             api_v1/dashboard_chat.py \
             api_v1/chatgpt_remote_actions.py \
             api_v1/__init__.py \
+            tests/test_agent_pairing.py \
+            tests/test_agent_auto_claim.py \
             tests/test_unified_dashboard_e2e.py \
             tests/test_chatgpt_remote_actions.py \
             tests/test_stripe_marketplace_shared_browser.py \
             tests/test_stripe_marketplace_adaptive_form.py
 
-      - name: Verify shared browser, unified dashboard E2E, chat pairing, MCP and flat ChatGPT bridge
+      - name: Verify shared browser, durable cross-replica pairing, unified dashboard E2E, MCP and flat ChatGPT bridge
         run: |
           python -m pytest -q \
             tests/test_remote_browser.py \
             tests/test_remote_pairing.py \
+            tests/test_agent_pairing.py \
+            tests/test_agent_auto_claim.py \
             tests/test_remote_mcp.py \
             tests/test_unified_dashboard_e2e.py \
             tests/test_chatgpt_remote_actions.py \
