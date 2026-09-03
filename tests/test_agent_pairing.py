@@ -122,8 +122,14 @@ def test_tampered_ciphertext_fails_closed_without_master_key_promotion(tmp_path,
     digest = agent_pairing._digest(paired["pairing_token"])
     path = agent_pairing._record_path(digest)
     record = json.loads(path.read_text(encoding="utf-8"))
-    cipher = record["api_key_ciphertext"]
-    record["api_key_ciphertext"] = cipher[:-1] + ("A" if cipher[-1] != "A" else "B")
+
+    # Mutate the decoded ciphertext bytes, not merely an unpadded Base64 trailing
+    # character whose unused low bits can decode to the exact same byte string.
+    encoded = record["api_key_ciphertext"]
+    tampered = bytearray(agent_pairing._b64decode(encoded))
+    tampered[-1] ^= 0x01
+    record["api_key_ciphertext"] = agent_pairing._b64encode(bytes(tampered))
+    assert record["api_key_ciphertext"] != encoded
     path.write_text(json.dumps(record), encoding="utf-8")
 
     response = client.post(
