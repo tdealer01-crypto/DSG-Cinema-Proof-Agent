@@ -1,0 +1,81 @@
+name: Apply Landing Homepage Dashboard CTA
+
+on:
+  push:
+    branches: [dsg/landing-home-dashboard-cta]
+    paths:
+      - '.github/workflows/landing-home-dashboard-cta-edit.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dsg/landing-home-dashboard-cta
+          fetch-depth: 0
+      - name: Make the customer dashboard the primary landing CTA
+        shell: python
+        run: |
+          from pathlib import Path
+
+          dashboard = "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/dashboard"
+          path = Path("azure-landing/index.html")
+          html = path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  '<a class="navcta" href="#verify">Run live verification</a>',
+                  f'<a class="navcta" href="{dashboard}">Open Dashboard</a>',
+              ),
+              (
+                  '<div class="actions"><a class="btn primary" href="#verify">Run a live proof</a><a class="btn secondary" href="#channels">Choose a marketplace</a><a class="btn secondary" href="https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent">Inspect source</a></div>',
+                  f'<div class="actions"><a class="btn primary" href="{dashboard}">Open customer dashboard</a><a class="btn secondary" href="#verify">Run a live proof</a><a class="btn secondary" href="#channels">Choose a marketplace</a><a class="btn secondary" href="https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent">Inspect source</a></div>',
+              ),
+              (
+                  '<p class="claim">Evidence boundary: a Proof Receipt records deterministic verification for one bounded request. It is not SOC 2, ISO, legal, regulatory, or third-party certification.</p>',
+                  '<p class="claim"><strong>Primary product surface:</strong> /dashboard keeps Agent Chat, Connect Agent, Remote ON/OFF, one Shared Browser session for User + Agent, inline approval, and the five live governance views on one customer page. Evidence boundary: a Proof Receipt records deterministic verification for one bounded request. It is not SOC 2, ISO, legal, regulatory, or third-party certification.</p>',
+              ),
+              (
+                  '<a class="btn primary" href="https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/app">Try the 3D console</a>',
+                  f'<a class="btn primary" href="{dashboard}">Open customer dashboard</a>',
+              ),
+          ]
+
+          for old, new in replacements:
+              if html.count(old) != 1:
+                  raise SystemExit(f"Expected exactly one landing fragment, found {html.count(old)}: {old[:90]}")
+              html = html.replace(old, new)
+
+          required = [
+              dashboard,
+              "Open customer dashboard",
+              "Agent Chat",
+              "Shared Browser session for User + Agent",
+              "five live governance views",
+              "Run live verification",
+              "Download receipt JSON",
+              "VERIFIED_GLOBAL_OPTIMUM",
+          ]
+          for marker in required:
+              if marker not in html:
+                  raise SystemExit(f"Missing required marker: {marker}")
+
+          Path("azure-landing/index.html").write_text(html, encoding="utf-8")
+          Path("landing/index.html").write_text(html, encoding="utf-8")
+
+      - name: Validate mirrored landing and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp --silent azure-landing/index.html landing/index.html
+          grep -Fq 'https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/dashboard' azure-landing/index.html
+          grep -Fq 'Open customer dashboard' azure-landing/index.html
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add azure-landing/index.html landing/index.html
+          git commit -m 'feat(landing): make dashboard the primary customer entry'
+          git push origin HEAD:dsg/landing-home-dashboard-cta
