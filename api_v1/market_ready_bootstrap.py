@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+from pathlib import Path
 from typing import Any
 
 
@@ -15,6 +16,11 @@ def install(app: Any) -> None:
     the callback key and is never persisted by this module.
     """
     from . import market_ready_platform as platform
+
+    # Production clones the exact reconstructed Market-Ready product shell, not
+    # the legacy customer-dashboard bundle. This keeps provisioner source lineage
+    # aligned with the product customers actually see.
+    platform.TEMPLATE = Path(__file__).resolve().parents[1] / "market_ready_ui"
 
     dedicated = os.getenv("DSG_PROVISIONER_SECRET", "").strip()
     if len(dedicated) >= 32:
