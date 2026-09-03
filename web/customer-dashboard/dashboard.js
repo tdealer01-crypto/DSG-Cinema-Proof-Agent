@@ -1,10 +1,14 @@
 const $ = id => document.getElementById(id);
 const KEY_SLOT = "dsg-one-key-session";
+const PAIR_SLOT = "dsg-one-agent-pairing-token";
+const PAIR_EXPIRY_SLOT = "dsg-one-agent-pairing-expiry";
 let key = "";
 let busy = false;
 let generation = 0;
 let controller = new AbortController();
 let remoteBusy = false;
+let chatBusy = false;
+let agentConnectBusy = false;
 
 function readSessionKey() {
   try { return sessionStorage.getItem(KEY_SLOT) || ""; }
@@ -20,6 +24,32 @@ function rememberSessionKey(value) {
 function forgetSessionKey() {
   try { sessionStorage.removeItem(KEY_SLOT); }
   catch (_) {}
+}
+
+function rememberPairing(token, expiresAt) {
+  try {
+    sessionStorage.setItem(PAIR_SLOT, token || "");
+    sessionStorage.setItem(PAIR_EXPIRY_SLOT, String(expiresAt || 0));
+  } catch (_) {}
+  const input = $("pairingToken");
+  const advanced = $("pairingAdvanced");
+  if (input) input.value = token || "";
+  if (advanced) advanced.hidden = !token;
+}
+
+function clearPairing() {
+  try { sessionStorage.removeItem(PAIR_SLOT); sessionStorage.removeItem(PAIR_EXPIRY_SLOT); } catch (_) {}
+  rememberPairing("", 0);
+}
+
+function usablePairing() {
+  try {
+    const token = sessionStorage.getItem(PAIR_SLOT) || "";
+    const expiry = Number(sessionStorage.getItem(PAIR_EXPIRY_SLOT) || 0);
+    if (token && expiry > Date.now() / 1000 + 30) return { token, expiry };
+  } catch (_) {}
+  clearPairing();
+  return null;
 }
 
 async function api(path, options = {}) {
@@ -94,9 +124,12 @@ function renderRemoteStatus(body = {}) {
   $("remoteState").className = enabled ? "remote-state on" : "remote-state";
   $("remoteOn").disabled = !key || enabled || remoteBusy;
   $("remoteOff").disabled = !key || !enabled || remoteBusy;
+  $("connectAgent").disabled = !key || agentConnectBusy;
   $("remoteAgentState").textContent = connection === "connected" ? "Connected" : connection === "waiting" ? "Waiting for agent" : "Off";
+  $("chatAgentState").textContent = connection === "connected" ? "AGENT CONNECTED" : connection === "waiting" ? "WAITING FOR AGENT" : "AGENT OFFLINE";
+  $("chatAgentState").className = connection === "connected" ? "remote-state on" : "remote-state";
   $("remoteSession").textContent = enabled
-    ? (connection === "connected" ? "Agent is connected to the approved execution. You can keep using the browser at the same time." : "Remote is ready. Continue in the agent chat; Cinema is waiting for the agent to connect.")
+    ? (connection === "connected" ? "Agent is connected to the approved execution. You can use this same browser at the same time." : "Remote is ready. Cinema is waiting for a real paired agent client to contact /mcp.")
     : "Remote is off. The user's browser remains under user control.";
   const evidence = body.latest_evidence;
   $("remoteEvidence").textContent = evidence ? JSON.stringify(evidence, null, 2) : "No remote action evidence yet.";
@@ -110,6 +143,26 @@ async function refreshRemoteStatus() {
   } catch (error) {
     remoteMessage(`Remote status: ${error.message}`, true);
   }
+}
+
+function setUnifiedEnabled(enabled) {
+  $("connectAgent").disabled = !enabled || agentConnectBusy;
+  $("chatInput").disabled = !enabled;
+  $("chatSend").disabled = !enabled || chatBusy;
+}
+
+function resetMonitor() {
+  $("monitorConnection").textContent = "WAITING";
+  $("monitorActionState").textContent = "WAITING";
+  $("monitorActionDetail").textContent = "No browser action yet.";
+  $("monitorPlanState").textContent = "PENDING";
+  $("monitorPlanDetail").textContent = "No approved plan is bound yet.";
+  $("monitorPermissionState").textContent = "REMOTE_OFF";
+  $("monitorPermissionDetail").textContent = "Remote authority is off.";
+  $("monitorEvidenceState").textContent = "PENDING";
+  $("monitorEvidenceDetail").textContent = "No completed action evidence yet.";
+  $("monitorExecutionState").textContent = "WAITING";
+  $("monitorExecutionDetail").textContent = "No agent execution has been recorded yet.";
 }
 
 function reset() {
@@ -136,7 +189,11 @@ function reset() {
   $("connect").disabled = false;
   $("activate").disabled = false;
   $("upgrade").disabled = $("portal").disabled = $("firstProof").disabled = true;
+  $("chatMessages").innerHTML = '<div class="chat-empty">Connect your account, then connect an agent. Your conversation stays on this page.</div>';
+  $("chatStatus").textContent = "";
   renderRemoteStatus({ remote_enabled: false, agent_connection: "off" });
+  setUnifiedEnabled(false);
+  resetMonitor();
   remoteMessage("");
 }
 
@@ -147,6 +204,7 @@ function clearCredentials({ forgetSession = true } = {}) {
   key = "";
   busy = false;
   if (forgetSession) forgetSessionKey();
+  clearPairing();
   reset();
 }
 
@@ -197,6 +255,10 @@ async function loadWithCurrentKey(expectedGeneration = generation) {
   $("message").textContent = usage.upgrade?.recommended ? `Upgrade recommended: ${usage.upgrade.reason}` : "Account ready";
   $("message").className = "status";
   renderRemoteStatus(remote);
+  setUnifiedEnabled(true);
+  const pairing = usablePairing();
+  if (pairing) rememberPairing(pairing.token, pairing.expiry);
+  await Promise.allSettled([refreshChat(), refreshMonitor()]);
 }
 
 async function load() {
@@ -285,8 +347,7 @@ $("activate").onclick = async () => {
         if (!identifyResponse.ok) throw new Error(identifyBody.detail || `HTTP ${identifyResponse.status}`);
         const state = identifyBody.marketing_sync?.sync_state;
         if (marketingConsent && state && state !== "SYNCED") marketingMessage = ` Marketing sync: ${state}.`;
-      } catch (marketingError) {
-        // Marketing is downstream of activation and must never invalidate a real API key.
+      } catch (_) {
         marketingMessage = " Marketing profile is pending sync; your DSG account is still active.";
       }
     }
@@ -316,11 +377,7 @@ $("upgrade").onclick = async () => {
   if (busy) return; busy = true; $("upgrade").disabled = true;
   try {
     const data = await api("/billing/checkout/session", { method: "POST", body: JSON.stringify({ plan: "metered", checkout_id: crypto.randomUUID() }) });
-    try {
-      await api("/billing/marketing/event", { method: "POST", body: JSON.stringify({ event: "checkout_started" }) });
-    } catch (_) {
-      // Checkout truth is independent of downstream marketing availability.
-    }
+    try { await api("/billing/marketing/event", { method: "POST", body: JSON.stringify({ event: "checkout_started" }) }); } catch (_) {}
     const url = new URL(data.checkout_url);
     if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com" || url.username || url.password) throw new Error("Untrusted checkout URL");
     location.href = url.href;
@@ -346,13 +403,9 @@ $("remoteOn").onclick = async () => {
   try {
     const body = await api("/remote-browser/enable", { method: "POST" });
     renderRemoteStatus(body);
-    remoteMessage("Remote ON. Continue in your agent chat; you do not need to enter plan IDs, step IDs, agent names or endpoints here.");
-  } catch (error) {
-    remoteMessage(error.message, true);
-  } finally {
-    remoteBusy = false;
-    await refreshRemoteStatus();
-  }
+    remoteMessage("Remote ON. The shared browser remains yours while an approved agent can join the same session.");
+  } catch (error) { remoteMessage(error.message, true); }
+  finally { remoteBusy = false; await refreshRemoteStatus(); await refreshMonitor(); }
 };
 
 $("remoteOff").onclick = async () => {
@@ -363,16 +416,171 @@ $("remoteOff").onclick = async () => {
     const body = await api("/remote-browser/disable", { method: "POST" });
     renderRemoteStatus(body);
     remoteMessage("Remote OFF. Agent remote authority was revoked; your browser session stays live.");
+  } catch (error) { remoteMessage(error.message, true); }
+  finally { remoteBusy = false; await refreshRemoteStatus(); await refreshMonitor(); }
+};
+
+$("connectAgent").onclick = async () => {
+  if (!key || agentConnectBusy) return;
+  agentConnectBusy = true;
+  $("connectAgent").disabled = true;
+  remoteMessage("Preparing secure agent pairing…");
+  try {
+    const enabled = await api("/remote-browser/enable", { method: "POST" });
+    renderRemoteStatus(enabled);
+    const pairing = await api("/remote-browser/agent-pair", {
+      method: "POST",
+      body: JSON.stringify({ agent_name: "chat-agent", ttl_seconds: 600 })
+    });
+    if (!pairing.pairing_token) throw new Error("Cinema returned no pairing token");
+    rememberPairing(pairing.pairing_token, pairing.expires_at_unix);
+    remoteMessage("Pairing is ready. Cinema will show Connected only after a real agent client contacts /mcp. No page change is required.");
   } catch (error) {
     remoteMessage(error.message, true);
   } finally {
-    remoteBusy = false;
+    agentConnectBusy = false;
+    setUnifiedEnabled(true);
     await refreshRemoteStatus();
+    await refreshMonitor();
   }
 };
 
+function renderApproval(message, host) {
+  const approval = message.approval;
+  if (!approval) return;
+  const box = document.createElement("div");
+  box.className = "approval-box";
+  const summary = document.createElement("div");
+  summary.className = "status";
+  summary.textContent = `${approval.summary || "Plan approval"} · ${approval.plan_id || ""}`;
+  box.appendChild(summary);
+  if (approval.status === "pending") {
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    for (const [label, decision, secondary] of [["Approve", "approve", false], ["Reject", "reject", true]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = secondary ? "btn secondary" : "btn";
+      button.textContent = label;
+      button.onclick = async () => {
+        button.disabled = true;
+        try {
+          await api("/dashboard/api/chat/approval", { method: "POST", body: JSON.stringify({ message_id: message.message_id, decision }) });
+          await Promise.all([refreshChat(), refreshRemoteStatus(), refreshMonitor()]);
+        } catch (error) { $("chatStatus").textContent = error.message; }
+      };
+      actions.appendChild(button);
+    }
+    box.appendChild(actions);
+  } else {
+    const state = document.createElement("strong");
+    state.textContent = approval.status.toUpperCase();
+    box.appendChild(state);
+  }
+  host.appendChild(box);
+}
+
+function renderChat(messages) {
+  const host = $("chatMessages");
+  host.replaceChildren();
+  if (!messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "chat-empty";
+    empty.textContent = "No messages yet. Send a message; a paired agent can read and reply through Cinema MCP.";
+    host.appendChild(empty);
+    return;
+  }
+  for (const message of messages) {
+    const row = document.createElement("article");
+    row.className = `chat-message ${message.role || "system"}`;
+    const role = document.createElement("div");
+    role.className = "chat-role";
+    role.textContent = message.role === "user" ? "YOU" : message.role === "agent" ? (message.agent_name || "AGENT") : "DSG";
+    const text = document.createElement("div");
+    text.className = "chat-text";
+    text.textContent = message.text || "";
+    row.append(role, text);
+    renderApproval(message, row);
+    host.appendChild(row);
+  }
+  host.scrollTop = host.scrollHeight;
+}
+
+async function refreshChat() {
+  if (!key || chatBusy || document.hidden) return;
+  try {
+    const body = await api("/dashboard/api/chat/messages?after_seq=0&limit=100");
+    renderChat(body.messages || []);
+  } catch (error) {
+    $("chatStatus").textContent = `Chat: ${error.message}`;
+  }
+}
+
+async function sendChat() {
+  if (!key || chatBusy) return;
+  const text = $("chatInput").value.trim();
+  if (!text) return;
+  chatBusy = true;
+  $("chatSend").disabled = true;
+  $("chatStatus").textContent = "Sending…";
+  try {
+    await api("/dashboard/api/chat/messages", { method: "POST", body: JSON.stringify({ text }) });
+    $("chatInput").value = "";
+    $("chatStatus").textContent = "Queued for the paired agent.";
+    await refreshChat();
+  } catch (error) {
+    $("chatStatus").textContent = error.message;
+  } finally {
+    chatBusy = false;
+    $("chatSend").disabled = !key;
+  }
+}
+
+$("chatSend").onclick = sendChat;
+$("chatInput").addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendChat(); }
+});
+
+function panelDetail(panel, kind) {
+  if (!panel) return "—";
+  if (kind === "action") {
+    const bits = [panel.actor, panel.action, panel.target].filter(Boolean);
+    return bits.length ? bits.join(" · ") : "No browser action yet.";
+  }
+  return panel.detail || "—";
+}
+
+async function refreshMonitor() {
+  if (!key || document.hidden) return;
+  try {
+    const body = await api("/dashboard/api/monitor");
+    const panels = body.panels || {};
+    $("monitorConnection").textContent = body.agent_connection === "connected" ? "LIVE" : body.agent_connection === "waiting" ? "WAITING AGENT" : "REMOTE OFF";
+    $("monitorConnection").className = body.agent_connection === "connected" ? "remote-state on" : "remote-state";
+    const mappings = [
+      ["action", "monitorActionState", "monitorActionDetail"],
+      ["plan_alignment", "monitorPlanState", "monitorPlanDetail"],
+      ["permission", "monitorPermissionState", "monitorPermissionDetail"],
+      ["evidence", "monitorEvidenceState", "monitorEvidenceDetail"],
+      ["execution_audit", "monitorExecutionState", "monitorExecutionDetail"]
+    ];
+    for (const [name, stateId, detailId] of mappings) {
+      const panel = panels[name] || {};
+      $(stateId).textContent = panel.status || "PENDING";
+      $(detailId).textContent = panelDetail(panel, name);
+    }
+  } catch (error) {
+    $("monitorConnection").textContent = "ERROR";
+    $("monitorExecutionDetail").textContent = error.message;
+  }
+}
+
 setInterval(() => {
-  if (key && !document.hidden) refreshRemoteStatus();
-}, 4000);
+  if (key && !document.hidden) {
+    refreshRemoteStatus();
+    refreshChat();
+    refreshMonitor();
+  }
+}, 2000);
 
 resumeSession();

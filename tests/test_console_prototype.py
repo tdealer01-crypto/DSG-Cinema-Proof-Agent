@@ -48,6 +48,8 @@ def test_customer_dashboard_is_served_from_the_api_origin():
     assert 'id="remoteOn"' in response.text
     assert 'id="remoteOff"' in response.text
     assert 'id="remoteEvidence"' in response.text
+    assert 'id="agentChatCard"' in response.text
+    assert 'id="liveMonitor"' in response.text
     for forbidden in (
         'id="remotePlanId"',
         'id="remoteAgentId"',
@@ -72,6 +74,10 @@ def test_customer_dashboard_is_served_from_the_api_origin():
         "/remote-browser/status",
         "/remote-browser/enable",
         "/remote-browser/disable",
+        "/remote-browser/agent-pair",
+        "/dashboard/api/chat/messages",
+        "/dashboard/api/chat/approval",
+        "/dashboard/api/monitor",
     ):
         assert endpoint in script.text
     for developer_endpoint in (
@@ -86,8 +92,11 @@ def test_remote_dashboard_is_chat_driven_and_preserves_shared_browser_semantics(
     response = client.get("/dashboard")
     script = client.get("/dashboard-assets/dashboard.js")
     live_script = client.get("/dashboard-assets/browserbase-live.js")
-    assert "สั่งงานกับ Agent ในแชทตามปกติ" in response.text
-    assert "managed browser environment are prepared by Cinema automatically" in response.text
+    assert "Talk to your paired agent here" in response.text
+    assert "Messages are delivered only to a real paired MCP agent" in response.text
+    assert "One screen · User + Agent" in response.text
+    assert "same browser session" in response.text
+    assert "without leaving this dashboard" in response.text
     assert "remoteEndpoint" not in response.text
     assert "your browser session stays live" in script.text
     assert live_script.status_code == 200
@@ -96,6 +105,8 @@ def test_remote_dashboard_is_chat_driven_and_preserves_shared_browser_semantics(
     assert "same browser session" in live_script.text
     assert "takeover" not in response.text.lower()
     assert "resume agent" not in response.text.lower()
+    assert "location.href='/remote-browser/connect-agent" not in response.text
+    assert "location.href='/remote-browser/connect-agent" not in script.text
     assert "localStorage" not in script.text
     assert "sessionStorage" in script.text
     assert 'const KEY_SLOT = "dsg-one-key-session"' in script.text

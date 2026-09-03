@@ -52,6 +52,10 @@ def install(app) -> None:
     # /mcp rather than under /api/v1 so remote execution cannot drift the
     # independent verification OpenAPI contract.
     importlib.import_module(f"{__name__}.remote_mcp").install(app)
+    # The customer-facing conversation and five-panel monitor stay on /dashboard.
+    # Paired agents read/reply through the same /mcp authority; this module does
+    # not embed or impersonate an AI model when no agent client is connected.
+    importlib.import_module(f"{__name__}.dashboard_chat").install(app)
     # Browser Memory is always mounted as an authenticated REST/status surface and
     # sanitized capture middleware. MCP tools are advertised only when a durable
     # PostgreSQL memory store is actually configured, so tool discovery never

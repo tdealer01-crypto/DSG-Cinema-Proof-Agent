@@ -28,7 +28,7 @@ def test_mcp_copy_failure_keeps_the_real_url_visible_and_selected():
     response = client.get("/dashboard")
     page = response.text
 
-    assert "input.value = endpointUrl();" in page
+    assert "endpoint.value = endpointUrl();" in page
     assert "selectEndpoint(input);" in page
-    assert "Copy was blocked by this browser" in page
+    assert "Copy was blocked. The value is selected" in page
     assert "MCP endpoint copied." in page
