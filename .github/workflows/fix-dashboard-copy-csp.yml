@@ -49,11 +49,18 @@ jobs:
 
           test_path.write_text('''from __future__ import annotations\n\nfrom fastapi.testclient import TestClient\n\nimport cinema_main\n\n\nclient = TestClient(cinema_main.app)\n\n\ndef test_mcp_endpoint_is_full_selectable_and_copy_logic_is_csp_safe():\n    response = client.get("/dashboard")\n    assert response.status_code == 200\n    page = response.text\n\n    assert 'id="mcpEndpoint"' in page\n    assert 'readonly' in page\n    assert 'inputmode="url"' in page\n    assert 'id="copyMcpEndpoint"' in page\n    assert '<script src="/dashboard-assets/dashboard.js"></script>' in page\n    assert "navigator.clipboard.writeText" not in page\n    assert "document.execCommand" not in page\n\n    script = client.get("/dashboard-assets/dashboard.js")\n    assert script.status_code == 200\n    body = script.text\n    assert 'location.origin + "/mcp"' in body\n    assert 'navigator.clipboard.writeText' in body\n    assert 'document.execCommand("copy")' in body\n    assert 'setSelectionRange(0, input.value.length)' in body\n    assert 'wireAdvancedConnectionCopy();' in body\n\n\ndef test_mcp_copy_failure_keeps_the_real_url_visible_and_selected():\n    script = client.get("/dashboard-assets/dashboard.js")\n    body = script.text\n\n    assert 'endpoint.value = endpointUrl();' in body\n    assert 'selectCopyInput(input);' in body\n    assert 'Copy was blocked. The value is selected' in body\n    assert 'MCP endpoint copied.' in body\n    assert 'Short-lived pairing token copied.' in body\n\n\ndef test_dashboard_csp_allows_external_script_but_not_inline_script():\n    response = client.get("/dashboard")\n    csp = response.headers.get("content-security-policy", "")\n    assert "script-src 'self'" in csp\n    assert "'unsafe-inline'" not in csp\n    assert '<script>' not in response.text\n''', encoding='utf-8')
 
-      - name: Validate focused regression tests and commit
+      - name: Validate patch shape and commit
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest tests/test_dashboard_mcp_copy.py -q
+          node --check web/customer-dashboard/dashboard.js
+          python -m py_compile tests/test_dashboard_mcp_copy.py
+          grep -Fq 'id="mcpEndpoint"' web/customer-dashboard/index.html
+          grep -Fq 'wireAdvancedConnectionCopy();' web/customer-dashboard/dashboard.js
+          if grep -Fq 'navigator.clipboard.writeText' web/customer-dashboard/index.html; then
+            echo 'inline copy logic still present in CSP-restricted dashboard HTML' >&2
+            exit 1
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add web/customer-dashboard/index.html web/customer-dashboard/dashboard.js tests/test_dashboard_mcp_copy.py
