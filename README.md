@@ -169,6 +169,8 @@ The master customer credential is not intended to be handed to the Agent as its 
 
 ## MCP surfaces
 
+See [`docs/API_V1_CONTRACT.md`](docs/API_V1_CONTRACT.md) for the DSG ONE v1 REST/MCP contract.
+
 Cinema currently exposes two different MCP purposes. They should not be conflated.
 
 ### Verification / governance MCP

@@ -2,6 +2,51 @@ const $ = id => document.getElementById(id);
 const KEY_SLOT = "dsg-one-key-session";
 const PAIR_SLOT = "dsg-one-agent-pairing-token";
 const PAIR_EXPIRY_SLOT = "dsg-one-agent-pairing-expiry";
+
+function endpointUrl() { return location.origin + "/mcp"; }
+
+function selectCopyInput(input) {
+  if (!input) return;
+  input.focus();
+  input.select();
+  try { input.setSelectionRange(0, input.value.length); } catch (_) {}
+}
+
+async function copyDashboardValue(input, value, successMessage) {
+  if (!input) return;
+  input.value = value;
+  let copied = false;
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try { await navigator.clipboard.writeText(value); copied = true; } catch (_) {}
+  }
+  if (!copied) {
+    selectCopyInput(input);
+    try { copied = document.execCommand("copy"); } catch (_) { copied = false; }
+  }
+  remoteMessage(
+    copied ? successMessage : "Copy was blocked. The value is selected — long-press it and tap Copy.",
+    !copied
+  );
+}
+
+function wireAdvancedConnectionCopy() {
+  const endpoint = $("mcpEndpoint");
+  if (endpoint) {
+    endpoint.value = endpointUrl();
+    endpoint.addEventListener("click", () => selectCopyInput(endpoint));
+  }
+  const copyEndpoint = $("copyMcpEndpoint");
+  if (copyEndpoint) {
+    copyEndpoint.addEventListener("click", () => copyDashboardValue(endpoint, endpointUrl(), "MCP endpoint copied."));
+  }
+  const copyPair = $("copyPairingToken");
+  if (copyPair) {
+    copyPair.addEventListener("click", () => {
+      const input = $("pairingToken");
+      if (input && input.value) copyDashboardValue(input, input.value, "Short-lived pairing token copied.");
+    });
+  }
+}
 let key = "";
 let busy = false;
 let generation = 0;
@@ -583,4 +628,5 @@ setInterval(() => {
   }
 }, 2000);
 
+wireAdvancedConnectionCopy();
 resumeSession();
