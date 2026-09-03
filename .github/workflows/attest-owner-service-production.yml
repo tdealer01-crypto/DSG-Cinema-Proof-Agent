@@ -1,0 +1,53 @@
+name: Attest Production OWNER Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/attest-owner-service-production.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attest-owner-service:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe public OWNER service status
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/owner-service/status'
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 15 "$URL" -o owner-service-status.json; then
+              break
+            fi
+            test "$attempt" -lt 12 || { echo 'OWNER service status endpoint did not become reachable'; exit 1; }
+            sleep 5
+          done
+
+          jq -e '
+            .configured == true and
+            .configured_accounts >= 1 and
+            .role == "owner_service" and
+            (.scopes | index("dsg:*") != null) and
+            (.scopes | index("broker:github:*") != null) and
+            (.scopes | index("broker:azure:*") != null) and
+            .plaintext_secret_stored == false and
+            .admin_master_exposed_to_agent == false and
+            .provider_authority == "brokered_and_capability_gated" and
+            .approval_gates_preserved == true
+          ' owner-service-status.json >/dev/null
+
+          # Refuse accidental credential material in the public evidence.
+          ! grep -Eiq 'dsg_live_[0-9a-f]{16}_[0-9a-f]{48}|DSG_REVENUE_ADMIN_SECRET|DSG_BACKEND_API_KEY|secret_hash' owner-service-status.json
+          cat owner-service-status.json
+
+      - name: Upload non-secret OWNER attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-owner-service-attestation-${{ github.sha }}
+          path: owner-service-status.json
+          retention-days: 30
