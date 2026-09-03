@@ -41,7 +41,9 @@ _HEX_16 = re.compile(r"^[0-9a-f]{16}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _lock = threading.RLock()
 
-router = APIRouter(prefix="/api/v1/owner-service", tags=["owner-service"])
+# Keep OWNER observability outside /api/v1 so the independent verification
+# OpenAPI remains exact. Authentication still applies to the existing /api/v1/mcp.
+router = APIRouter(prefix="/owner-service", tags=["owner-service"])
 
 # These are the current HTTP surfaces protected by DSG_REVENUE_ADMIN_SECRET.
 # OWNER does not bypass their semantics; it only keeps the master bearer secret
