@@ -175,6 +175,30 @@ jobs:
             --404-document index.html \
             --output none
 
+      - name: Purge stale landing pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t REMOTE_BLOBS < <(az storage blob list \
+            --account-name "$STORAGE_ACCOUNT" \
+            --account-key "$AZURE_STORAGE_KEY" \
+            --container-name '$web' \
+            --query '[].name' \
+            --output tsv)
+
+          for blob in "${REMOTE_BLOBS[@]}"; do
+            [[ -z "$blob" ]] && continue
+            if [[ ! -f "azure-landing/$blob" ]]; then
+              echo "Removing stale landing blob: $blob"
+              az storage blob delete \
+                --account-name "$STORAGE_ACCOUNT" \
+                --account-key "$AZURE_STORAGE_KEY" \
+                --container-name '$web' \
+                --name "$blob" \
+                --output none
+            fi
+          done
+
       - name: Publish landing source
         shell: bash
         run: |
@@ -220,6 +244,17 @@ jobs:
             echo 'Retired-system reference found on deployed Azure landing' >&2
             exit 1
           fi
+
+          mapfile -t DEPLOYED_BLOBS < <(az storage blob list \
+            --account-name "$STORAGE_ACCOUNT" \
+            --account-key "$AZURE_STORAGE_KEY" \
+            --container-name '$web' \
+            --query '[].name' \
+            --output tsv)
+          for blob in "${DEPLOYED_BLOBS[@]}"; do
+            [[ -z "$blob" ]] && continue
+            test -f "azure-landing/$blob" || { echo "Stale landing blob remains after publish: $blob" >&2; exit 1; }
+          done
 
       - name: Write deployment evidence
         shell: bash
