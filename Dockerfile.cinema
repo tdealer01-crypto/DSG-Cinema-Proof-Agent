@@ -2,6 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Market-ready installation provisioning creates deterministic local Git source
+# snapshots and isolated target clones. Git is runtime infrastructure here, not
+# a customer credential or remote repository grant.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-cinema.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -12,7 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # can explicitly override either provider/backend if ever required.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     DSG_BROWSER_PROVIDER=azure_local \
-    DSG_BROWSER_MEMORY_BACKEND=azure_files
+    DSG_BROWSER_MEMORY_BACKEND=azure_files \
+    DSG_MARKET_READY_RUNTIME=/revenue/market-ready \
+    DSG_SANDBOX_MODE=0 \
+    DSG_PLATFORM_REQUIRE_AUTH=1
 RUN python -m playwright install --with-deps chromium
 
 COPY cinema_main.py marketplace_verification.py ./
