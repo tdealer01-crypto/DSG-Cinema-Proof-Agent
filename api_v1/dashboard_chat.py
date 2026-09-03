@@ -62,6 +62,7 @@ class ChatApprovalArgs(Strict):
 class ChatPlanArgs(Strict):
     plan: PlanDocument
     summary: str = Field(min_length=1, max_length=4000)
+    fallback_targets: list[str] = Field(default_factory=list, max_length=8)
 
 
 def _account(api_key: Optional[str]) -> tuple[str, str]:
@@ -398,7 +399,37 @@ async def _mcp_create_plan(args: ChatPlanArgs) -> dict[str, Any]:
     it.  Binding is recorded by ``decide_approval`` after that approval.
     """
     key, account_id, agent_name = _mcp_account()
-    plan = service.create_plan(args.plan)
+    # A web-search task must remain useful when the primary provider blocks,
+    # rate-limits, or is unavailable.  The agent supplies lawful alternatives;
+    # we materialize them as auditable steps rather than silently navigating to
+    # an unapproved origin after execution has started.
+    plan_document = args.plan.model_copy(deep=True)
+    browser_steps = [
+        step
+        for step in plan_document.steps
+        if step.action == "browser_workflow" or step.action.startswith("browser.")
+    ]
+    if browser_steps and args.fallback_targets:
+        used = {step.step_id for step in plan_document.steps}
+        for index, target in enumerate(args.fallback_targets, start=1):
+            step_id = f"fallback-{index}"
+            while step_id in used:
+                index += 1
+                step_id = f"fallback-{index}"
+            used.add(step_id)
+            source = browser_steps[min(index - 1, len(browser_steps) - 1)]
+            plan_document.steps.append(
+                source.model_copy(
+                    update={
+                        "step_id": step_id,
+                        "target": target,
+                        "description": f"Fallback source if the primary source is unavailable: {target}",
+                    }
+                )
+            )
+        plan_document.metadata["fallback_strategy"] = "try_in_order_and_stop_on_first_usable_source"
+        plan_document.metadata["fallback_targets"] = ",".join(args.fallback_targets)
+    plan = service.create_plan(plan_document)
     message = _append_message(
         account_id,
         role="agent",
@@ -457,7 +488,7 @@ def install_mcp_tools() -> None:
         ),
         remote_mcp._Tool(
             "dashboard_chat_create_plan",
-            "Create a detailed universal task plan from the paired agent and show an approval card. The user must approve before remote browser execution.",
+            "Create a detailed universal task plan from the paired agent and show an approval card. For web search tasks, always provide lawful fallback_targets so blocked or unavailable sites are tried in order. The user must approve before remote browser execution.",
             ChatPlanArgs,
             _mcp_create_plan,
             read_only=False,

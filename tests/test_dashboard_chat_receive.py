@@ -64,7 +64,12 @@ def test_agent_can_propose_plan_but_only_user_approval_binds_it(monkeypatch):
     monkeypatch.setattr(
         dashboard_chat.service,
         "create_plan",
-        lambda _plan: {"plan_id": "plan-chat-1", "plan_hash": "a" * 64, "status": "DRAFT"},
+        lambda plan: {
+            "plan_id": "plan-chat-1",
+            "plan_hash": "a" * 64,
+            "status": "DRAFT",
+            "document": plan.model_dump(),
+        },
     )
     captured = {}
 
@@ -82,7 +87,11 @@ def test_agent_can_propose_plan_but_only_user_approval_binds_it(monkeypatch):
 
     result = asyncio.run(
         dashboard_chat._mcp_create_plan(
-            dashboard_chat.ChatPlanArgs(plan=plan, summary="Search legal availability")
+            dashboard_chat.ChatPlanArgs(
+                plan=plan,
+                summary="Search legal availability",
+                fallback_targets=["https://www.disneyplus.com", "https://tv.apple.com"],
+            )
         )
     )
 
@@ -90,3 +99,11 @@ def test_agent_can_propose_plan_but_only_user_approval_binds_it(monkeypatch):
     assert captured["role"] == "agent"
     assert captured["approval"]["status"] == "pending"
     assert captured["approval"]["plan_id"] == "plan-chat-1"
+    assert [step["step_id"] for step in result["plan"]["document"]["steps"]] == [
+        "search",
+        "fallback-1",
+        "fallback-2",
+    ]
+    assert result["plan"]["document"]["metadata"]["fallback_strategy"] == (
+        "try_in_order_and_stop_on_first_usable_source"
+    )
