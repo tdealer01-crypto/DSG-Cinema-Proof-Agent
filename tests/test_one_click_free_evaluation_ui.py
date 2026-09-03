@@ -54,3 +54,27 @@ def test_session_key_is_only_attached_to_dsg_api_surfaces():
     assert 'target.pathname.startsWith("/api/v1/")' in script
     assert 'target.pathname.startsWith("/billing/")' in script
     assert '!headers.has("X-DSG-API-Key")' in script
+
+
+def test_console_exposes_explicit_plan_approval_control():
+    script = client.get("/app-free-evaluation.js").text
+    assert 'approve.id = "btnApprovePlan"' in script
+    assert 'approve.textContent = "✓ Approve Plan"' in script
+    assert 'keyedJson("/api/v1/plans"' in script
+    assert '/approve`' in script
+    assert 'plan_hash: created.plan_hash' in script
+    assert 'approved?.status !== "APPROVED"' in script
+    assert 'const APPROVED_PLAN = "dsg-one-approved-plan-session"' in script
+    assert 'sessionStorage.setItem(APPROVED_PLAN' in script
+    assert 'Run full flow will reuse this real approval' in script
+
+
+def test_console_exposes_same_origin_shared_browser_viewer():
+    script = client.get("/app-free-evaluation.js").text
+    assert 'browser.id = "btnSharedBrowser"' in script
+    assert 'browser.textContent = "▣ Shared Browser"' in script
+    assert 'keyedJson("/remote-browser/browserbase/live-frame"' in script
+    assert 'live?.connected !== true || !live?.embed_url' in script
+    assert 'new URL(live.embed_url, configuredBase()).toString()' in script
+    assert 'dsgSharedBrowserFrame' in script
+    assert 'same managed session shared with the agent' in script
