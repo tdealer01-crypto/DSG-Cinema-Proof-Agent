@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import API_VERSION
 from . import (
+    agent_pairing,
     azure_local_browser,
     azure_managed_executor,
     browserbase_executor,
@@ -244,6 +245,8 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
     if not public_origin:
         raise HTTPException(status_code=503, detail="managed browser public origin is unavailable")
 
+    canonical_key, _ = agent_pairing._authenticated_account(_current_api_key())
+    canonical_key = str(canonical_key)
     plan_id, step_id, agent_identity = _resolve_binding(args)
     executor = _managed_executor()
     capability = executor.allocate_capability(
@@ -263,7 +266,7 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
 
     created: dict[str, Any] | None = None
     try:
-        created = await remote_pairing.agent_connect(request, x_dsg_api_key=_current_api_key())
+        created = await remote_pairing.agent_connect(request, x_dsg_api_key=canonical_key)
         executor.finalize_capability(
             capability,
             session_id=str(created["session_id"]),
@@ -288,11 +291,15 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
 
 
 async def _remote_action(args: remote_browser.RemoteActionRequest) -> dict[str, Any]:
-    return await remote_browser.execute_action(args, x_dsg_api_key=_current_api_key())
+    canonical_key, _ = agent_pairing._authenticated_account(_current_api_key())
+    canonical_key = str(canonical_key)
+    return await remote_browser.execute_action(args, x_dsg_api_key=canonical_key)
 
 
 async def _remote_disconnect(args: remote_browser.RemoteDisconnectRequest) -> dict[str, Any]:
-    return await remote_browser.disconnect(args, x_dsg_api_key=_current_api_key())
+    canonical_key, _ = agent_pairing._authenticated_account(_current_api_key())
+    canonical_key = str(canonical_key)
+    return await remote_browser.disconnect(args, x_dsg_api_key=canonical_key)
 
 
 async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
