@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DSG_UNIVERSAL_WORKSPACE_ROOT=/workspace
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir \
+       fastapi==0.129.2 \
+       'uvicorn[standard]==0.40.0' \
+       pydantic==2.13.4 \
+       pytest==9.0.3
+
+WORKDIR /app
+COPY api_v1/universal_sandbox_service.py /app/universal_sandbox_service.py
+RUN mkdir -p /workspace && chmod 0770 /workspace
+
+EXPOSE 8080
+CMD ["uvicorn", "universal_sandbox_service:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

@@ -1,0 +1,238 @@
+name: Deploy Universal Sandbox Production
+
+on:
+  pull_request:
+    paths:
+      - 'api_v1/universal_runtime.py'
+      - 'api_v1/universal_sandbox_service.py'
+      - 'Dockerfile.universal-sandbox'
+      - 'tests/test_universal_runtime_e2e.py'
+      - 'tests/test_universal_sandbox.py'
+      - '.github/workflows/deploy-universal-sandbox-production.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api_v1/universal_runtime.py'
+      - 'api_v1/universal_sandbox_service.py'
+      - 'Dockerfile.universal-sandbox'
+      - 'tests/test_universal_runtime_e2e.py'
+      - 'tests/test_universal_sandbox.py'
+      - '.github/workflows/deploy-universal-sandbox-production.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: universal-sandbox-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cinema.txt pytest
+      - name: Compile and test universal runtime
+        run: |
+          python -m py_compile api_v1/universal_runtime.py api_v1/universal_sandbox_service.py tests/test_universal_runtime_e2e.py tests/test_universal_sandbox.py
+          python -m pytest -q tests/test_universal_runtime_e2e.py tests/test_universal_sandbox.py
+      - name: Build isolated sandbox image
+        run: docker build -f Dockerfile.universal-sandbox -t dsg-universal-sandbox:test .
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      RESOURCE_GROUP: rg-t.dealer01-0468
+      LOCATION: westus3
+      ACR_NAME: tdealer01acr
+      CONTAINER_ENV: dsg-z3-env-production
+      ACR_PULL_IDENTITY: dsg-z3-acr-pull-production
+      SANDBOX_IMAGE_NAME: universal-agent-sandbox
+      SANDBOX_APP: dsg-universal-sandbox-production
+      CINEMA_APP: dsg-cinema-production
+      STORAGE_ACCOUNT: dsgrevenuestore
+      SHARE_NAME: universal
+      MOUNT_PATH: /workspace
+      AZURE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      AZURE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+      AZURE_SUBSCRIPTION_ID: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve production resources and stable executor secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          az extension add --name containerapp --upgrade --only-show-errors
+          PULL_IDENTITY_ID=$(az identity show --resource-group "$RESOURCE_GROUP" --name "$ACR_PULL_IDENTITY" --query id -o tsv)
+          test -n "$PULL_IDENTITY_ID"
+          if az containerapp show -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" >/dev/null 2>&1; then
+            EXECUTOR_SECRET=$(az containerapp secret show -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --secret-name executor-secret --query value -o tsv 2>/dev/null || true)
+          else
+            EXECUTOR_SECRET=''
+          fi
+          if [[ ${#EXECUTOR_SECRET} -lt 32 ]]; then EXECUTOR_SECRET=$(openssl rand -hex 32); fi
+          echo "::add-mask::$EXECUTOR_SECRET"
+          echo "PULL_IDENTITY_ID=$PULL_IDENTITY_ID" >> "$GITHUB_ENV"
+          echo "EXECUTOR_SECRET=$EXECUTOR_SECRET" >> "$GITHUB_ENV"
+
+      - name: Ensure durable account workspaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          STORAGE_KEY=$(az storage account keys list -g "$RESOURCE_GROUP" --account-name "$STORAGE_ACCOUNT" --query '[0].value' -o tsv)
+          test -n "$STORAGE_KEY"
+          echo "::add-mask::$STORAGE_KEY"
+          az storage share-rm create -g "$RESOURCE_GROUP" --storage-account "$STORAGE_ACCOUNT" --name "$SHARE_NAME" --quota 32 --output none 2>/dev/null || true
+          az containerapp env storage set -g "$RESOURCE_GROUP" -n "$CONTAINER_ENV" \
+            --storage-name "$SHARE_NAME" \
+            --azure-file-account-name "$STORAGE_ACCOUNT" \
+            --azure-file-account-key "$STORAGE_KEY" \
+            --azure-file-share-name "$SHARE_NAME" \
+            --access-mode ReadWrite --output none
+
+      - name: Build immutable sandbox image
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="prod-${GITHUB_SHA}"
+          IMAGE_REF="$ACR_NAME.azurecr.io/$SANDBOX_IMAGE_NAME:$TAG"
+          az acr build --registry "$ACR_NAME" --image "$SANDBOX_IMAGE_NAME:$TAG" --file Dockerfile.universal-sandbox .
+          echo "SANDBOX_IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+
+      - name: Deploy isolated sandbox with internal ingress
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry(){ local n=1; while (( n<=8 )); do "$@" && return 0; sleep $((n*10)); ((n++)); done; return 1; }
+          if az containerapp show -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" >/dev/null 2>&1; then
+            retry az containerapp identity assign -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --user-assigned "$PULL_IDENTITY_ID" --output none
+            retry az containerapp registry set -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --server "$ACR_NAME.azurecr.io" --identity "$PULL_IDENTITY_ID" --output none
+            retry az containerapp secret set -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --secrets "executor-secret=$EXECUTOR_SECRET" --output none
+            retry az containerapp update -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" \
+              --image "$SANDBOX_IMAGE_REF" \
+              --set-env-vars DSG_UNIVERSAL_EXECUTOR_SECRET=secretref:executor-secret DSG_UNIVERSAL_WORKSPACE_ROOT="$MOUNT_PATH" \
+              --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1.0Gi --output none
+          else
+            retry az containerapp create -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --environment "$CONTAINER_ENV" \
+              --image "$SANDBOX_IMAGE_REF" --ingress internal --target-port 8080 --transport http \
+              --user-assigned "$PULL_IDENTITY_ID" --registry-server "$ACR_NAME.azurecr.io" --registry-identity "$PULL_IDENTITY_ID" \
+              --secrets "executor-secret=$EXECUTOR_SECRET" \
+              --env-vars DSG_UNIVERSAL_EXECUTOR_SECRET=secretref:executor-secret DSG_UNIVERSAL_WORKSPACE_ROOT="$MOUNT_PATH" \
+              --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1.0Gi --output none
+          fi
+          retry az containerapp ingress update -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --type internal --target-port 8080 --transport http --allow-insecure false --output none
+
+          CURRENT=$(mktemp --suffix=.yaml)
+          az containerapp show -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" -o yaml > "$CURRENT"
+          python - "$CURRENT" "$SHARE_NAME" "$MOUNT_PATH" <<'PY'
+          import sys, yaml
+          path, share, mount = sys.argv[1:]
+          with open(path, encoding='utf-8') as f: app = yaml.safe_load(f)
+          template = app['properties']['template']
+          template['volumes'] = [{'name': 'workspace', 'storageType': 'AzureFile', 'storageName': share}]
+          for container in template['containers']:
+              container['volumeMounts'] = [{'volumeName': 'workspace', 'mountPath': mount}]
+          with open(path, 'w', encoding='utf-8') as f: yaml.safe_dump(app, f)
+          PY
+          retry az containerapp update -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --yaml "$CURRENT" --output none
+
+          SANDBOX_FQDN=$(az containerapp show -g "$RESOURCE_GROUP" -n "$SANDBOX_APP" --query properties.configuration.ingress.fqdn -o tsv)
+          test -n "$SANDBOX_FQDN"
+          echo "SANDBOX_URL=https://$SANDBOX_FQDN" >> "$GITHUB_ENV"
+
+      - name: Bind Cinema to isolated sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          az containerapp secret set -g "$RESOURCE_GROUP" -n "$CINEMA_APP" --secrets "universal-executor-secret=$EXECUTOR_SECRET" --output none
+          az containerapp update -g "$RESOURCE_GROUP" -n "$CINEMA_APP" \
+            --set-env-vars DSG_UNIVERSAL_EXECUTOR_URL="$SANDBOX_URL" DSG_UNIVERSAL_EXECUTOR_SECRET=secretref:universal-executor-secret DSG_UNIVERSAL_LOCAL_EXECUTOR=0 \
+            --output none
+          CINEMA_FQDN=$(az containerapp show -g "$RESOURCE_GROUP" -n "$CINEMA_APP" --query properties.configuration.ingress.fqdn -o tsv)
+          test -n "$CINEMA_FQDN"
+          echo "CINEMA_URL=https://$CINEMA_FQDN" >> "$GITHUB_ENV"
+
+      - name: Production E2E chat approval to Python and shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 72); do
+            CODE=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$CINEMA_URL/health" || true)
+            [[ "$CODE" == 200 ]] && break
+            [[ "$i" == 72 ]] && { cat /tmp/health.json 2>/dev/null || true; exit 1; }
+            sleep 5
+          done
+
+          ACTIVATION_ID="prod-universal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          curl --fail-with-body -sS -X POST "$CINEMA_URL/billing/activate" -H 'Content-Type: application/json' \
+            -d "{\"channel\":\"api\",\"activation_id\":\"$ACTIVATION_ID\",\"display_name\":\"Universal Production E2E\"}" > /tmp/activate.json
+          API_KEY=$(jq -r '.api_key // empty' /tmp/activate.json)
+          test -n "$API_KEY"
+          echo "::add-mask::$API_KEY"
+
+          cat > /tmp/create-plan.json <<'JSON'
+          {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dashboard_chat_create_plan","arguments":{"plan":{"title":"Production isolated universal E2E","agent_identity":"production-e2e-agent","channel":"mcp","steps":[{"step_id":"write","action":"fs.write","target":"result.txt","parameters":{"path":"result.txt","content":"DSG PRODUCTION UNIVERSAL E2E"}},{"step_id":"python","action":"python.run","target":"python","parameters":{"code":"print(6*7)"}},{"step_id":"shell","action":"shell.exec","target":"cat result.txt","parameters":{"command":"cat result.txt"}}]},"summary":"Production proof of plan-approved isolated file, Python and shell execution"}}}
+          JSON
+          curl --fail-with-body -sS -X POST "$CINEMA_URL/mcp" \
+            -H "Authorization: Bearer $API_KEY" -H 'X-DSG-Agent-Name: production-e2e-agent' -H 'Content-Type: application/json' \
+            --data @/tmp/create-plan.json > /tmp/plan.json
+          PLAN_ID=$(jq -r '.result.structuredContent.plan.plan_id // empty' /tmp/plan.json)
+          PLAN_HASH=$(jq -r '.result.structuredContent.plan.plan_hash // empty' /tmp/plan.json)
+          MESSAGE_ID=$(jq -r '.result.structuredContent.message.message_id // empty' /tmp/plan.json)
+          test -n "$PLAN_ID"; test -n "$PLAN_HASH"; test -n "$MESSAGE_ID"
+
+          curl --fail-with-body -sS -X POST "$CINEMA_URL/dashboard/api/chat/approval" \
+            -H "X-DSG-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+            -d "{\"message_id\":\"$MESSAGE_ID\",\"decision\":\"approve\"}" > /tmp/approved.json
+          test "$(jq -r '.approval.plan_hash' /tmp/approved.json)" = "$PLAN_HASH"
+
+          execute_step(){
+            local step="$1" id="$2"
+            jq -n --arg plan "$PLAN_ID" --arg step "$step" --argjson id "$id" \
+              '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"universal_execute_step",arguments:{plan_id:$plan,step_id:$step}}}' > "/tmp/$step.json"
+            curl --fail-with-body -sS -X POST "$CINEMA_URL/mcp" \
+              -H "Authorization: Bearer $API_KEY" -H 'X-DSG-Agent-Name: production-e2e-agent' -H 'Content-Type: application/json' \
+              --data @"/tmp/$step.json" > "/tmp/$step.out.json"
+            jq -e '.result.isError == false' "/tmp/$step.out.json" >/dev/null
+          }
+          execute_step write 2
+          execute_step python 3
+          execute_step shell 4
+          test "$(jq -r '.result.structuredContent.output.stdout' /tmp/python.out.json | tr -d '\r\n')" = '42'
+          test "$(jq -r '.result.structuredContent.output.stdout' /tmp/shell.out.json | tr -d '\r\n')" = 'DSG PRODUCTION UNIVERSAL E2E'
+
+          jq -n --argjson id 5 '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"universal_runtime_status",arguments:{}}}' > /tmp/status-rpc.json
+          curl --fail-with-body -sS -X POST "$CINEMA_URL/mcp" \
+            -H "Authorization: Bearer $API_KEY" -H 'X-DSG-Agent-Name: production-e2e-agent' -H 'Content-Type: application/json' \
+            --data @/tmp/status-rpc.json > /tmp/runtime-status.json
+          jq -e '.result.structuredContent.executor == "remote-isolated-sandbox" and .result.structuredContent.remote_executor_configured == true and .result.structuredContent.local_executor_enabled == false' /tmp/runtime-status.json >/dev/null
+
+      - name: Record production proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Universal sandbox production E2E passed for $GITHUB_SHA"
+          echo "Cinema: $CINEMA_URL"
+          echo "Sandbox: internal Container App $SANDBOX_APP"
