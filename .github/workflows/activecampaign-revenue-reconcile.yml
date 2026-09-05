@@ -4,8 +4,6 @@ on:
   workflow_run:
     workflows: ["Deploy Cinema + Z3 Production"]
     types: [completed]
-  schedule:
-    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -163,9 +161,6 @@ jobs:
             exit 1
           fi
 
-          # Keep this contract aligned with /billing/marketing/reconcile. Do not
-          # infer payment eligibility from CRM state: payment truth remains the
-          # signature-verified Stripe lifecycle owned by Cinema.
           jq -e '
             (.checked | type == "number") and
             (.synced | type == "number") and

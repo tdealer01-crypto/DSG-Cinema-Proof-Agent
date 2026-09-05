@@ -6,9 +6,6 @@ name: Revenue Autopilot
 # it never modifies pricing, accounts, or entitlement state.
 
 on:
-  schedule:
-    # 02:15 UTC daily, after the previous UTC day has fully closed.
-    - cron: '15 2 * * *'
   workflow_dispatch:
     inputs:
       period:
