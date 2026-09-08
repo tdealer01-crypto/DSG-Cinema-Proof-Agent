@@ -1,54 +1,42 @@
-# DSG Revenue Handoff
+# DSG Spacetime Revenue and Entitlement Boundary
 
-The Agent Plugin governs executions. It does not embed billing credentials and it does not autonomously purchase a plan.
+The Agent Plugin governs execution through DSG Spacetime. It does not embed billing credentials, create purchases, or grant marketplace entitlement.
 
-## Free start
+## Separation of concerns
 
-A user or application can activate a free DSG API key with:
-
-```http
-POST /billing/activate
-Content-Type: application/json
-
-{
-  "channel": "agent_plugin",
-  "activation_id": "<stable-client-or-installation-id>",
-  "display_name": "<human-readable-name>"
-}
+```text
+Agent Plugin / MCP
+        ↓
+spacetime_discover
+        ↓
+spacetime_compose
+        ↓
+spacetime_execute
+        ↓
+plan + Route + deployment + entitlement + approval/policy checks
+        ↓
+customer-owned adapter
+        ↓
+result + evidence
 ```
 
-The current free plan includes 25 verified proofs with a hard cap. The API key is returned once. Store it using the client or application's credential mechanism, never in `plugin.json`, `mcp.json`, `SKILL.md`, source control, evidence, or logs.
+Marketplace/provider purchase, subscription, billing, and entitlement activation occur outside this plugin through the provider's supported user flow.
 
-## Metered upgrade
+## What the plugin must do
 
-When the user explicitly chooses paid usage, the authenticated application can create a Stripe-hosted Checkout Session:
+When Spacetime refuses execution because deployment, entitlement, Route, approval/policy, or identity is missing:
 
-```http
-POST /billing/checkout/session
-X-DSG-API-Key: <client-managed-key>
-Content-Type: application/json
+- show the exact refusal reason/code;
+- show the returned remediation or next required action when present;
+- do not call the external provider directly as a fallback;
+- do not create a purchase automatically;
+- do not treat a checkout URL, browser redirect, client assertion, or pending provider state as entitlement;
+- retry only after the required provider/runtime state is actually available.
 
-{
-  "plan": "metered",
-  "checkout_id": "<stable-idempotency-id>"
-}
-```
+## Credentials
 
-A successful session creation returns a Checkout URL and the state `CHECKOUT_CREATED_NOT_ENTITLED`. That state is intentionally **not** a paid entitlement.
+Store `DSG_SPACETIME_API_KEY` only in the client/application credential mechanism. Never place it in `plugin.json`, `mcp.json`, `SKILL.md`, source control, evidence, logs, or ordinary chat output.
 
-DSG promotes the account only after a valid signed Stripe webhook confirms the configured product, price, customer, and subscription scope. Browser redirects and client claims do not grant paid access.
+## Evidence boundary
 
-## Billable unit
-
-The direct metered SKU is one `verified_execution` receipt. A failed verifier call, timeout, refusal, or result without `verified=true` and `VERIFIED_GLOBAL_OPTIMUM` is not a billable proof unit.
-
-## User-facing refusal handling
-
-When the server returns a `remediation` object, show:
-
-- `problem`: what failed;
-- `cause`: why it failed;
-- `next_step`: what the user should do;
-- `self_service`: whether the user can resolve it without an operator.
-
-Do not reduce a billing refusal to only an HTTP status code.
+A successful payment or marketplace activation is not evidence that an agent action executed. Conversely, an execution receipt is not evidence of marketplace billing or payout. Keep provider-commercial evidence and execution evidence as separate proof domains.
