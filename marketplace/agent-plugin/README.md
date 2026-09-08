@@ -94,6 +94,25 @@ Version `1.1.0` moves the portable plugin from the legacy Cinema MCP integration
 
 This is a plugin release change. The Agent Plugins specification remains `1.0.0`.
 
+## Authentication — client credential binding is required
+
+The portable package deliberately contains no API key or Authorization header. Agent Plugins 1.0 treats configured remote HTTP headers as visible package data, does not expand secret placeholders in them, and defines no portable OAuth or credential-reference field. DSG Spacetime production currently requires `Authorization: Bearer <DSG_SPACETIME_API_KEY>`.
+
+Therefore **plugin installation and authenticated MCP use are separate gates**. Installation may succeed while the plugin-declared remote server remains unauthorized until the client binds a credential.
+
+Use the client application's own protected MCP credential mechanism. For GitHub Copilot CLI, the native MCP configuration supports a remote HTTP server plus an `Authorization` header. Prefer the interactive `/mcp` dashboard so the secret is not copied into repository files. If a client cannot attach a protected credential to the plugin-declared entry, configure the same Spacetime endpoint as a client-native authenticated MCP entry and keep that credential outside the plugin package.
+
+A non-interactive Copilot CLI form also exists, but using it can place a token in shell history, so use it only in a trusted environment:
+
+```bash
+copilot mcp add --transport http \
+  --header "Authorization: Bearer <DSG_SPACETIME_API_KEY>" \
+  dsg-spacetime-auth \
+  https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp
+```
+
+Do not commit a real key, paste it into issue/PR comments, store it in evidence, or print it in shared logs. Until an exact v1.1.0 authenticated client tool call is stored, authentication compatibility remains `NOT VERIFIED` even when package installation passes.
+
 ## Compatibility evidence
 
 | Target | Current evidence | Status |
@@ -101,18 +120,15 @@ This is a plugin release change. The Agent Plugins specification remains `1.0.0`
 | Agent Plugins 1.0 package structure | Repository conformance checks validate manifest, MCP config, Skill frontmatter, HTTPS endpoint and absence of embedded credentials | CI-GATED |
 | DSG marketplace catalog | `.github/plugin/marketplace.json` points to the portable package and keeps catalog/plugin versions aligned | CI-GATED |
 | DSG Spacetime runtime contract | Canonical production repository records `/health`, `/mcp`, MCP `2025-06-18`, the four canonical tools, plan/Route fail-closed behavior, and bounded Azure production E2E | VERIFIED FOR RUNTIME SCOPE |
-| Copilot CLI v1.0.0 package install | Historical GitHub Actions run `32482954936` installed `dsg-governance` v1.0.0 from this marketplace | PASS — HISTORICAL v1.0.0 |
-| Copilot CLI v1.0.0 authenticated Cinema MCP status | Historical run `32497793523` | PASS — HISTORICAL v1.0.0 |
-| Copilot CLI v1.0.0 full governed Cinema proof flow | Historical run `32499134400` | PASS — HISTORICAL v1.0.0 |
-| Copilot CLI v1.1.0 install + Spacetime MCP | No exact v1.1.0 client run is stored yet | NOT VERIFIED |
-| VS Code / Copilot app v1.1.0 | No exact v1.1.0 client run is stored yet | NOT VERIFIED |
+| Copilot CLI — plugin v1.0.0 package install | Historical GitHub Actions run `32482954936` installed `dsg-governance` v1.0.0 from this marketplace | PASS — HISTORICAL v1.0.0 |
+| Copilot CLI — plugin v1.0.0 authenticated Cinema MCP status | Historical run `32497793523` | PASS — HISTORICAL v1.0.0 |
+| Copilot CLI — plugin v1.0.0 full governed Cinema proof flow | Historical run `32499134400` | PASS — HISTORICAL v1.0.0 |
+| Copilot CLI — plugin v1.1.0 exact package install | PR workflow must install the checked-out marketplace/package rather than default-branch cache | CI-GATED |
+| Copilot CLI — plugin v1.1.0 authenticated Spacetime MCP tool call | Requires client-managed Bearer credential; no exact stored v1.1.0 tool-call proof yet | NOT VERIFIED |
+| VS Code / Copilot app — plugin v1.1.0 | No exact v1.1.0 client run is stored yet | NOT VERIFIED |
 | Other Agent Plugins clients | Must be tested client by client | NOT VERIFIED |
 
-Package conformance, runtime proof, and client compatibility are separate claims. Historical v1.0.0 client runs do not prove v1.1.0 client compatibility.
-
-## Authentication
-
-The portable package deliberately contains no API key or Authorization header. Agent Plugins 1.0 does not define a portable secret-reference field for remote HTTP credentials. Store `DSG_SPACETIME_API_KEY` in the client/application credential mechanism and do not place it in plugin files, source control, evidence, logs, issue comments, or ordinary chat output.
+Package conformance, runtime proof, package-install compatibility, and authenticated tool compatibility are separate claims. Historical v1.0.0 client runs do not prove v1.1.0 client compatibility.
 
 ## Revenue and entitlement boundary
 
@@ -133,4 +149,4 @@ A useful integration must show, without requiring raw log inspection:
 
 ## Truth boundary
 
-Version `1.1.0` is the repository marketplace package for the latest recorded DSG Spacetime production contract. The package and catalog update do not by themselves prove a real Copilot/VS Code client successfully authenticated to Spacetime or executed a Route. Those rows remain `NOT VERIFIED` until an exact v1.1.0 client run produces stored evidence.
+Version `1.1.0` is the repository marketplace package for the latest recorded DSG Spacetime production contract. A successful package/catalog check does not by itself prove authenticated Spacetime execution. The authenticated v1.1.0 client row remains `NOT VERIFIED` until a real client binds a protected credential and successfully calls the Spacetime MCP surface with stored evidence.
