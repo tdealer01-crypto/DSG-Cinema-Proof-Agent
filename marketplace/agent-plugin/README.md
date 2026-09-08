@@ -1,10 +1,13 @@
-# DSG Governance — Agent Plugins 1.0 package
+# DSG Spacetime Governance — Agent Plugins 1.0 package
 
-Portable Agent Plugins v1 package for using DSG ONE as an independent evidence and conformance plane around agent executions.
+**Plugin release:** `1.1.0`  
+**Agent Plugins specification:** `1.0.0`
+
+Portable Agent Plugins package for governing agent execution through DSG Spacetime. The package discovers approved capabilities, binds the user-authorized plan, executes only a licensed plan-bound Route through the configured customer-owned adapter, and verifies the resulting evidence.
 
 ## Install from the DSG Agent Plugin marketplace
 
-The repository exposes a GitHub Copilot plugin marketplace named `dsg-agent-plugins` from `.github/plugin/marketplace.json`.
+This repository exposes the GitHub Copilot plugin marketplace `dsg-agent-plugins` from `.github/plugin/marketplace.json`.
 
 ```bash
 copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent
@@ -12,7 +15,12 @@ copilot plugin marketplace browse dsg-agent-plugins
 copilot plugin install dsg-governance@dsg-agent-plugins
 ```
 
-These commands are covered by a real GitHub Copilot CLI client-install E2E on a GitHub-hosted runner. Authenticated agent-driven `dsg_status` and one benign full governed execution through proof-receipt readback are covered by separate gated E2E workflows and permanent evidence below.
+Existing users can refresh and update with:
+
+```bash
+copilot plugin marketplace update dsg-agent-plugins
+copilot plugin update dsg-governance
+```
 
 ## Package contents
 
@@ -27,76 +35,102 @@ marketplace/agent-plugin/
             └── revenue.md
 ```
 
-`plugin.json` targets Agent Plugins 1.0.0. `mcp.json` declares the production DSG MCP endpoint as `streamable-http`. No credentials are stored in the package; Agent Plugins v1 authorization is client-managed.
+`plugin.json` targets Agent Plugins specification `1.0.0`. The plugin release is `1.1.0`. `mcp.json` declares the production DSG Spacetime MCP endpoint as Streamable HTTP. No credential is stored in the package; Agent Plugins 1.0 authorization is client-managed.
 
-## What it does
-
-The skill drives this evidence path:
+## Spacetime target
 
 ```text
-Agent/App
-  → raw approved plan
-  → DSG plan hash + approval binding
-  → plan-alignment verification
-  → deterministic constraints + exact Z3
-  → agent executes the approved action
-  → execution record + real evidence
-  → replay/evidence verification
-  → proof receipt
+https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io
 ```
 
-The plugin does **not** turn DSG into another autonomous agent platform. It gives an existing agent a portable path into DSG's independent policy/evidence layer.
-
-## Revenue path
+Portable MCP surface:
 
 ```text
-Plugin discovery
-  → free activation (25 verified proofs, hard cap)
-  → governed executions
-  → quota/payment remediation
-  → user-initiated Stripe Checkout
-  → signed scoped webhook entitlement
-  → proof-bound metering
-  → usage ledger + Stripe meter sync
+POST /mcp
+MCP protocol 2025-06-18
+Bearer authentication via client-managed DSG_SPACETIME_API_KEY
 ```
 
-Checkout creation never grants entitlement. The existing DSG signed Stripe webhook is the paid-entitlement boundary.
+Canonical tools:
+
+```text
+spacetime_discover
+spacetime_compose
+spacetime_execute
+spacetime_verify_evidence
+```
+
+Governed path:
+
+```text
+Agent / application
+        ↓
+spacetime_discover
+        ↓
+spacetime_compose → BOUND + plan_hash
+        ↓
+spacetime_execute
+        ↓
+deployment + entitlement + plan + Route + approval/policy
+        ↓
+customer-owned adapter
+        ↓
+decision + result + evidence
+        ↓
+spacetime_verify_evidence
+```
+
+The plugin must not replace a Spacetime `BLOCK` with a direct provider call. DSG governance verifies plan alignment and execution prerequisites; it should not block an action merely because governance exists when the action is actually supported by the approved plan and available capability.
+
+## Version 1.1.0 change
+
+Version `1.1.0` moves the portable plugin from the legacy Cinema MCP integration to the current DSG Spacetime production contract:
+
+- MCP server: `dsg-spacetime`
+- endpoint path: `/mcp`
+- canonical four Spacetime tools
+- Spacetime plan binding and Route execution semantics
+- marketplace/payment state kept separate from execution evidence
+
+This is a plugin release change. The Agent Plugins specification remains `1.0.0`.
 
 ## Compatibility evidence
 
 | Target | Current evidence | Status |
 |---|---|---|
-| Agent Plugins v1 package structure | Repository conformance test validates manifest, MCP config, Skill frontmatter, HTTPS endpoint, and absence of embedded credentials | CI-GATED |
-| DSG Copilot marketplace catalog | Repository conformance test validates `.github/plugin/marketplace.json`, the `dsg-governance` source path, version alignment, and strict loading | CI-GATED |
-| DSG MCP protocol contract | Existing API tests exercise `initialize`, `tools/list`, tool calls, refusal handling, and no caller-supplied verdicts | CI-GATED |
-| DSG execution semantics | Existing API tests cover approved execution, out-of-plan BLOCK, replay REVIEW, deterministic constraints, and fail-closed verifier behavior | CI-GATED |
-| VS Code / GitHub Copilot client install | No real client run is stored in this repository yet | NOT VERIFIED |
-| Copilot CLI client install | GitHub Actions run `32482954936` used GitHub Copilot CLI `1.0.80` to add `dsg-agent-plugins`, browse it, install `dsg-governance@dsg-agent-plugins`, and confirm plugin `v1.0.0` in the installed-plugin list. Permanent evidence: `evidence/client/copilot-cli-plugin-e2e-2026-08-21.json` | PASS |
-| Copilot CLI agent authentication in CI | GitHub Actions run `32497793523` authenticated GitHub Copilot CLI `1.0.80` with the configured user-owned `COPILOT_CLI_TOKEN` before any DSG key was issued. Permanent evidence: `evidence/client/copilot-cli-mcp-auth-e2e-2026-08-21.json` | PASS |
-| Copilot CLI authenticated DSG MCP `dsg_status` tool call | Run `32497793523` activated an ephemeral free DSG key only after Copilot auth, registered `dsg-one-auth`, independently verified authenticated `dsg_status = READY`, and then had the Copilot agent invoke `dsg_status` successfully. Credentials were not retained. Permanent evidence: `evidence/client/copilot-cli-mcp-auth-e2e-2026-08-21.json` | PASS |
-| Copilot CLI full governed execution + proof receipt | Run `32499134400` completed one benign run-bound conformance flow through plan creation, approval, alignment, exact-Z3 constraints, execution record, content-verified evidence, replay, execution verification and proof readback. Independent post-agent checks re-read `proof_01m0jfx6fvcm1fbxt6w4vh` and required `ALLOW`, `VERIFIED_GLOBAL_OPTIMUM`, complete evidence/replay, and `receipt_hash_verified = true`. Permanent evidence: `evidence/client/copilot-cli-full-governed-e2e-2026-08-21.json` | PASS |
+| Agent Plugins 1.0 package structure | Repository conformance checks validate manifest, MCP config, Skill frontmatter, HTTPS endpoint and absence of embedded credentials | CI-GATED |
+| DSG marketplace catalog | `.github/plugin/marketplace.json` points to the portable package and keeps catalog/plugin versions aligned | CI-GATED |
+| DSG Spacetime runtime contract | Canonical production repository records `/health`, `/mcp`, MCP `2025-06-18`, the four canonical tools, plan/Route fail-closed behavior, and bounded Azure production E2E | VERIFIED FOR RUNTIME SCOPE |
+| Copilot CLI v1.0.0 package install | Historical GitHub Actions run `32482954936` installed `dsg-governance` v1.0.0 from this marketplace | PASS — HISTORICAL v1.0.0 |
+| Copilot CLI v1.0.0 authenticated Cinema MCP status | Historical run `32497793523` | PASS — HISTORICAL v1.0.0 |
+| Copilot CLI v1.0.0 full governed Cinema proof flow | Historical run `32499134400` | PASS — HISTORICAL v1.0.0 |
+| Copilot CLI v1.1.0 install + Spacetime MCP | No exact v1.1.0 client run is stored yet | NOT VERIFIED |
+| VS Code / Copilot app v1.1.0 | No exact v1.1.0 client run is stored yet | NOT VERIFIED |
 | Other Agent Plugins clients | Must be tested client by client | NOT VERIFIED |
 
-Package conformance is not client compatibility. A client row changes to PASS only when a real client run produces stored evidence for that exact surface.
+Package conformance, runtime proof, and client compatibility are separate claims. Historical v1.0.0 client runs do not prove v1.1.0 client compatibility.
 
 ## Authentication
 
-The portable package deliberately contains no `X-DSG-API-Key` header. Store DSG credentials using the client/application's credential mechanism. Agent Plugins 1.0 does not define a portable secret-reference field for remote HTTP headers, so this package does not fake one.
+The portable package deliberately contains no API key or Authorization header. Agent Plugins 1.0 does not define a portable secret-reference field for remote HTTP credentials. Store `DSG_SPACETIME_API_KEY` in the client/application credential mechanism and do not place it in plugin files, source control, evidence, logs, issue comments, or ordinary chat output.
 
-For automated Copilot CLI agent/tool-call testing, the repository workflows expect a secret named `COPILOT_CLI_TOKEN`. It must be a user-owned fine-grained GitHub token with the **Copilot Requests** account permission. Do not put this token in the plugin package, repository files, issue comments, or workflow logs.
+## Revenue and entitlement boundary
 
-The workflows perform Copilot authentication before calling `/billing/activate`, so an unavailable Copilot credential does not create additional DSG free accounts. If authentication passes, the DSG API key is generated for that CI attempt, masked immediately, used only in the ephemeral runner, and not retained in artifacts.
+The Spacetime plugin does not create purchases or grant entitlement. Marketplace/provider purchase and activation are separate flows. `spacetime_execute` checks the relevant deployment, entitlement, plan, Route and approval/policy state before the configured adapter can execute. A checkout redirect or caller assertion is not entitlement, and an execution result is not billing/payout evidence.
+
+See `skills/dsg-governed-execution/references/revenue.md`.
 
 ## User-visible result
 
-A useful integration must show, without requiring log inspection:
+A useful integration must show, without requiring raw log inspection:
 
-1. whether DSG returned ALLOW, REVIEW, BLOCK, or unavailable;
-2. the specific reason;
-3. receipt/proof identity when verified;
-4. the remediation and next action when not verified;
-5. billing/quota state without implying that Checkout creation itself granted access.
+1. requested capability and selected approved Node/Route;
+2. `BOUND` or `BLOCK` plan state;
+3. execution `ALLOW` or `BLOCK` and exact reason;
+4. actual adapter result separately from governance decision;
+5. evidence verification state;
+6. remediation/next action when blocked or not verified.
 
 ## Truth boundary
 
-This directory is a portable package and CI target. The marketplace catalog is proven discoverable/installable by GitHub Copilot CLI `1.0.80`; run `32497793523` proves authenticated agent-driven `dsg_status`; and run `32499134400` proves one benign Copilot CLI full governed conformance execution reached an independently re-read `ALLOW · VERIFIED_GLOBAL_OPTIMUM` proof receipt with complete content evidence, replay match, and a verified receipt hash against the Azure DSG MCP endpoint. The exercised action was only a CI conformance record. This evidence does **not** claim that Copilot deployed or changed an external production resource. VS Code and other Agent Plugins clients remain unverified until client-specific evidence exists.
+Version `1.1.0` is the repository marketplace package for the latest recorded DSG Spacetime production contract. The package and catalog update do not by themselves prove a real Copilot/VS Code client successfully authenticated to Spacetime or executed a Route. Those rows remain `NOT VERIFIED` until an exact v1.1.0 client run produces stored evidence.
