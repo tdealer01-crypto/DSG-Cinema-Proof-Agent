@@ -24,12 +24,11 @@ jobs:
     env:
       CI: '1'
       NO_COLOR: '1'
-      MARKETPLACE_REPO: tdealer01-crypto/DSG-Cinema-Proof-Agent
       MARKETPLACE_NAME: dsg-agent-plugins
       PLUGIN_NAME: dsg-governance
 
     steps:
-      - name: Checkout
+      - name: Checkout exact workflow revision
         uses: actions/checkout@v6
 
       - name: Set up Node.js 22
@@ -40,24 +39,35 @@ jobs:
       - name: Install GitHub Copilot CLI
         run: npm install -g @github/copilot
 
-      - name: Record Copilot CLI version
+      - name: Record Copilot CLI and expected plugin versions
         shell: bash
         run: |
           set -euo pipefail
           copilot --version | tee /tmp/copilot-version.txt
+          plugin_version="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('marketplace/agent-plugin/plugin.json').read_text(encoding='utf-8'))['version'])
+          PY
+          )"
+          echo "PLUGIN_VERSION=$plugin_version" >> "$GITHUB_ENV"
+          printf '%s\n' "$plugin_version" | tee /tmp/plugin-version.txt
 
-      - name: Add DSG marketplace from GitHub
+      - name: Add DSG marketplace from exact checked-out revision
         shell: bash
         env:
           HOME: ${{ runner.temp }}/copilot-e2e-home
         run: |
           set -euo pipefail
           mkdir -p "$HOME"
-          copilot plugin marketplace add "$MARKETPLACE_REPO"
+          # A GitHub OWNER/REPO marketplace add resolves the repository's default
+          # branch and therefore cannot prove an unmerged PR. Using the checked-out
+          # local marketplace makes this client test commit-bound.
+          copilot plugin marketplace add "$GITHUB_WORKSPACE"
           copilot plugin marketplace list | tee /tmp/marketplaces.txt
           grep -F "$MARKETPLACE_NAME" /tmp/marketplaces.txt
 
-      - name: Browse DSG marketplace
+      - name: Browse exact DSG marketplace
         shell: bash
         env:
           HOME: ${{ runner.temp }}/copilot-e2e-home
@@ -65,8 +75,9 @@ jobs:
           set -euo pipefail
           copilot plugin marketplace browse "$MARKETPLACE_NAME" | tee /tmp/browse.txt
           grep -F "$PLUGIN_NAME" /tmp/browse.txt
+          grep -F "Spacetime" /tmp/browse.txt
 
-      - name: Install DSG governance plugin
+      - name: Install exact DSG governance plugin
         shell: bash
         env:
           HOME: ${{ runner.temp }}/copilot-e2e-home
@@ -74,29 +85,33 @@ jobs:
           set -euo pipefail
           copilot plugin install "$PLUGIN_NAME@$MARKETPLACE_NAME"
           copilot plugin list | tee /tmp/plugins.txt
-          grep -F "$PLUGIN_NAME" /tmp/plugins.txt
+          grep -F "$PLUGIN_NAME@$MARKETPLACE_NAME" /tmp/plugins.txt
+          grep -F "(v$PLUGIN_VERSION)" /tmp/plugins.txt
 
-      - name: Build client-install evidence
+      - name: Build commit-bound client-install evidence
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json, os
           from pathlib import Path
-          version = Path('/tmp/copilot-version.txt').read_text(encoding='utf-8').strip()
+          cli_version = Path('/tmp/copilot-version.txt').read_text(encoding='utf-8').strip()
+          plugin_version = Path('/tmp/plugin-version.txt').read_text(encoding='utf-8').strip()
           evidence = {
-              'schema_version': '1.0',
+              'schema_version': '1.1',
               'client': 'GitHub Copilot CLI',
-              'client_version': version,
-              'marketplace_repository': os.environ['MARKETPLACE_REPO'],
+              'client_version': cli_version,
+              'tested_git_sha': os.environ['GITHUB_SHA'],
+              'marketplace_source': 'checked-out workflow revision',
               'marketplace_name': os.environ['MARKETPLACE_NAME'],
               'plugin_name': os.environ['PLUGIN_NAME'],
+              'plugin_version': plugin_version,
               'marketplace_add': 'PASS',
               'marketplace_browse': 'PASS',
               'plugin_install': 'PASS',
-              'plugin_list': 'PASS',
+              'plugin_list_exact_version': 'PASS',
               'authenticated_mcp_tool_call': 'NOT_RUN',
-              'truth_boundary': 'Client installation proof only. MCP authorization and DSG tool-call proof remain separate gates.'
+              'truth_boundary': 'Exact checked-out package installation proof only. Spacetime Bearer credential binding and authenticated MCP tool-call proof remain separate gates.'
           }
           Path('copilot-cli-plugin-e2e.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
           PY
@@ -105,6 +120,6 @@ jobs:
       - name: Upload client-install evidence
         uses: actions/upload-artifact@v4
         with:
-          name: copilot-cli-plugin-e2e
+          name: copilot-cli-plugin-e2e-${{ github.sha }}
           path: copilot-cli-plugin-e2e.json
           if-no-files-found: error
