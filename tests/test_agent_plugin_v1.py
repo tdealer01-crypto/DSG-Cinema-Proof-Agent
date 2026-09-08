@@ -150,6 +150,23 @@ def test_agent_skill_targets_canonical_spacetime_flow():
     assert "connection failure is never approval" in body
 
 
+def test_spacetime_package_contract_declares_canonical_tools_and_client_managed_auth():
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+    assert "MCP protocol 2025-06-18" in readme
+    assert "Bearer authentication via client-managed DSG_SPACETIME_API_KEY" in readme
+    assert "plugin installation and authenticated MCP use are separate gates" in readme
+    assert "client credential binding is required" in readme
+    assert "copilot mcp add --transport http" in readme
+    assert "dsg-spacetime-auth" in readme
+    for tool in (
+        "spacetime_discover",
+        "spacetime_compose",
+        "spacetime_execute",
+        "spacetime_verify_evidence",
+    ):
+        assert tool in readme
+
+
 def test_plugin_readme_separates_current_release_from_historical_client_evidence():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     assert "Plugin release:** `1.1.0`" in readme
@@ -164,6 +181,7 @@ def test_plugin_readme_separates_current_release_from_historical_client_evidence
     assert "HISTORICAL v1.0.0" in readme
     assert readme.count("NOT VERIFIED") >= 3
     assert "Historical v1.0.0 client runs do not prove v1.1.0 client compatibility" in readme
+    assert "Copilot CLI — plugin v1.0.0" in readme
 
 
 def test_historical_copilot_evidence_remains_bound_to_v1_0_0():
