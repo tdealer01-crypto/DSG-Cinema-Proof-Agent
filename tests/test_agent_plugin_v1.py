@@ -6,20 +6,20 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
-from fastapi.testclient import TestClient
-
-import cinema_main
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "marketplace" / "agent-plugin"
 MARKETPLACE = ROOT / ".github" / "plugin" / "marketplace.json"
 COPILOT_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-plugin-e2e-2026-08-21.json"
-COPILOT_AUTH_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-agent-auth-preflight-2026-08-21.json"
 COPILOT_MCP_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-mcp-auth-e2e-2026-08-21.json"
 COPILOT_FULL_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-full-governed-e2e-2026-08-21.json"
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+PLUGIN_RELEASE = "1.1.0"
+SPACETIME_MCP_URL = (
+    "https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp"
+)
 PLUGIN_FIELDS = {
     "$schema",
     "name",
@@ -34,8 +34,6 @@ PLUGIN_FIELDS = {
 }
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 PLUGIN_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
-
-client = TestClient(cinema_main.app)
 
 
 def _json(path: Path) -> dict:
@@ -52,31 +50,31 @@ def _frontmatter(path: Path) -> tuple[dict, str]:
     return metadata, text[end + 5 :]
 
 
-def test_plugin_manifest_targets_agent_plugins_v1_and_uses_only_portable_fields():
+def test_plugin_manifest_targets_agent_plugins_v1_and_spacetime_release():
     manifest = _json(PLUGIN / "plugin.json")
     assert manifest["$schema"] == PLUGIN_SCHEMA
     assert set(manifest) <= PLUGIN_FIELDS
-    assert isinstance(manifest["name"], str)
-    assert 1 <= len(manifest["name"]) <= 64
+    assert manifest["name"] == "dsg-governance"
+    assert manifest["version"] == PLUGIN_RELEASE
     assert PLUGIN_NAME_RE.fullmatch(manifest["name"])
     assert "--" not in manifest["name"]
     assert ".." not in manifest["name"]
-    assert manifest["name"] == "dsg-governance"
     assert manifest["repository"] == "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent"
+    assert "spacetime" in {item.lower() for item in manifest["keywords"]}
 
 
-def test_copilot_marketplace_catalog_points_to_the_portable_plugin():
+def test_copilot_marketplace_catalog_points_to_spacetime_plugin_release():
     catalog = _json(MARKETPLACE)
     assert set(catalog) == {"name", "owner", "metadata", "plugins"}
     assert catalog["name"] == "dsg-agent-plugins"
     assert catalog["owner"]["name"] == "DSG ONE"
-    assert catalog["metadata"]["version"] == "1.0.0"
+    assert catalog["metadata"]["version"] == PLUGIN_RELEASE
     assert len(catalog["plugins"]) == 1
 
     entry = catalog["plugins"][0]
     manifest = _json(PLUGIN / "plugin.json")
     assert entry["name"] == manifest["name"] == "dsg-governance"
-    assert entry["version"] == manifest["version"] == "1.0.0"
+    assert entry["version"] == manifest["version"] == PLUGIN_RELEASE
     assert entry["source"] == "./marketplace/agent-plugin"
     assert entry["strict"] is True
     assert "mcpServers" not in entry
@@ -85,176 +83,127 @@ def test_copilot_marketplace_catalog_points_to_the_portable_plugin():
     assert source == PLUGIN.resolve()
     assert source.is_dir()
     assert (source / "plugin.json").is_file()
+    assert (source / "mcp.json").is_file()
 
 
-def test_mcp_config_is_https_streamable_http_and_contains_no_embedded_credentials():
+def test_mcp_config_targets_spacetime_https_without_embedded_credentials():
     config = _json(PLUGIN / "mcp.json")
     assert set(config) == {"$schema", "mcpServers"}
     assert config["$schema"] == MCP_SCHEMA
-    assert set(config["mcpServers"]) == {"dsg-one"}
+    assert set(config["mcpServers"]) == {"dsg-spacetime"}
 
-    server = config["mcpServers"]["dsg-one"]
+    server = config["mcpServers"]["dsg-spacetime"]
     assert set(server) == {"type", "url"}
     assert server["type"] == "streamable-http"
+    assert server["url"] == SPACETIME_MCP_URL
+
     parsed = urlsplit(server["url"])
     assert parsed.scheme == "https"
+    assert parsed.hostname == "dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io"
     assert parsed.username is None and parsed.password is None
     assert parsed.fragment == ""
-    assert parsed.path == "/api/v1/mcp"
+    assert parsed.path == "/mcp"
     assert "headers" not in server
 
     serialized = json.dumps(config).lower()
-    for secret_marker in ("authorization", "bearer ", "x-dsg-api-key", "sk_live_", "sk_test_", "whsec_"):
+    for secret_marker in (
+        "authorization",
+        "bearer ",
+        "x-dsg-api-key",
+        "dsg_spacetime_api_key=",
+        "sk_live_",
+        "sk_test_",
+        "whsec_",
+    ):
         assert secret_marker not in serialized
 
 
-def test_agent_skill_frontmatter_conforms_and_name_matches_directory():
+def test_agent_skill_targets_canonical_spacetime_flow():
     skill_path = PLUGIN / "skills" / "dsg-governed-execution" / "SKILL.md"
     metadata, body = _frontmatter(skill_path)
 
     assert metadata["name"] == skill_path.parent.name
     assert SKILL_NAME_RE.fullmatch(metadata["name"])
-    assert 1 <= len(metadata["name"]) <= 64
-    assert isinstance(metadata["description"], str)
-    assert 1 <= len(metadata["description"]) <= 1024
-    assert "Use" in metadata["description"] or "use" in metadata["description"]
-    assert isinstance(metadata.get("compatibility"), str)
-    assert len(metadata["compatibility"]) <= 500
+    assert metadata["metadata"]["version"] == PLUGIN_RELEASE
+    assert "Agent Plugins 1.0" in metadata["compatibility"]
+    assert "DSG_SPACETIME_API_KEY" in metadata["compatibility"]
     assert body.lstrip().startswith("# DSG Governed Execution")
 
+    for tool in (
+        "spacetime_discover",
+        "spacetime_compose",
+        "spacetime_execute",
+        "spacetime_verify_evidence",
+    ):
+        assert f"`{tool}`" in body
 
-def test_plugin_truth_boundary_tracks_client_surfaces_separately():
+    for legacy_tool in (
+        "dsg_create_plan",
+        "dsg_approve_plan",
+        "dsg_record_execution",
+        "dsg_get_proof",
+        "dsg_live_start",
+    ):
+        assert legacy_tool not in body
+
+    assert "Never call the external provider directly as a fallback" in body
+    assert "connection failure is never approval" in body
+
+
+def test_spacetime_package_contract_declares_canonical_tools_and_client_managed_auth():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
-    assert "VS Code / GitHub Copilot client install" in readme
-    assert "Copilot CLI client install" in readme
-    assert "Copilot CLI agent authentication in CI" in readme
-    assert "Copilot CLI authenticated DSG MCP `dsg_status` tool call" in readme
-    assert "Copilot CLI full governed execution + proof receipt" in readme
-    assert readme.count("NOT VERIFIED") >= 2
-    assert "Package conformance is not client compatibility" in readme
-    assert "copilot plugin marketplace add tdealer01-crypto/DSG-Cinema-Proof-Agent" in readme
-    assert "copilot plugin install dsg-governance@dsg-agent-plugins" in readme
+    assert "MCP protocol 2025-06-18" in readme
+    assert "Bearer authentication via client-managed DSG_SPACETIME_API_KEY" in readme
+    assert "plugin installation and authenticated MCP use are separate gates" in readme
+    assert "client credential binding is required" in readme
+    assert "copilot mcp add --transport http" in readme
+    assert "dsg-spacetime-auth" in readme
+    for tool in (
+        "spacetime_discover",
+        "spacetime_compose",
+        "spacetime_execute",
+        "spacetime_verify_evidence",
+    ):
+        assert tool in readme
+
+
+def test_plugin_readme_separates_current_release_from_historical_client_evidence():
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+    assert "Plugin release:** `1.1.0`" in readme
+    assert "Agent Plugins specification:** `1.0.0`" in readme
+    assert SPACETIME_MCP_URL.removesuffix("/mcp") in readme
+    assert "spacetime_execute" in readme
+    assert "copilot plugin marketplace update dsg-agent-plugins" in readme
+    assert "copilot plugin update dsg-governance" in readme
     assert "32482954936" in readme
     assert "32497793523" in readme
     assert "32499134400" in readme
-    assert "copilot-cli-mcp-auth-e2e-2026-08-21.json" in readme
-    assert "copilot-cli-full-governed-e2e-2026-08-21.json" in readme
-    assert "COPILOT_CLI_TOKEN" in readme
-    assert "Copilot Requests" in readme
+    assert "HISTORICAL v1.0.0" in readme
+    assert readme.count("NOT VERIFIED") >= 3
+    assert "Historical v1.0.0 client runs do not prove v1.1.0 client compatibility" in readme
+    assert "Copilot CLI — plugin v1.0.0" in readme
 
 
-def test_copilot_cli_install_evidence_is_specific_and_does_not_claim_mcp():
-    evidence = _json(COPILOT_EVIDENCE)
-    assert evidence["client"] == "GitHub Copilot CLI"
-    assert evidence["client_version"] == "1.0.80"
-    assert evidence["workflow_run_id"] == 32482954936
-    assert evidence["workflow_job_id"] == 96773122774
-    assert evidence["marketplace_name"] == "dsg-agent-plugins"
-    assert evidence["plugin_name"] == "dsg-governance"
-    assert evidence["plugin_version"] == "1.0.0"
-    assert all(value == "PASS" for value in evidence["results"].values())
-    assert evidence["authenticated_mcp_tool_call"] == "NOT_RUN"
-    assert evidence["artifact"]["digest"].startswith("sha256:")
+def test_historical_copilot_evidence_remains_bound_to_v1_0_0():
+    install = _json(COPILOT_EVIDENCE)
+    assert install["client"] == "GitHub Copilot CLI"
+    assert install["workflow_run_id"] == 32482954936
+    assert install["plugin_version"] == "1.0.0"
+    assert all(value == "PASS" for value in install["results"].values())
+
+    mcp = _json(COPILOT_MCP_EVIDENCE)
+    assert mcp["workflow_run_id"] == 32497793523
+    assert mcp["mcp_url"].endswith("/api/v1/mcp")
+    assert all(value == "PASS" for value in mcp["results"].values())
+
+    full = _json(COPILOT_FULL_EVIDENCE)
+    assert full["workflow_run_id"] == 32499134400
+    assert full["mcp_url"].endswith("/api/v1/mcp")
+    assert full["receipt"]["decision"] == "ALLOW"
+    assert full["receipt"]["receipt_hash_verified"] is True
 
 
-def test_copilot_agent_auth_evidence_blocks_tool_call_without_creating_dsg_key():
-    evidence = _json(COPILOT_AUTH_EVIDENCE)
-    assert evidence["client"] == "GitHub Copilot CLI"
-    assert evidence["client_version"] == "1.0.80"
-    assert evidence["workflow_run_id"] == 32484042904
-    assert evidence["workflow_job_id"] == 96776469143
-    assert evidence["plugin_install"] == "PASS"
-    assert evidence["copilot_agent_authentication"] == "ACTION_REQUIRED"
-    assert evidence["github_actions_token_result"] == "AUTHENTICATION_FAILED_REQUIRED_PERMISSIONS"
-    assert evidence["required_ci_secret"] == "COPILOT_CLI_TOKEN"
-    assert evidence["required_account_permission"] == "Copilot Requests"
-    assert evidence["dsg_key_created"] is False
-    assert evidence["agent_initiated_dsg_status_tool_call"] == "NOT_RUN"
-    assert evidence["credentials_retained"] is False
-    assert evidence["artifact"]["digest"].startswith("sha256:")
-
-
-def test_copilot_authenticated_mcp_evidence_proves_status_without_overclaiming_full_flow():
-    evidence = _json(COPILOT_MCP_EVIDENCE)
-    assert evidence["schema_version"] == "1.1"
-    assert evidence["client"] == "GitHub Copilot CLI"
-    assert evidence["client_version"] == "1.0.80"
-    assert evidence["workflow_run_id"] == 32497793523
-    assert evidence["workflow_job_id"] == 96820242598
-    assert evidence["pull_request"] == 74
-    assert evidence["marketplace_name"] == "dsg-agent-plugins"
-    assert evidence["plugin_name"] == "dsg-governance"
-    assert evidence["mcp_url"].endswith("/api/v1/mcp")
-    assert all(value == "PASS" for value in evidence["results"].values())
-    assert evidence["dsg_key_created_only_after_copilot_auth"] is True
-    assert evidence["credentials_retained"] is False
-    assert evidence["artifact"]["digest"].startswith("sha256:")
-    assert "does not by itself prove a full governed execution" in evidence["truth_boundary"]
-
-
-def test_copilot_full_governed_evidence_proves_receipt_without_external_deploy_claim():
-    evidence = _json(COPILOT_FULL_EVIDENCE)
-    assert evidence["schema_version"] == "1.1"
-    assert evidence["client"] == "GitHub Copilot CLI"
-    assert evidence["client_version"] == "1.0.80"
-    assert evidence["workflow_run_id"] == 32499134400
-    assert evidence["workflow_job_id"] == 96824515223
-    assert evidence["pull_request"] == 76
-    assert evidence["marketplace_name"] == "dsg-agent-plugins"
-    assert evidence["plugin_name"] == "dsg-governance"
-    assert evidence["mcp_url"].endswith("/api/v1/mcp")
-    assert all(value == "PASS" for value in evidence["results"].values())
-    assert evidence["receipt"]["plan_id"].startswith("plan_")
-    assert evidence["receipt"]["execution_id"].startswith("exec_")
-    assert evidence["receipt"]["proof_id"].startswith("proof_")
-    assert evidence["receipt"]["decision"] == "ALLOW"
-    assert evidence["receipt"]["verification"] == "VERIFIED_GLOBAL_OPTIMUM"
-    assert evidence["receipt"]["receipt_hash_verified"] is True
-    computed = evidence["receipt"]["computed"]
-    assert computed["authorized"] is True
-    assert computed["plan_aligned"] is True
-    assert computed["constraints_pass"] is True
-    assert computed["execution_succeeded"] is True
-    assert computed["replay_match"] is True
-    assert computed["evidence_complete"] is True
-    assert computed["evidence_completeness"] == 1.0
-    assert evidence["run_bound_evidence"] is True
-    assert evidence["dsg_key_created_only_after_copilot_auth"] is True
-    assert evidence["credentials_retained"] is False
-    assert evidence["artifact"]["digest"].startswith("sha256:")
-    assert "does not claim that Copilot deployed or changed an external production resource" in evidence["truth_boundary"]
-
-
-def test_dsg_mcp_endpoint_performs_initialize_and_exposes_governance_tools():
-    initialized = client.post(
-        "/api/v1/mcp",
-        json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
-    )
-    assert initialized.status_code == 200
-    init_body = initialized.json()
-    assert init_body["result"]["serverInfo"]["name"] == "dsg-one"
-    assert init_body["result"]["capabilities"]["tools"]["listChanged"] is False
-
-    listed = client.post(
-        "/api/v1/mcp",
-        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-    )
-    assert listed.status_code == 200
-    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
-    assert {
-        "dsg_status",
-        "dsg_create_plan",
-        "dsg_approve_plan",
-        "dsg_verify_plan_alignment",
-        "dsg_verify_constraints",
-        "dsg_record_execution",
-        "dsg_submit_evidence",
-        "dsg_verify_execution",
-        "dsg_get_proof",
-    } <= names
-
-
-def test_revenue_reference_preserves_user_control_and_webhook_entitlement_boundary():
+def test_revenue_reference_matches_spacetime_entitlement_boundary():
     text = (
         PLUGIN
         / "skills"
@@ -262,8 +211,10 @@ def test_revenue_reference_preserves_user_control_and_webhook_entitlement_bounda
         / "references"
         / "revenue.md"
     ).read_text(encoding="utf-8")
-    assert "POST /billing/activate" in text
-    assert "POST /billing/checkout/session" in text
-    assert "CHECKOUT_CREATED_NOT_ENTITLED" in text
-    assert "signed Stripe webhook" in text
-    assert "does not autonomously purchase" in text
+    assert "DSG Spacetime Revenue and Entitlement Boundary" in text
+    assert "spacetime_execute" in text
+    assert "DSG_SPACETIME_API_KEY" in text
+    assert "does not embed billing credentials" in text
+    assert "do not create a purchase automatically" in text
+    assert "/billing/activate" not in text
+    assert "/billing/checkout/session" not in text

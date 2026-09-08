@@ -81,9 +81,17 @@ def test_universal_connect_truth_matches_repository_channels():
     launch = json.loads((ROOT / "marketplace" / "launch-manifest.json").read_text(encoding="utf-8"))
     mobile = json.loads((ROOT / "mobile" / "base-apk.identity.json").read_text(encoding="utf-8"))
 
-    mcp_url = plugin_mcp["mcpServers"]["dsg-one"]["url"]
-    assert mcp_url.endswith("/api/v1/mcp")
-    cinema_base = mcp_url.removesuffix("/api/v1/mcp")
+    # The portable Agent Plugin now targets Spacetime. The customer landing still
+    # exposes Cinema's existing Direct API/MCP surfaces; keep the two products
+    # explicit instead of deriving one endpoint from the other.
+    spacetime_mcp_url = plugin_mcp["mcpServers"]["dsg-spacetime"]["url"]
+    assert spacetime_mcp_url == (
+        "https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp"
+    )
+
+    cinema_base = launch["product"]["production_api_base"]
+    assert cinema_base == "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io"
+    assert spacetime_mcp_url != f"{cinema_base}/api/v1/mcp"
     assert f"const CINEMA = '{cinema_base}'" in html
     assert "const MCP = `${CINEMA}/api/v1/mcp`;" in html
 

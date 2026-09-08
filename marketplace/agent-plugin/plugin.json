@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "dsg-governance",
-  "version": "1.0.0",
-  "description": "Govern agent actions against approved plans and retain deterministic evidence and proof receipts through DSG ONE.",
+  "version": "1.1.0",
+  "description": "Govern AI agent execution through DSG Spacetime plan binding, licensed Routes, and tamper-evident execution evidence.",
   "author": {
     "name": "DSG ONE"
   },
@@ -10,9 +10,9 @@
   "repository": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent",
   "keywords": [
     "agent-governance",
+    "spacetime",
     "mcp",
     "evidence",
-    "conformance",
     "deterministic-verification"
   ]
 }
