@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Build a compact evidence report from deterministic pytest/JUnit results.
 
-This report intentionally distinguishes repository conformance from real client
-compatibility.  CI timing is useful for regression comparison but is not a
-production latency claim, and CI does not invent a dollar cost when no real
-billing event occurred.
+This report intentionally distinguishes repository/package conformance from
+production Spacetime runtime proof and real authenticated client compatibility.
+CI timing is useful for regression comparison but is not a production latency
+claim, and CI does not invent a dollar cost when no real billing event occurred.
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ from xml.etree import ElementTree as ET
 
 
 CASES = {
-    "plugin_manifest_conformance": "test_plugin_manifest_targets_agent_plugins_v1_and_uses_only_portable_fields",
-    "plugin_mcp_secret_boundary": "test_mcp_config_is_https_streamable_http_and_contains_no_embedded_credentials",
-    "plugin_skill_conformance": "test_agent_skill_frontmatter_conforms_and_name_matches_directory",
-    "mcp_initialize_and_tools": "test_dsg_mcp_endpoint_performs_initialize_and_exposes_governance_tools",
+    "plugin_manifest_conformance": "test_plugin_manifest_targets_agent_plugins_v1_and_spacetime_release",
+    "plugin_mcp_secret_boundary": "test_mcp_config_targets_spacetime_https_without_embedded_credentials",
+    "plugin_skill_conformance": "test_agent_skill_targets_canonical_spacetime_flow",
+    "spacetime_package_contract": "test_spacetime_package_contract_declares_canonical_tools_and_client_managed_auth",
     "approved_action_completion": "test_clean_run_is_allowed_only_behind_a_proof",
     "out_of_plan_rejection": "test_out_of_plan_action_blocks_even_though_the_agent_cannot_say_otherwise",
     "z3_constraint_correctness": "test_constraints_violation_is_proved_as_block",
@@ -75,8 +75,10 @@ def build(junit_path: Path) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": report_status,
         "scope": {
-            "package": "Agent Plugins 1.0 structure + Agent Skill + DSG MCP",
-            "execution": "deterministic repository CI using the test verifier fixture",
+            "package": "Agent Plugins 1.0 package + Spacetime MCP declaration + Agent Skill",
+            "execution": "legacy Cinema deterministic repository tests retained as non-regression evidence",
+            "spacetime_production_runtime_proof": "SEPARATE_EVIDENCE_DOMAIN",
+            "authenticated_spacetime_client_tool_call": "NOT_PROVED_BY_THIS_REPORT",
             "production_latency_claim": False,
             "production_cost_claim": False,
         },
@@ -88,7 +90,7 @@ def build(junit_path: Path) -> dict:
         },
         "client_compatibility": {
             "vscode_copilot": "NOT_RUN",
-            "copilot_cli": "NOT_RUN",
+            "copilot_cli_authenticated_spacetime": "NOT_RUN",
             "other_agent_plugins_clients": "NOT_RUN",
         },
         "missing_required_tests": missing,
