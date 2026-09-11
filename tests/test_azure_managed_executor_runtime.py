@@ -282,3 +282,62 @@ async def test_live_view_resolves_account(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(azure_local_browser, "current_shared_browser", current)
     result = await azure_managed_executor.live_view(x_dsg_api_key="anything")
     assert result["ok"] is True and result["connected"] is True
+
+
+class FakeDownload:
+    suggested_filename = "fixture.txt"
+
+    async def save_as(self, target):
+        Path(target).write_bytes(b"download-fixture")
+
+
+class DownloadEvent:
+    def __init__(self):
+        self.value = _async_value(FakeDownload())
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_download_is_quarantined_and_never_auto_executed(runtime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    page, locator, _ = runtime
+    page.expect_download = lambda **_kwargs: DownloadEvent()
+    monkeypatch.setattr(azure_local_browser, "_root", lambda: tmp_path)
+
+    status, body = await azure_managed_executor._perform_action(
+        "rbs-download", payload("browser.download", {"selector": "#download"})
+    )
+
+    assert status == 200
+    assert body["ok"] is True
+    assert body["quarantined"] is True
+    assert body["auto_executed"] is False
+    assert body["download_bytes"] == len(b"download-fixture")
+    assert len(body["download_sha256"]) == 64
+    assert body["artifact_ref"].startswith("azure-browser://download/")
+    assert body["suggested_filename"] == "fixture.txt"
+    assert any(call[0] == "click" for call in locator.calls)
+    stored = list((tmp_path / "downloads").rglob("*fixture.txt"))
+    assert stored == []
+    files = [p for p in (tmp_path / "downloads").rglob("*") if p.is_file()]
+    assert len(files) == 1
+    assert files[0].read_bytes() == b"download-fixture"
+
+
+def test_remote_browser_smoke_surface_contract():
+    from api_v1 import remote_browser_smoke
+
+    page = remote_browser_smoke.smoke_page()
+    html = bytes(page.body).decode("utf-8")
+    assert 'id="message"' in html
+    assert 'id="apply"' in html
+    assert 'id="upload"' in html
+    assert 'id="download"' in html
+    assert "uploadStatus.textContent" in html
+    download = remote_browser_smoke.smoke_download()
+    assert bytes(download.body) == b"DSG remote browser download smoke fixture\n"
+    assert "attachment" in download.headers["content-disposition"]

@@ -166,3 +166,52 @@ def test_revoked_or_unknown_capability_cannot_drive_browser(browserbase_env):
     }
     response = client.post(f"/remote-browser/browserbase/action/{token}", json=payload)
     assert response.status_code == 401
+
+
+class _FakeDownload:
+    suggested_filename = "browserbase.txt"
+
+    async def save_as(self, target):
+        Path(target).write_bytes(b"browserbase-download")
+
+
+class _DownloadEvent:
+    def __init__(self):
+        async def value():
+            return _FakeDownload()
+        self.value = value()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _DownloadPage:
+    url = "https://example.com/downloads"
+
+    def expect_download(self, **_kwargs):
+        return _DownloadEvent()
+
+
+class _DownloadLocator:
+    async def click(self, **_kwargs):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_browserbase_download_uses_same_quarantine_contract(browserbase_env: Path):
+    body = await browserbase_executor._download_to_quarantine(
+        _DownloadPage(),
+        _DownloadLocator(),
+        root=browserbase_env,
+        cinema_session_id="browserbase-download-session",
+        ref_prefix="browserbase",
+    )
+    assert body["ok"] is True
+    assert body["quarantined"] is True
+    assert body["auto_executed"] is False
+    assert body["download_bytes"] == len(b"browserbase-download")
+    assert body["artifact_ref"].startswith("browserbase://download/")
+    assert len(body["download_sha256"]) == 64

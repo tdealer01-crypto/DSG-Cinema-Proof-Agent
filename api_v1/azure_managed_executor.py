@@ -127,6 +127,13 @@ async def _perform_action(cinema_session_id: str, payload: dict[str, Any]) -> tu
             "artifact_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
         }
 
+    if kind == "browser.download":
+        locator = await browserbase_executor._resolve_locator(page, params)
+        return 200, await browserbase_executor._download_to_quarantine(
+            page, locator, root=azure_local_browser._root(), cinema_session_id=cinema_session_id,
+            ref_prefix="azure-browser",
+        )
+
     if kind == "pointer.move":
         await page.mouse.move(float(params.get("x", 0)), float(params.get("y", 0)))
         return 200, {"ok": True, "url": page.url}
