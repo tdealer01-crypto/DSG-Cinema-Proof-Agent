@@ -1,0 +1,205 @@
+name: Verify ChatGPT Remote Browser Production E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-chatgpt-remote-actions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CINEMA_BASE_URL: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify pairing-authenticated ChatGPT Remote Browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          api_key=''
+          pairing_token=''
+          session_token=''
+          cleanup() {
+            set +e
+            if [[ -n "$session_token" && -n "$pairing_token" ]]; then
+              curl -sS -X POST "$CINEMA_BASE_URL/chatgpt-actions/remote-browser/disconnect" \
+                -H "Authorization: Bearer $pairing_token" -H 'Content-Type: application/json' \
+                --data "$(jq -nc --arg t "$session_token" '{session_token:$t}')" >/dev/null
+            fi
+            if [[ -n "$api_key" ]]; then
+              curl -sS -X POST "$CINEMA_BASE_URL/remote-browser/disable" \
+                -H "X-DSG-API-Key: $api_key" >/dev/null
+            fi
+            if [[ -n "$api_key" && -n "$pairing_token" ]]; then
+              curl -sS -X POST "$CINEMA_BASE_URL/remote-browser/agent-pair/revoke" \
+                -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+                --data "$(jq -nc --arg t "$pairing_token" '{pairing_token:$t}')" >/dev/null
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+
+          activation_id="chatgpt-rest-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          http=$(curl -sS -o "$work/activate.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/billing/activate" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg id "$activation_id" '{channel:"chatgpt_remote_actions_e2e",activation_id:$id,display_name:"ChatGPT Remote Browser Production E2E"}')")
+          [[ "$http" == "200" || "$http" == "201" ]]
+          api_key=$(jq -r '.api_key // empty' "$work/activate.json")
+          account_id=$(jq -r '.account.account_id // empty' "$work/activate.json")
+          [[ -n "$api_key" && -n "$account_id" ]]
+          echo "::add-mask::$api_key"
+
+          origin="$CINEMA_BASE_URL"
+          host="${CINEMA_BASE_URL#https://}"
+          host="${host%%/*}"
+          [[ -n "$host" ]]
+          jq -n --arg h "$host" --arg o "$origin" '{
+            title:"ChatGPT REST pairing production E2E",
+            agent_identity:"chatgpt-rest-production-e2e",
+            channel:"mcp",
+            steps:[{
+              step_id:"chatgpt-rest-smoke",
+              action:"browser_workflow",
+              target:$h,
+              parameters:{browser_allowed_origins:$o},
+              requires_evidence:true
+            }]
+          }' > "$work/plan.json"
+
+          http=$(curl -sS -o "$work/plan-created.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/api/v1/plans" \
+            -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+            --data-binary @"$work/plan.json")
+          [[ "$http" == "201" ]]
+          plan_id=$(jq -r '.plan_id // empty' "$work/plan-created.json")
+          plan_hash=$(jq -r '.plan_hash // empty' "$work/plan-created.json")
+          [[ -n "$plan_id" && ${#plan_hash} -eq 64 ]]
+
+          http=$(curl -sS -o "$work/approved.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/api/v1/plans/$plan_id/approve" \
+            -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg h "$plan_hash" '{approver:"chatgpt-rest-production-e2e",plan_hash:$h,approval_note:"Approved harmless ChatGPT Remote Browser production E2E"}')")
+          [[ "$http" == "200" ]]
+          [[ "$(jq -r '.status' "$work/approved.json")" == "APPROVED" ]]
+
+          http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/remote-browser/enable" \
+            -H "X-DSG-API-Key: $api_key")
+          [[ "$http" == "200" ]]
+          jq -e '.remote_enabled == true' "$work/enabled.json" >/dev/null
+
+          http=$(curl -sS -o "$work/pair.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/remote-browser/agent-pair" \
+            -H "X-DSG-API-Key: $api_key" -H 'Content-Type: application/json' \
+            --data '{"agent_name":"chatgpt-rest-production-e2e","ttl_seconds":600}')
+          [[ "$http" == "201" ]]
+          pairing_token=$(jq -r '.pairing_token // empty' "$work/pair.json")
+          [[ -n "$pairing_token" ]]
+          echo "::add-mask::$pairing_token"
+
+          http=$(curl -sS -o "$work/status.json" -w '%{http_code}' \
+            "$CINEMA_BASE_URL/chatgpt-actions/remote-browser/status" \
+            -H "Authorization: Bearer $pairing_token")
+          [[ "$http" == "200" ]]
+          jq -e '.remote_enabled == true' "$work/status.json" >/dev/null
+
+          http=$(curl -sS -o "$work/connect.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/chatgpt-actions/remote-browser/connect" \
+            -H "Authorization: Bearer $pairing_token" -H 'Content-Type: application/json' \
+            --data '{}')
+          [[ "$http" == "200" ]]
+          session_token=$(jq -r '.session_token // empty' "$work/connect.json")
+          [[ -n "$session_token" ]]
+          echo "::add-mask::$session_token"
+          jq -e '.binding_context_reused == true' "$work/connect.json" >/dev/null
+
+          rest_action() {
+            local kind="$1" controller="$2" params_json="$3" output="$4"
+            curl -sS -o "$output" -w '%{http_code}' \
+              -X POST "$CINEMA_BASE_URL/chatgpt-actions/remote-browser/action" \
+              -H "Authorization: Bearer $pairing_token" -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg t "$session_token" --arg k "$kind" --arg c "$controller" --argjson p "$params_json" '{session_token:$t,kind:$k,controller:$c,parameters:$p}')"
+          }
+
+          smoke_url="$CINEMA_BASE_URL/remote-browser/smoke"
+          http=$(rest_action browser.navigate agent_executor "$(jq -nc --arg u "$smoke_url" '{url:$u}')" "$work/action.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true and .response.provider == "azure_container_apps"' "$work/action.json" >/dev/null
+
+          http=$(rest_action browser.click agent_executor '{"selector":"#message"}' "$work/action.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true' "$work/action.json" >/dev/null
+
+          http=$(rest_action keyboard.type agent_executor '{"text":"CHATGPT-PAIRING-OK"}' "$work/action.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true' "$work/action.json" >/dev/null
+
+          http=$(rest_action keyboard.press agent_executor '{"key":"Tab"}' "$work/action.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true' "$work/action.json" >/dev/null
+
+          http=$(rest_action browser.scroll agent_executor '{"delta_y":250}' "$work/action.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true' "$work/action.json" >/dev/null
+
+          http=$(rest_action pointer.move agent_executor '{"x":20,"y":20}' "$work/action.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true' "$work/action.json" >/dev/null
+
+          http=$(rest_action browser.click agent_executor '{"selector":"#apply"}' "$work/action.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true' "$work/action.json" >/dev/null
+
+          http=$(rest_action browser.extract agent_verifier '{}' "$work/extract.json")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true and .response.title == "DSG Remote Browser Smoke"' "$work/extract.json" >/dev/null
+          jq -e '.response.controls[] | select(.id == "status") | .text == "applied:CHATGPT-PAIRING-OK"' "$work/extract.json" >/dev/null
+          provider=$(jq -r '.response.provider // empty' "$work/extract.json")
+          evidence_hash=$(jq -r '.evidence_hash // empty' "$work/extract.json")
+          [[ "$provider" == "azure_container_apps" && ${#evidence_hash} -eq 64 ]]
+
+          http=$(rest_action browser.navigate agent_executor '{"url":"https://example.com"}' "$work/block.json")
+          [[ "$http" == "403" ]]
+          jq -e '.error == "BROWSER_ORIGIN_BLOCKED" and .status_code == 403' "$work/block.json" >/dev/null
+
+          http=$(curl -sS -o "$work/disconnect.json" -w '%{http_code}' \
+            -X POST "$CINEMA_BASE_URL/chatgpt-actions/remote-browser/disconnect" \
+            -H "Authorization: Bearer $pairing_token" -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg t "$session_token" '{session_token:$t}')")
+          [[ "$http" == "200" ]]
+          jq -e '.ok == true and .remote_enabled == false' "$work/disconnect.json" >/dev/null
+          session_token=''
+
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg plan_hash "$plan_hash" \
+            --arg account_hash "$(printf '%s' "$account_id" | sha256sum | cut -d' ' -f1)" \
+            --arg provider "$provider" \
+            --arg evidence_hash "$evidence_hash" \
+            '{
+              status:"PASS",
+              commit:$commit,
+              provider:$provider,
+              pairing_bearer_authenticated:true,
+              approved_binding_reused:true,
+              actions_verified:["browser.navigate","browser.click","keyboard.type","keyboard.press","browser.scroll","pointer.move","browser.extract"],
+              out_of_origin_blocked:true,
+              master_key_exposed_to_agent:false,
+              plan_hash:$plan_hash,
+              account_sha256:$account_hash,
+              extract_evidence_hash:$evidence_hash
+            }' > chatgpt-remote-actions-production-e2e.json
+          echo 'ChatGPT Remote Browser production E2E: PASS'
+
+      - name: Upload non-secret ChatGPT Remote Browser evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-remote-actions-production-e2e-${{ github.sha }}
+          path: chatgpt-remote-actions-production-e2e.json
+          if-no-files-found: error
+          retention-days: 30
