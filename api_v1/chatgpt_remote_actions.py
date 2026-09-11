@@ -17,7 +17,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
-from . import remote_browser, remote_mcp
+from . import agent_pairing, remote_browser, remote_mcp
 from .models import Scalar, Strict
 
 router = APIRouter(prefix="/chatgpt-actions/remote-browser", tags=["chatgpt-actions"])
@@ -71,10 +71,15 @@ async def _invoke(
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": arguments},
     }
+    supplied_key = _authorization_key(x_dsg_api_key, authorization)
+    pairing = agent_pairing.resolve_pairing(supplied_key) if supplied_key else None
+    api_key = pairing.api_key if pairing is not None else supplied_key
+    agent_name = pairing.agent_name if pairing is not None else None
     response = await remote_mcp.handle_message(
         message,
-        _authorization_key(x_dsg_api_key, authorization),
+        api_key,
         public_origin=_public_origin(request),
+        agent_name=agent_name,
     )
 
     try:

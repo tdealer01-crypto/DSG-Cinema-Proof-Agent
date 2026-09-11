@@ -12,6 +12,7 @@ servers:
   - url: https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io
 
 security:
+  - PairingBearer: []
   - DSGApiKey: []
 
 paths:
@@ -33,14 +34,13 @@ paths:
   /chatgpt-actions/remote-browser/connect:
     post:
       operationId: cinemaRemoteAgentConnect
-      summary: Bind an approved plan step to Cinema managed Browserbase
+      summary: Bind or reconnect to the approved Cinema shared browser
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [plan_id, agent_identity, step_id]
               properties:
                 plan_id:
                   type: string
@@ -69,7 +69,7 @@ paths:
         "409":
           description: Remote not enabled or approved-plan conflict
         "503":
-          description: Managed Browserbase dependency unavailable
+          description: Managed browser dependency unavailable
 
   /chatgpt-actions/remote-browser/action:
     post:
@@ -162,6 +162,11 @@ paths:
 
 components:
   securitySchemes:
+    PairingBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: DSG short-lived pairing token
+      description: Short-lived dsg_pair_* token created by Cinema Connect Agent. Preferred for ChatGPT/agent use.
     DSGApiKey:
       type: apiKey
       in: header

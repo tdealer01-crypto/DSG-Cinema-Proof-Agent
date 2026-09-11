@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,12 +15,19 @@ from api_v1 import chatgpt_remote_actions, remote_mcp
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     captured: list[dict[str, Any]] = []
 
-    async def fake_handle_message(message: dict, api_key: str | None, *, public_origin: str | None = None):
+    async def fake_handle_message(
+        message: dict,
+        api_key: str | None,
+        *,
+        public_origin: str | None = None,
+        agent_name: str | None = None,
+    ):
         captured.append(
             {
                 "message": message,
                 "api_key": api_key,
                 "public_origin": public_origin,
+                "agent_name": agent_name,
             }
         )
         return JSONResponse(
@@ -62,6 +70,33 @@ def test_status_requires_no_nested_jsonrpc_params_from_custom_action(client: Tes
         "method": "tools/call",
         "params": {"name": "remote_status", "arguments": {}},
     }
+
+
+def test_pairing_bearer_is_resolved_before_canonical_handler(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    pairing_token = "dsg_pair_" + "x" * 40
+    monkeypatch.setattr(
+        chatgpt_remote_actions.agent_pairing,
+        "resolve_pairing",
+        lambda token: SimpleNamespace(
+            api_key="dsg_master_internal",
+            agent_name="chatgpt-paired-agent",
+        )
+        if token == pairing_token
+        else None,
+    )
+
+    response = client.get(
+        "/chatgpt-actions/remote-browser/status",
+        headers={"Authorization": f"Bearer {pairing_token}"},
+    )
+
+    assert response.status_code == 200
+    call = client.app.state.captured[-1]
+    assert call["api_key"] == "dsg_master_internal"
+    assert call["agent_name"] == "chatgpt-paired-agent"
+    assert pairing_token not in str(call["message"])
 
 
 def test_connect_uses_top_level_custom_action_fields(client: TestClient):
@@ -121,7 +156,13 @@ def test_disconnect_is_top_level_session_token(client: TestClient):
 
 
 def test_mcp_tool_error_maps_back_to_rest_status(monkeypatch: pytest.MonkeyPatch):
-    async def fake_handle_message(message: dict, api_key: str | None, *, public_origin: str | None = None):
+    async def fake_handle_message(
+        message: dict,
+        api_key: str | None,
+        *,
+        public_origin: str | None = None,
+        agent_name: str | None = None,
+    ):
         return JSONResponse(
             content={
                 "jsonrpc": "2.0",
