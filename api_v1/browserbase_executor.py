@@ -39,7 +39,8 @@ _MUTATION_LOCKS: dict[str, asyncio.Lock] = {}
 _PLAYWRIGHT = None
 
 _READ_ONLY_ACTIONS = {"browser.extract", "browser.screenshot"}
-_UNSUPPORTED_ACTIONS = {"browser.workflow", "browser.download"}
+_UNSUPPORTED_ACTIONS = {"browser.workflow"}
+MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 
 
 def _root() -> Path:
@@ -409,6 +410,41 @@ async def _sensitive_control(locator) -> bool:
     )
 
 
+async def _download_to_quarantine(page, locator, *, root: Path, cinema_session_id: str, ref_prefix: str) -> dict[str, Any]:
+    download_root = root / "downloads" / hashlib.sha256(cinema_session_id.encode()).hexdigest()
+    download_root.mkdir(parents=True, exist_ok=True)
+    temp = download_root / f"{int(time.time() * 1000)}.part"
+    try:
+        async with page.expect_download(timeout=30000) as pending:
+            await locator.click(timeout=15000)
+        download = await pending.value
+        await download.save_as(str(temp))
+        size = temp.stat().st_size
+        if size > MAX_DOWNLOAD_BYTES:
+            temp.unlink(missing_ok=True)
+            raise HTTPException(status_code=413, detail="browser.download exceeded the 100 MiB quarantine limit")
+        digest = hashlib.sha256(temp.read_bytes()).hexdigest()
+        suggested = Path(str(download.suggested_filename or "download.bin")).name[:160] or "download.bin"
+        suffix = Path(suggested).suffix[:20]
+        final = download_root / f"{digest[:32]}{suffix}"
+        temp.replace(final)
+        return {
+            "ok": True,
+            "url": page.url,
+            "download_sha256": digest,
+            "download_bytes": size,
+            "suggested_filename": suggested,
+            "artifact_ref": f"{ref_prefix}://download/{digest}",
+            "quarantined": True,
+            "auto_executed": False,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        temp.unlink(missing_ok=True)
+        raise HTTPException(status_code=502, detail="browser.download failed") from exc
+
+
 async def _extract(page) -> dict[str, Any]:
     controls = await page.locator(
         "input,textarea,select,button,a,[role=button],[role=checkbox],[role=radio]"
@@ -536,6 +572,12 @@ async def _perform_action(cinema_session_id: str, payload: dict[str, Any]) -> tu
             "url": page.url,
             "artifact_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
         }
+
+    if kind == "browser.download":
+        locator = await _resolve_locator(page, params)
+        return 200, await _download_to_quarantine(
+            page, locator, root=_root(), cinema_session_id=cinema_session_id, ref_prefix="browserbase"
+        )
 
     if kind == "pointer.move":
         await page.mouse.move(float(params.get("x", 0)), float(params.get("y", 0)))

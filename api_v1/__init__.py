@@ -48,6 +48,8 @@ def install(app) -> None:
     # The Live View bridge is provider-neutral at runtime even though the module
     # keeps its historical filename for dashboard compatibility.
     importlib.import_module(f"{__name__}.browserbase_live_ui").install(app)
+    # Harmless same-origin fixture used to prove click/type/upload/download E2E.
+    importlib.import_module(f"{__name__}.remote_browser_smoke").install(app)
     # ChatGPT/MCP-compatible action transport. This is intentionally mounted at
     # /mcp rather than under /api/v1 so remote execution cannot drift the
     # independent verification OpenAPI contract.
