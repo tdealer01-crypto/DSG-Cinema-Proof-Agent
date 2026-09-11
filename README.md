@@ -506,6 +506,25 @@ Exact Plan + Permission + Runtime Gate
 
 ---
 
+## Shared Azure Remote Browser CLI
+
+The canonical browser path is:
+
+```text
+Human / Agent / CLI -> DSG Cinema governance -> Azure shared Chromium -> Evidence
+```
+
+Install the product CLI with:
+
+```bash
+bash scripts/install_dsg_browser.sh
+dsg-browser --help
+```
+
+The CLI reuses the same account-scoped persistent Azure browser that the mobile viewer and approved agents use. Agent mutations remain bound to an approved plan; verifier commands are read-only. See `docs/REMOTE_BROWSER_USAGE.md` for the complete contract, authentication model, mobile shared-session flow, and secret boundaries.
+
+---
+
 ## Deployment and CI
 
 Key workflows:
