@@ -184,31 +184,41 @@ def _azure_view_page(viewer_token: str) -> HTMLResponse:
 <title>DSG Shared Browser</title>
 <style>
 html,body{{margin:0;width:100%;height:100%;background:#111;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}}
-#bar{{height:44px;display:flex;gap:6px;align-items:center;padding:0 8px;background:#1d1d1d;box-sizing:border-box}}
-button{{height:30px;min-width:34px}}#url{{height:30px;flex:1;box-sizing:border-box}}
-#viewport{{height:calc(100% - 44px);display:flex;align-items:flex-start;justify-content:center;background:#222;overflow:hidden}}
-#screen{{display:block;max-width:100%;max-height:100%;outline:none;cursor:default;user-select:none}}
+#bar,#kbdbar{{display:flex;gap:6px;align-items:center;padding:0 8px;background:#1d1d1d;box-sizing:border-box}}
+#bar{{height:44px}}#kbdbar{{height:52px;border-top:1px solid #333}}
+button{{height:32px;min-width:38px;touch-action:manipulation}}
+#url,#kbd{{height:34px;flex:1;box-sizing:border-box;font-size:16px}}
+#viewport{{height:calc(100% - 96px);display:flex;align-items:flex-start;justify-content:center;background:#222;overflow:hidden;touch-action:none}}
+#screen{{display:block;max-width:100%;max-height:100%;outline:none;cursor:default;user-select:none;-webkit-user-drag:none;touch-action:none}}
 </style></head><body>
-<div id="bar"><button data-a="back">←</button><button data-a="forward">→</button><button data-a="reload">↻</button><input id="url" autocomplete="off" spellcheck="false" placeholder="https://"><button id="go">Go</button></div>
+<div id="bar"><button data-a="back">←</button><button data-a="forward">→</button><button data-a="reload">↻</button><input id="url" autocomplete="off" spellcheck="false" inputmode="url" placeholder="https://"><button id="go">Go</button></div>
 <div id="viewport"><img id="screen" tabindex="0" alt="DSG shared browser"></div>
+<div id="kbdbar"><input id="kbd" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="แตะแล้วพิมพ์ข้อความ"><button id="send">Send</button><button data-key="Enter">↵</button><button data-key="Tab">Tab</button><button data-key="Backspace">⌫</button></div>
 <script>
 const token={json.dumps(viewer_token)};
 const screen=document.getElementById('screen');
 const url=document.getElementById('url');
-let busy=false;
+const kbd=document.getElementById('kbd');
 async function act(kind,parameters={{}}){{
   const r=await fetch(`/remote-browser/azure/view/${{token}}/action`,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{kind,parameters}}),cache:'no-store'}});
   if(!r.ok) throw new Error(await r.text());
   const v=await r.json(); if(v.url) url.value=v.url; return v;
 }}
 function refresh(){{screen.src=`/remote-browser/azure/view/${{token}}/snapshot?t=${{Date.now()}}`;}}
+function point(e){{const r=screen.getBoundingClientRect(); if(!r.width||!r.height)return null; return {{x:(e.clientX-r.left)*1280/r.width,y:(e.clientY-r.top)*800/r.height}};}}
 screen.onload=()=>setTimeout(refresh,450); screen.onerror=()=>setTimeout(refresh,1200); refresh();
-screen.addEventListener('click',async e=>{{const r=screen.getBoundingClientRect(); if(!r.width||!r.height)return; const x=(e.clientX-r.left)*1280/r.width; const y=(e.clientY-r.top)*800/r.height; screen.focus(); try{{await act('click',{{x,y}});}}catch(_){{}}}});
+screen.addEventListener('pointerup',async e=>{{const p=point(e); if(!p)return; e.preventDefault(); try{{await act('click',p);}}catch(_){{}}}},{{passive:false}});
 screen.addEventListener('wheel',async e=>{{e.preventDefault(); try{{await act('scroll',{{delta_x:e.deltaX,delta_y:e.deltaY}});}}catch(_){{}}}},{{passive:false}});
-screen.addEventListener('keydown',async e=>{{if(e.ctrlKey||e.metaKey||e.altKey)return; const specials=new Set(['Enter','Tab','Backspace','Delete','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown']); try{{if(specials.has(e.key)){{e.preventDefault();await act('press',{{key:e.key}});}}else if(e.key.length===1){{e.preventDefault();await act('type',{{text:e.key}});}}}}catch(_){{}}}});
+let touchY=null;
+screen.addEventListener('touchstart',e=>{{if(e.touches.length===1)touchY=e.touches[0].clientY;}},{{passive:true}});
+screen.addEventListener('touchend',async e=>{{if(touchY===null||!e.changedTouches.length)return; const dy=touchY-e.changedTouches[0].clientY; touchY=null; if(Math.abs(dy)>28){{try{{await act('scroll',{{delta_x:0,delta_y:dy*4}});}}catch(_){{}}}}}},{{passive:true}});
 document.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>act(b.dataset.a).catch(()=>{{}}));
+document.querySelectorAll('button[data-key]').forEach(b=>b.onclick=()=>act('press',{{key:b.dataset.key}}).catch(()=>{{}}));
 document.getElementById('go').onclick=()=>act('navigate',{{url:url.value}}).catch(()=>{{}});
 url.addEventListener('keydown',e=>{{if(e.key==='Enter'){{e.preventDefault();act('navigate',{{url:url.value}}).catch(()=>{{}});}}}});
+async function sendText(){{const text=kbd.value;if(!text)return; kbd.value=''; try{{await act('type',{{text}});}}catch(_){{kbd.value=text;}}}}
+document.getElementById('send').onclick=sendText;
+kbd.addEventListener('keydown',e=>{{if(e.key==='Enter'){{e.preventDefault();sendText();}}}});
 </script></body></html>"""
     return HTMLResponse(
         page,
