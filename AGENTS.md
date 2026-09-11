@@ -111,3 +111,11 @@ State what you verified and how. "Tests pass" means you ran them; "deployed"
 means you probed the endpoint afterwards. If part of a task is blocked, finish
 everything else and say exactly what you left and why — scaling the work down is
 the owner's call.
+
+## Remote Browser canonical path
+
+Remote Browser canonical path is `Chat/Agent/CLI -> DSG Cinema -> Azure shared Chromium -> Evidence`.
+
+Before browser work, read `docs/REMOTE_BROWSER_USAGE.md`. Use `scripts/dsg_browser.py` / installed command `dsg-browser` as the standard CLI surface. Reuse the account-scoped persistent Azure browser; do not create a second browser stack.
+
+Human viewer actions and approved agents may share the same browser profile/session. Agent mutations remain plan-bound. Approval is once per task, not once per click; re-approval is required only when scope expands into a high-risk boundary. Passwords, OTP/MFA, passkeys and secrets must not be typed automatically as plaintext. Downloads remain quarantined and must never auto-execute.
