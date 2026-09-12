@@ -188,8 +188,8 @@ async def _reset_engine() -> None:
 
 async def _context_alive(context: Any) -> bool:
     try:
-        browser = context.browser
-        if browser is None or not browser.is_connected():
+        browser = getattr(context, "browser", None)
+        if browser is not None and not browser.is_connected():
             return False
         pages = context.pages
         if pages:
