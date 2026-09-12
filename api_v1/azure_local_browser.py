@@ -148,17 +148,74 @@ async def _ensure_engine():
     return _BROWSER
 
 
+def _recoverable_transport_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "handler is closed",
+            "transport closed",
+            "connection closed",
+            "browser has been closed",
+            "context has been closed",
+            "target page, context or browser has been closed",
+        )
+    )
+
+
+async def _reset_engine() -> None:
+    global _PLAYWRIGHT, _BROWSER
+    contexts = list(_CONTEXTS.values())
+    _CONTEXTS.clear()
+    for context in contexts:
+        try:
+            await context.close()
+        except Exception:
+            pass
+    browser, _BROWSER = _BROWSER, None
+    if browser is not None:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+    playwright, _PLAYWRIGHT = _PLAYWRIGHT, None
+    if playwright is not None:
+        try:
+            await playwright.stop()
+        except Exception:
+            pass
+
+
+async def _context_alive(context: Any) -> bool:
+    try:
+        browser = getattr(context, "browser", None)
+        if browser is not None and not browser.is_connected():
+            return False
+        pages = context.pages
+        if pages:
+            await pages[-1].title()
+        return True
+    except Exception as exc:
+        if _recoverable_transport_error(exc):
+            return False
+        raise
+
+
 async def _context(account_hash: str, *, create: bool = True):
     existing = _CONTEXTS.get(account_hash)
     if existing is not None:
-        return existing
+        if await _context_alive(existing):
+            return existing
+        await _reset_engine()
     if not create:
         return None
     lock = _LOCKS.setdefault(account_hash, asyncio.Lock())
     async with lock:
         existing = _CONTEXTS.get(account_hash)
         if existing is not None:
-            return existing
+            if await _context_alive(existing):
+                return existing
+            await _reset_engine()
         browser = await _ensure_engine()
         state_path = _storage_state_path(account_hash)
         kwargs: dict[str, Any] = {"viewport": VIEWPORT}

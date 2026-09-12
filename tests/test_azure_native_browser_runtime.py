@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from api_v1 import azure_local_browser, browserbase_executor
+from api_v1 import azure_local_browser, browserbase_executor, remote_browser
 
 
 class FakeMouse:
@@ -283,3 +283,57 @@ async def test_engine_reuses_connected_browser_and_reports_launch_failure(monkey
         await azure_local_browser._ensure_engine()
     assert exc.value.status_code == 503
     assert exc.value.detail["error"] == "AZURE_CHROMIUM_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_stale_playwright_transport_is_recreated(monkeypatch, tmp_path):
+    monkeypatch.setenv("DSG_BROWSER_PROVIDER", "azure_local")
+    monkeypatch.setattr(remote_browser, "_ensure_store", lambda: tmp_path)
+
+    class DeadPage:
+        async def title(self):
+            raise RuntimeError("unable to perform operation on <WriteUnixTransport closed=True>; the handler is closed")
+
+    class DeadBrowser:
+        def is_connected(self):
+            return True
+        async def close(self):
+            return None
+
+    class DeadContext:
+        browser = DeadBrowser()
+        pages = [DeadPage()]
+        async def close(self):
+            return None
+
+    class DeadPlaywright:
+        async def stop(self):
+            return None
+
+    account_hash = "a" * 64
+    azure_local_browser._CONTEXTS.clear()
+    azure_local_browser._CONTEXTS[account_hash] = DeadContext()
+    azure_local_browser._BROWSER = DeadBrowser()
+    azure_local_browser._PLAYWRIGHT = DeadPlaywright()
+
+    class FreshBrowser:
+        async def new_context(self, **kwargs):
+            return fresh
+    marker = FreshBrowser()
+    async def fake_ensure_engine():
+        return marker
+    monkeypatch.setattr(azure_local_browser, "_ensure_engine", fake_ensure_engine)
+
+    class FreshContext:
+        browser = None
+        def __init__(self):
+            self.pages = []
+        async def new_page(self):
+            page = FakePage()
+            self.pages.append(page)
+            return page
+    fresh = FreshContext()
+
+    recovered = await azure_local_browser._context(account_hash)
+    assert recovered is fresh
+    assert azure_local_browser._CONTEXTS[account_hash] is fresh
