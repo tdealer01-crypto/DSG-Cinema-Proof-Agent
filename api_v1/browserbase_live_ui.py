@@ -138,7 +138,7 @@ async def live_frame(
             "connected": True,
             "browser_session_id": live.get("browser_session_id"),
             "browserbase_session_id": live.get("browserbase_session_id"),
-            "embed_url": f"/remote-browser/browserbase/embed/{viewer}",
+            "embed_url": f"/remote-browser/azure/view/{viewer}",
             "shared_profile": True,
             "context_persistent": True,
             "continuity": live.get("continuity"),
@@ -233,6 +233,14 @@ kbd.addEventListener('keydown',e=>{{if(e.key==='Enter'){{e.preventDefault();send
             ),
         },
     )
+
+
+@router.get("/remote-browser/azure/view/{viewer_token}", include_in_schema=False)
+async def azure_live_view(viewer_token: str) -> HTMLResponse:
+    viewer = _load_viewer(viewer_token)
+    if viewer.get("provider") != azure_local_browser.PROVIDER or not viewer.get("account_hash"):
+        raise HTTPException(status_code=404, detail="Azure shared browser viewer is unavailable")
+    return _azure_view_page(viewer_token)
 
 
 @router.get("/remote-browser/browserbase/embed/{viewer_token}", include_in_schema=False)
