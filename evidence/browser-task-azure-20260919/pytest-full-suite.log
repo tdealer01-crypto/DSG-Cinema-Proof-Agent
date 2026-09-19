@@ -1,0 +1,46 @@
+........................................................................ [  9%]
+........................................................................ [ 18%]
+........................................................................ [ 28%]
+........................................................................ [ 37%]
+........................................................................ [ 46%]
+........................................................................ [ 56%]
+........................................................................ [ 65%]
+........................................................................ [ 74%]
+........................................................................ [ 84%]
+........................................................................ [ 93%]
+...................................................                      [100%]
+=============================== warnings summary ===============================
+../../../../../../../root/dsg-cinema-task-venv/lib/python3.13/site-packages/starlette/testclient.py:45
+  /root/dsg-cinema-task-venv/lib/python3.13/site-packages/starlette/testclient.py:45: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_deploy_z3_azure_rest.py::test_deployment_reuses_solver_secret_in_container_and_output
+tests/test_deploy_z3_azure_rest.py::test_deployment_reuses_solver_secret_in_container_and_output
+tests/test_deploy_z3_azure_rest.py::test_deployment_reuses_solver_secret_in_container_and_output
+tests/test_deploy_z3_azure_rest.py::test_deployment_reuses_solver_secret_in_container_and_output
+tests/test_deploy_z3_azure_rest.py::test_deployment_reuses_solver_secret_in_container_and_output
+tests/test_deploy_z3_azure_rest.py::test_container_creation_fails_closed_on_azure_error
+tests/test_deploy_z3_azure_rest.py::test_container_creation_fails_closed_on_azure_error
+tests/test_deploy_z3_azure_rest.py::test_health_check_fails_closed_on_transport_error
+  /data/data/com.termux/files/home/worktrees/cinema-browser-task-20260919/deploy_z3_azure_rest.py:48: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ts = datetime.utcnow().strftime("%H:%M:%S")
+
+tests/test_deploy_z3_azure_rest.py::test_deployment_reuses_solver_secret_in_container_and_output
+  /data/data/com.termux/files/home/worktrees/cinema-browser-task-20260919/deploy_z3_azure_rest.py:391: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ║ Deployment date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'):45} ║
+
+tests/test_sentry_integration.py::TestSentryCinemaIntegration::test_capture_cinema_error_sets_context
+  /data/data/com.termux/files/home/worktrees/cinema-browser-task-20260919/sentry_config.py:89: DeprecationWarning: sentry_sdk.push_scope is deprecated and will be removed in the next major version. Please consult our migration guide to learn how to migrate to the new API: https://docs.sentry.io/platforms/python/migration/1.x-to-2.x#scope-pushing
+    with sentry_sdk.push_scope() as scope:
+
+tests/test_sentry_integration.py::TestSentryCinemaIntegration::test_capture_z3_performance_marks_slow_operations
+tests/test_sentry_integration.py::TestSentryCinemaIntegration::test_capture_z3_performance_skips_fast_operations
+  /data/data/com.termux/files/home/worktrees/cinema-browser-task-20260919/sentry_config.py:100: DeprecationWarning: sentry_sdk.push_scope is deprecated and will be removed in the next major version. Please consult our migration guide to learn how to migrate to the new API: https://docs.sentry.io/platforms/python/migration/1.x-to-2.x#scope-pushing
+    with sentry_sdk.push_scope() as scope:
+
+tests/test_sentry_integration.py::TestSentryPerformanceTracker::test_performance_tracker_warns_on_slow_operations
+  /data/data/com.termux/files/home/worktrees/cinema-browser-task-20260919/sentry_config.py:150: DeprecationWarning: sentry_sdk.push_scope is deprecated and will be removed in the next major version. Please consult our migration guide to learn how to migrate to the new API: https://docs.sentry.io/platforms/python/migration/1.x-to-2.x#scope-pushing
+    with sentry_sdk.push_scope() as scope:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+771 passed, 14 warnings in 63.46s (0:01:03)

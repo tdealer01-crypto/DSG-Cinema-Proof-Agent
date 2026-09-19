@@ -134,3 +134,7 @@ Re-approval is required when scope expands into a high-risk boundary such as pay
 - No direct model-to-browser secret injection.
 - No automatic execution of downloaded files.
 - No second browser stack unless the canonical provider is unavailable and an explicit architecture change is approved.
+
+## Verified task loop
+
+Use `dsg-browser context --goal "..."` to give the connected agent current page context, then `dsg-browser task task.json --output evidence/task-1` to execute and verify its bounded proposal through the approved session. Open `report.html` in that output directory for PASS / FAILED / NEED_USER and evidence. See [REMOTE_BROWSER_TASKS.md](REMOTE_BROWSER_TASKS.md) for the schema, resume behavior, real Azure acceptance command and proof limits.

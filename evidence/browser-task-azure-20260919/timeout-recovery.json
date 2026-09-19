@@ -1,0 +1,837 @@
+{
+  "cursor": 3,
+  "events": [
+    {
+      "context": {
+        "authority": "page_data_only",
+        "controls": [
+          {
+            "aria_label": "Smoke message",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#message",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": ""
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#apply",
+            "sensitive": false,
+            "tag": "button",
+            "text": "Apply",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "idle",
+            "type": "button"
+          },
+          {
+            "aria_label": "Smoke upload",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#upload",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": "file"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#upload-status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "no-file",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#download",
+            "sensitive": false,
+            "tag": "a",
+            "text": "Download smoke file",
+            "type": ""
+          }
+        ],
+        "limitations": [
+          "Main document controls only; no raw DOM, field values, frames or network proof.",
+          "A page text assertion proves the observed UI state only."
+        ],
+        "observation_id": "7b45501175704d691aef63502190d929449136136cdc00f89585a78b251a18ad",
+        "observed_at": 1789810133.6593819,
+        "page_purpose_hint": "form",
+        "provider_evidence": {
+          "event_id": "evt_42f521d649e0427bbcaa94550439eb59",
+          "evidence_hash": "7dbcf11e120624739335fea6cc204b8ddd692dedca6f5972c1fae8417bab0a84",
+          "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+          "response_sha256": "d6f640a93267371d1a80cf257fc376fb29b4de4d5e17c06d2ca9f20ac5bb3d7c"
+        },
+        "purpose_is_inference": true,
+        "truncated": false,
+        "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke",
+        "user_goal": "Azure synthetic form/input/upload verification"
+      },
+      "hash": "07351f17244ae13cd2bced85b39a022ee4c69d8e39d643c09581b7302c6d34ec",
+      "index": 0,
+      "kind": "OBSERVATION",
+      "previous_hash": null,
+      "time": 1789810133.6595774
+    },
+    {
+      "action_kind": "browser.navigate",
+      "hash": "046b9369b3039c54457806e743959f416f3a92e7870a4496bedcad9c8a47e735",
+      "index": 1,
+      "kind": "ACTION_INTENT",
+      "observation_id": "7b45501175704d691aef63502190d929449136136cdc00f89585a78b251a18ad",
+      "parameters_hash": "7433da4ed97476787114af1c2c1eb3b4edf794b5d337736965b2f480eca98c0d",
+      "previous_hash": "07351f17244ae13cd2bced85b39a022ee4c69d8e39d643c09581b7302c6d34ec",
+      "step_id": "navigate",
+      "time": 1789810133.6876743
+    },
+    {
+      "hash": "c9f90d6d42438cf4bae0fb690df396cb33e7506a7a7beb2e36ebaf1fe1309531",
+      "index": 2,
+      "kind": "ACTION_RECEIPT",
+      "previous_hash": "046b9369b3039c54457806e743959f416f3a92e7870a4496bedcad9c8a47e735",
+      "receipt": {
+        "event_id": "evt_f51e2e25c2d84023a8892a7d0e95fb3e",
+        "evidence_hash": "99ba7ee83090dc09a72b71f9e9c6dd7b1a9cc76d6fb93e61965a0d1d1b2184c0",
+        "ok": true,
+        "remote_status": 200,
+        "response_sha256": "4c866db1458cfebdd4e13706ed1d5b66416ea7199a392ff7b6fdecc1d87db04d"
+      },
+      "step_id": "navigate",
+      "time": 1789810135.2787077
+    },
+    {
+      "context": {
+        "authority": "page_data_only",
+        "controls": [
+          {
+            "aria_label": "Smoke message",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#message",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": ""
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#apply",
+            "sensitive": false,
+            "tag": "button",
+            "text": "Apply",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "idle",
+            "type": "button"
+          },
+          {
+            "aria_label": "Smoke upload",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#upload",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": "file"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#upload-status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "no-file",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#download",
+            "sensitive": false,
+            "tag": "a",
+            "text": "Download smoke file",
+            "type": ""
+          }
+        ],
+        "limitations": [
+          "Main document controls only; no raw DOM, field values, frames or network proof.",
+          "A page text assertion proves the observed UI state only."
+        ],
+        "observation_id": "2c50ee915fad44c2498ba4570ce64387e2b736ecfc3d60ccdf32bf999c2701dc",
+        "observed_at": 1789810136.8074925,
+        "page_purpose_hint": "form",
+        "provider_evidence": {
+          "event_id": "evt_ff356906b4144ed685eea9bf0e871c5c",
+          "evidence_hash": "ba87d8c614653f3f50bdd625d5a98c128ed0b41bd86b94921dd908291202263b",
+          "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+          "response_sha256": "d6f640a93267371d1a80cf257fc376fb29b4de4d5e17c06d2ca9f20ac5bb3d7c"
+        },
+        "purpose_is_inference": true,
+        "truncated": false,
+        "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke",
+        "user_goal": "Azure synthetic form/input/upload verification"
+      },
+      "hash": "1f050653d569eda39bc52b4666c1766b9e67131c8c483e808767acccca997aa2",
+      "index": 3,
+      "kind": "OBSERVATION",
+      "previous_hash": "c9f90d6d42438cf4bae0fb690df396cb33e7506a7a7beb2e36ebaf1fe1309531",
+      "time": 1789810136.807804
+    },
+    {
+      "assertion_count": 1,
+      "hash": "18691eea02d911b5bafcf58e9a791830ff3fd24131d19c3426e3b604dcafc812",
+      "index": 4,
+      "kind": "STEP_OBSERVATION",
+      "matched": true,
+      "previous_hash": "1f050653d569eda39bc52b4666c1766b9e67131c8c483e808767acccca997aa2",
+      "step_id": "navigate",
+      "time": 1789810136.8767266
+    },
+    {
+      "context": {
+        "authority": "page_data_only",
+        "controls": [
+          {
+            "aria_label": "Smoke message",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#message",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": ""
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#apply",
+            "sensitive": false,
+            "tag": "button",
+            "text": "Apply",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "idle",
+            "type": "button"
+          },
+          {
+            "aria_label": "Smoke upload",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#upload",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": "file"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#upload-status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "no-file",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#download",
+            "sensitive": false,
+            "tag": "a",
+            "text": "Download smoke file",
+            "type": ""
+          }
+        ],
+        "limitations": [
+          "Main document controls only; no raw DOM, field values, frames or network proof.",
+          "A page text assertion proves the observed UI state only."
+        ],
+        "observation_id": "c5585cfd2353245e2f7968b6bf3234295938201a014fc0eba22c0f0faec12df6",
+        "observed_at": 1789810138.3956232,
+        "page_purpose_hint": "form",
+        "provider_evidence": {
+          "event_id": "evt_5340652a7f4f4039b24c28ffb8e11ccf",
+          "evidence_hash": "04c691bbd1c3acef766993d16fa799ea4a57ebe43691408394b7da5df0565e96",
+          "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+          "response_sha256": "d6f640a93267371d1a80cf257fc376fb29b4de4d5e17c06d2ca9f20ac5bb3d7c"
+        },
+        "purpose_is_inference": true,
+        "truncated": false,
+        "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke",
+        "user_goal": "Azure synthetic form/input/upload verification"
+      },
+      "hash": "e21ed9a9d74af522580a481635466b1dfa89ed028d3a9a1d2edee9ac3e246952",
+      "index": 5,
+      "kind": "OBSERVATION",
+      "previous_hash": "18691eea02d911b5bafcf58e9a791830ff3fd24131d19c3426e3b604dcafc812",
+      "time": 1789810138.396019
+    },
+    {
+      "action_kind": "browser.type",
+      "hash": "dcb462107d49336002c38ea55acbde3fde15c4423c605e7ed478d92a3f941c72",
+      "index": 6,
+      "kind": "ACTION_INTENT",
+      "observation_id": "c5585cfd2353245e2f7968b6bf3234295938201a014fc0eba22c0f0faec12df6",
+      "parameters_hash": "c7fae4a327dd69f096e6ec6601f2e8f3fd045c8d44bee09c75e34ac48749002c",
+      "previous_hash": "e21ed9a9d74af522580a481635466b1dfa89ed028d3a9a1d2edee9ac3e246952",
+      "step_id": "type",
+      "time": 1789810138.4193199
+    },
+    {
+      "hash": "8be1ab7431bb5966daac62c1984ba4d97d7217c9a606d403f81b722122786860",
+      "index": 7,
+      "kind": "ACTION_RECEIPT",
+      "previous_hash": "dcb462107d49336002c38ea55acbde3fde15c4423c605e7ed478d92a3f941c72",
+      "receipt": {
+        "event_id": "evt_95789dfb04994456a76f92a23432d4e8",
+        "evidence_hash": "46b1ec5cc5ae04830f174d0f5e2d8ee0c6c6d50e7a24e8eba51f0d5a9cc14217",
+        "ok": true,
+        "remote_status": 200,
+        "response_sha256": "4004b550c70c044f3156195f302d9db3cfd9d34a4a03bc216301f133569c569f"
+      },
+      "step_id": "type",
+      "time": 1789810140.058945
+    },
+    {
+      "context": {
+        "authority": "page_data_only",
+        "controls": [
+          {
+            "aria_label": "Smoke message",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#message",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": ""
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#apply",
+            "sensitive": false,
+            "tag": "button",
+            "text": "Apply",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "idle",
+            "type": "button"
+          },
+          {
+            "aria_label": "Smoke upload",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#upload",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": "file"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#upload-status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "no-file",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#download",
+            "sensitive": false,
+            "tag": "a",
+            "text": "Download smoke file",
+            "type": ""
+          }
+        ],
+        "limitations": [
+          "Main document controls only; no raw DOM, field values, frames or network proof.",
+          "A page text assertion proves the observed UI state only."
+        ],
+        "observation_id": "8a92699ed5e30bbd68edf68cbc5eaca822bb07669a7d3a27603fef7fa5d072a6",
+        "observed_at": 1789810141.5519369,
+        "page_purpose_hint": "form",
+        "provider_evidence": {
+          "event_id": "evt_7fd36ad1d424462d95c6ea8885f0caf8",
+          "evidence_hash": "2b1aded0dfaeb110fccd3e23e587cb5d3cba04e451ae3e5fdf5b777fed43d69c",
+          "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+          "response_sha256": "d6f640a93267371d1a80cf257fc376fb29b4de4d5e17c06d2ca9f20ac5bb3d7c"
+        },
+        "purpose_is_inference": true,
+        "truncated": false,
+        "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke",
+        "user_goal": "Azure synthetic form/input/upload verification"
+      },
+      "hash": "429dfa7b85d176e9d525056edbf99991d2d36979580716455c1998f7d716678f",
+      "index": 8,
+      "kind": "OBSERVATION",
+      "previous_hash": "8be1ab7431bb5966daac62c1984ba4d97d7217c9a606d403f81b722122786860",
+      "time": 1789810141.552811
+    },
+    {
+      "assertion_count": 0,
+      "hash": "8b3128a04fba02b4430a57200138e8d25250ea63fe08025143ee428f199ff4ca",
+      "index": 9,
+      "kind": "STEP_OBSERVATION",
+      "matched": true,
+      "previous_hash": "429dfa7b85d176e9d525056edbf99991d2d36979580716455c1998f7d716678f",
+      "step_id": "type",
+      "time": 1789810141.6255522
+    },
+    {
+      "context": {
+        "authority": "page_data_only",
+        "controls": [
+          {
+            "aria_label": "Smoke message",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#message",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": ""
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#apply",
+            "sensitive": false,
+            "tag": "button",
+            "text": "Apply",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "idle",
+            "type": "button"
+          },
+          {
+            "aria_label": "Smoke upload",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#upload",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": "file"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#upload-status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "no-file",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#download",
+            "sensitive": false,
+            "tag": "a",
+            "text": "Download smoke file",
+            "type": ""
+          }
+        ],
+        "limitations": [
+          "Main document controls only; no raw DOM, field values, frames or network proof.",
+          "A page text assertion proves the observed UI state only."
+        ],
+        "observation_id": "4881263bc4a59c309f300ebcd5f4538f28163711c18c22c740670f1b461a7f5b",
+        "observed_at": 1789810143.330748,
+        "page_purpose_hint": "form",
+        "provider_evidence": {
+          "event_id": "evt_8ee782ac8a284230be5b227f3100b73d",
+          "evidence_hash": "05bed9582831e1d4f4ea5b0f2c17ed2e2d9b679936b97ce408375c5f10569624",
+          "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+          "response_sha256": "d6f640a93267371d1a80cf257fc376fb29b4de4d5e17c06d2ca9f20ac5bb3d7c"
+        },
+        "purpose_is_inference": true,
+        "truncated": false,
+        "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke",
+        "user_goal": "Azure synthetic form/input/upload verification"
+      },
+      "hash": "bf95024404fb851dbdeb7900a07ecee5a736504e0fcef71e84416806d1d0a8ff",
+      "index": 10,
+      "kind": "OBSERVATION",
+      "previous_hash": "8b3128a04fba02b4430a57200138e8d25250ea63fe08025143ee428f199ff4ca",
+      "time": 1789810143.3309262
+    },
+    {
+      "action_kind": "browser.click",
+      "hash": "7ab54e5498896e578702233c2a5ebb6a9904b2bdd8ad48085f389a7c30f65e92",
+      "index": 11,
+      "kind": "ACTION_INTENT",
+      "observation_id": "4881263bc4a59c309f300ebcd5f4538f28163711c18c22c740670f1b461a7f5b",
+      "parameters_hash": "84825422aab9718886c2680288769d04fa15eb03482c8d186b6aa6cb62adfdeb",
+      "previous_hash": "bf95024404fb851dbdeb7900a07ecee5a736504e0fcef71e84416806d1d0a8ff",
+      "step_id": "apply",
+      "time": 1789810143.3593864
+    },
+    {
+      "error_type": "TimeoutError",
+      "hash": "2d199632fdd1351964d424ed6c25ab62b00ce9b37c14788ba211645977253571",
+      "index": 12,
+      "kind": "TRANSPORT_UNCERTAIN",
+      "previous_hash": "7ab54e5498896e578702233c2a5ebb6a9904b2bdd8ad48085f389a7c30f65e92",
+      "step_id": "apply",
+      "time": 1789810144.862103
+    },
+    {
+      "context": {
+        "authority": "page_data_only",
+        "controls": [
+          {
+            "aria_label": "Smoke message",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#message",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": ""
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#apply",
+            "sensitive": false,
+            "tag": "button",
+            "text": "Apply",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "applied:DSG-AZURE-VERIFIED-6f76d978",
+            "type": "button"
+          },
+          {
+            "aria_label": "Smoke upload",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#upload",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": "file"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#upload-status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "no-file",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#download",
+            "sensitive": false,
+            "tag": "a",
+            "text": "Download smoke file",
+            "type": ""
+          }
+        ],
+        "limitations": [
+          "Main document controls only; no raw DOM, field values, frames or network proof.",
+          "A page text assertion proves the observed UI state only."
+        ],
+        "observation_id": "33deadb3bae672100584ed11b0996e77efc4d0e9f54127065a83866cf236afbf",
+        "observed_at": 1789810146.3988633,
+        "page_purpose_hint": "form",
+        "provider_evidence": {
+          "event_id": "evt_74daf6791f3b47ecb6afaae91f24f2ec",
+          "evidence_hash": "fc2e6f0b6f64889c54c6391f36f4b52380a842cf014b87421608a5d175b18a1f",
+          "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+          "response_sha256": "3a3133e3fa32114b7cf82c53bb415e5339c3eb07ad349a0c5cc4cf48bf7fbb4f"
+        },
+        "purpose_is_inference": true,
+        "truncated": false,
+        "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke",
+        "user_goal": "Azure synthetic form/input/upload verification"
+      },
+      "hash": "21bd48a0ae6344ffd4f2347f92c88dc2931e091014cd6b1366e1f98ccd08a0c8",
+      "index": 13,
+      "kind": "OBSERVATION",
+      "previous_hash": "2d199632fdd1351964d424ed6c25ab62b00ce9b37c14788ba211645977253571",
+      "time": 1789810146.399213
+    },
+    {
+      "hash": "cba25574150c0534d50d64765cd8dcb940fb0963918c9b81d956bd0f7c42e88a",
+      "index": 14,
+      "kind": "RECONCILED_WITHOUT_REPLAY",
+      "previous_hash": "21bd48a0ae6344ffd4f2347f92c88dc2931e091014cd6b1366e1f98ccd08a0c8",
+      "step_id": "apply",
+      "time": 1789810146.430965
+    },
+    {
+      "context": {
+        "authority": "page_data_only",
+        "controls": [
+          {
+            "aria_label": "Smoke message",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#message",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": ""
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#apply",
+            "sensitive": false,
+            "tag": "button",
+            "text": "Apply",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "applied:DSG-AZURE-VERIFIED-6f76d978",
+            "type": "button"
+          },
+          {
+            "aria_label": "Smoke upload",
+            "checked": false,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#upload",
+            "sensitive": false,
+            "tag": "input",
+            "text": "",
+            "type": "file"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": true,
+            "label": "",
+            "required": false,
+            "selector": "#upload-status",
+            "sensitive": false,
+            "tag": "button",
+            "text": "no-file",
+            "type": "button"
+          },
+          {
+            "aria_label": "",
+            "checked": null,
+            "disabled": false,
+            "label": "",
+            "required": false,
+            "selector": "#download",
+            "sensitive": false,
+            "tag": "a",
+            "text": "Download smoke file",
+            "type": ""
+          }
+        ],
+        "limitations": [
+          "Main document controls only; no raw DOM, field values, frames or network proof.",
+          "A page text assertion proves the observed UI state only."
+        ],
+        "observation_id": "9d7ddd8857036098d94869eff68a570b0bb9962813d95c387a418242458bea84",
+        "observed_at": 1789810147.9912858,
+        "page_purpose_hint": "form",
+        "provider_evidence": {
+          "event_id": "evt_26418411048a48ed9dc2ecf88dc416ba",
+          "evidence_hash": "aa72beda938a69e2e5f24a5cc70d2309a387243d10dacb12a7dddaf0c41cb17c",
+          "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+          "response_sha256": "3a3133e3fa32114b7cf82c53bb415e5339c3eb07ad349a0c5cc4cf48bf7fbb4f"
+        },
+        "purpose_is_inference": true,
+        "truncated": false,
+        "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke",
+        "user_goal": "Azure synthetic form/input/upload verification"
+      },
+      "hash": "52e9b626f34893e33cc813b42a4b593aefb1e09985a895484fd000621a571771",
+      "index": 15,
+      "kind": "OBSERVATION",
+      "previous_hash": "cba25574150c0534d50d64765cd8dcb940fb0963918c9b81d956bd0f7c42e88a",
+      "time": 1789810147.991606
+    },
+    {
+      "assertion_count": 1,
+      "hash": "9c478378f4fbfe95267e6ab1721626c84f022cd50f2cea6409567e477d44e3fc",
+      "index": 16,
+      "kind": "TASK_VERIFICATION",
+      "matched": true,
+      "previous_hash": "52e9b626f34893e33cc813b42a4b593aefb1e09985a895484fd000621a571771",
+      "time": 1789810148.0230548
+    }
+  ],
+  "goal": "Azure synthetic form/input/upload verification",
+  "next_action": "",
+  "not_claimed": [
+    "backend persistence",
+    "independent audit",
+    "immutable storage",
+    "distributed lease",
+    "automatic LLM planning"
+  ],
+  "pending": null,
+  "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+  "proof_scope": "Canonical Cinema action receipts and observed UI assertions.",
+  "reason": "ALL_TASK_ASSERTIONS_MATCHED",
+  "schema": "dsg.browser-task.result.v1",
+  "status": "PASS",
+  "task_hash": "831b90672673a7e7ec48b7b3a3cfb868032362da539cdba9237e20cce5fa0eee"
+}

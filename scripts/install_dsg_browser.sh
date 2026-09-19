@@ -8,6 +8,7 @@ mkdir -p "$TARGET_DIR"
 PYTHON_BIN="$(command -v python3 || true)"
 [[ -n "$PYTHON_BIN" ]] || { echo "BLOCK: python3 is required" >&2; exit 20; }
 install -m 0755 "$SOURCE" "$TARGET"
+install -m 0644 "$ROOT/scripts/browser_task.py" "$TARGET_DIR/browser_task.py"
 python3 - "$TARGET" "$PYTHON_BIN" <<'PYFIX'
 from pathlib import Path
 import sys

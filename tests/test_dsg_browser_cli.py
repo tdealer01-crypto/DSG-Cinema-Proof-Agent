@@ -16,6 +16,12 @@ CLI = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CLI)
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(monkeypatch, tmp_path):
+    # Never consume a developer account credential while testing CLI auth.
+    monkeypatch.setattr(CLI, "DEFAULT_CONFIG", tmp_path / "absent-config.json")
+
+
 def _clear_auth(monkeypatch):
     for name in ("DSG_API_KEY", "DSG_PAIRING_TOKEN", "DSG_BROWSER_CONFIG"):
         monkeypatch.delenv(name, raising=False)
