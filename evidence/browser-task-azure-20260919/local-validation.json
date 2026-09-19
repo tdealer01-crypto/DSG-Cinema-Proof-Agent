@@ -1,0 +1,20 @@
+{
+  "targeted_tests": {
+    "passed": 23,
+    "failed": 0,
+    "command": "python -m pytest -q tests/test_browser_task.py tests/test_dsg_browser_cli.py"
+  },
+  "install_and_task_help": "PASS",
+  "diff_check": "PASS",
+  "azure_browser_source": "real deployed Cinema/Azure provider",
+  "full_repository_regression": {
+    "status": "PASS",
+    "passed": 771,
+    "warnings": 14,
+    "exit_code": 0,
+    "duration_seconds": 63.46,
+    "command": "/root/dsg-cinema-task-venv/bin/python -m pytest -q",
+    "python": "3.13",
+    "environment": "isolated proot Debian venv; repository and benchmark requirements installed"
+  }
+}

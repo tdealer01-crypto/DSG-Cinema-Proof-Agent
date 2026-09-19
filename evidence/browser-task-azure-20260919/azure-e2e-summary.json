@@ -1,0 +1,37 @@
+{
+  "provider": "azure_container_apps",
+  "scope": "Synthetic account on real Azure shared Chromium; UI assertions only",
+  "positive": {
+    "status": "PASS",
+    "steps": 4,
+    "assertions": 2,
+    "events": 22
+  },
+  "screenshot_sha256": "c57fee21f1b0c6b1a212e41818dbe2bd399210294b0fce8d5e726552db6e1aaf",
+  "test_plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+  "test_plan_hash": "4b55cacd36f001d9508b674dc0a77eff1c489e633e0fa7bae36340217bd6952d",
+  "source_sha256": {
+    "browser_task.py": "c9baff00b94dd5a13a5ecb7e9824d96dc59bf4a01e8c352558699233dfeb941e",
+    "dsg_browser.py": "a249225e8810f117ab4900ddb583d7ec89c6a722f0c468899037fb509eb6b5fc",
+    "verify_browser_task_azure.py": "4515b2e368b3a0d297de5620e1e849d380c8d012f52f24a6a9fe84b40662cad2"
+  },
+  "negative": {
+    "status": "FAILED",
+    "reason": "TASK_POSTCONDITION_FAILED"
+  },
+  "need_user": {
+    "status": "NEED_USER",
+    "reason": "TARGET_DISABLED"
+  },
+  "timeout_recovery": {
+    "status": "PASS",
+    "actual_clicks": 1,
+    "replayed_mutations": 0,
+    "fault": "Client exception injected after real Azure click; not a natural provider outage"
+  },
+  "native_scope_gate": {
+    "passed": true,
+    "http_status": 403
+  },
+  "all_cases_passed": true
+}

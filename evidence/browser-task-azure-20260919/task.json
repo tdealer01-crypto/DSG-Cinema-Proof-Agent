@@ -1,0 +1,87 @@
+{
+  "schema": "dsg.browser-task.v1",
+  "goal": "Azure synthetic form/input/upload verification",
+  "plan_id": "plan_01m2wfxdtdcjasb2md0vas",
+  "step_id": "smoke-workflow",
+  "allowed_origins": [
+    "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io"
+  ],
+  "verify_seconds": 2,
+  "budget_seconds": 180,
+  "steps": [
+    {
+      "id": "navigate",
+      "action": {
+        "kind": "browser.navigate",
+        "parameters": {
+          "url": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke"
+        }
+      },
+      "expect": [
+        {
+          "kind": "url",
+          "equals": "https://dsg-cinema-production.nicetree-a005fe99.westus3.azurecontainerapps.io/remote-browser/smoke"
+        }
+      ]
+    },
+    {
+      "id": "type",
+      "action": {
+        "kind": "browser.type",
+        "parameters": {
+          "selector": "#message",
+          "value": "DSG-AZURE-VERIFIED-6f76d978"
+        }
+      }
+    },
+    {
+      "id": "apply",
+      "action": {
+        "kind": "browser.click",
+        "parameters": {
+          "selector": "#apply"
+        }
+      },
+      "expect": [
+        {
+          "kind": "control",
+          "selector": "#status",
+          "field": "text",
+          "equals": "applied:DSG-AZURE-VERIFIED-6f76d978"
+        }
+      ]
+    },
+    {
+      "id": "upload",
+      "action": {
+        "kind": "browser.upload",
+        "parameters": {
+          "selector": "#upload",
+          "file_ref": "artifact://api_v1/remote_browser_smoke_fixture.txt"
+        }
+      },
+      "expect": [
+        {
+          "kind": "control",
+          "selector": "#upload-status",
+          "field": "text",
+          "equals": "uploaded:remote_browser_smoke_fixture.txt"
+        }
+      ]
+    }
+  ],
+  "success": [
+    {
+      "kind": "control",
+      "selector": "#status",
+      "field": "text",
+      "equals": "applied:DSG-AZURE-VERIFIED-6f76d978"
+    },
+    {
+      "kind": "control",
+      "selector": "#upload-status",
+      "field": "text",
+      "equals": "uploaded:remote_browser_smoke_fixture.txt"
+    }
+  ]
+}

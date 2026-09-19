@@ -269,6 +269,34 @@ def cmd_download(args: argparse.Namespace) -> None:
     _print(_action("browser.download", {"selector": args.selector}))
 
 
+def _task_module():
+    import importlib.util
+    path = Path(__file__).resolve().with_name("browser_task.py")
+    spec = importlib.util.spec_from_file_location("dsg_browser_task", path)
+    if spec is None or spec.loader is None:
+        raise BrowserCliError("browser_task.py is missing; reinstall dsg-browser")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def cmd_context(args: argparse.Namespace) -> None:
+    context = _task_module().page_context(
+        _action("browser.extract", {}, controller="agent_verifier"), args.goal)
+    _print(context)
+
+
+def cmd_task(args: argparse.Namespace) -> int:
+    # Reuse this module's canonical transport, authentication and session binding.
+    from types import SimpleNamespace
+    adapter = SimpleNamespace(_action=_action, _load_session=_load_session, _session_path=_session_path)
+    task = _json_file(Path(args.file))
+    result = _task_module().TaskRunner(adapter, args.output).run(task, resume=args.resume)
+    _print({key: result.get(key) for key in ("status", "reason", "next_action", "cursor", "plan_id")})
+    print("report=" + str(Path(args.output).resolve() / "report.html"))
+    return {"PASS": 0, "FAILED": 1, "NEED_USER": 3}[result["status"]]
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dsg-browser", description="DSG governed shared Azure browser CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -293,15 +321,23 @@ def parser() -> argparse.ArgumentParser:
     press = sub.add_parser("press"); press.add_argument("key"); press.set_defaults(func=cmd_press)
     upload = sub.add_parser("upload"); upload.add_argument("selector"); upload.add_argument("file_ref"); upload.set_defaults(func=cmd_upload)
     download = sub.add_parser("download"); download.add_argument("selector"); download.set_defaults(func=cmd_download)
+    context = sub.add_parser("context", help="Read page context for the connected DSG agent")
+    context.add_argument("--goal", required=True)
+    context.set_defaults(func=cmd_context)
+    task = sub.add_parser("task", help="Run/verify an agent proposal through the existing approved Cinema session")
+    task.add_argument("file")
+    task.add_argument("--output", required=True)
+    task.add_argument("--resume", action="store_true")
+    task.set_defaults(func=cmd_task)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
-        args.func(args)
-        return 0
-    except BrowserCliError as exc:
+        result = args.func(args)
+        return result if isinstance(result, int) else 0
+    except (BrowserCliError, ValueError, OSError) as exc:
         print(f"BLOCK: {exc}", file=sys.stderr)
         return 2
 
