@@ -61,3 +61,6 @@ stripe-app/.build/
 
 # Ephemeral Microsoft Foundry agent/session state
 integrations/microsoft_foundry/stripe_fix_agent/.foundry/
+
+# Generated at test-collection time by api_v1/market_ready_bootstrap.py
+market_ready_ui/
