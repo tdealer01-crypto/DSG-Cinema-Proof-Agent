@@ -44,9 +44,15 @@ raise it; do not relax it and move on.
   `LINKED` and `NOT_VERIFIED_NOT_LINKED`. `LINKED_VERIFIED` is
   `stripe.link_state` — a different field in the same `/billing/status`
   response. Conflating them fails CI.
-- **`dsg.pics` resolves but serves no HTTPS.** Every request returns `HTTP 000`
-  (connection failure, not a status code) while the Azure landing returns `200`
-  from the same network. Never point a redirect URL, image, or callback there.
+- **`dsg.pics` / `www.dsg.pics` now serve `HTTP 200`**, hosted on AWS (S3 +
+  CloudFront) via an AppDeploy app (`dsg-one-public-recovery-g35ayy`) — the DSG
+  Spacetime public marketing/docs site, not this repo's Azure landing. Verified
+  by direct `curl` on 2026-09-24; cross-checked against
+  `DSG-Private-Production-Runtime/docs/daily/2026-09-24.md`. This flipped from
+  the previous `HTTP 000` state once already, so re-probe before relying on it
+  instead of trusting this note — and still never point this repo's redirect
+  URLs, images, or callbacks at `dsg.pics`, since it is a different platform
+  this repo does not control.
 - **`stripe-app/stripe-app.json` is generated and gitignored.** Run
   `node scripts/generate-manifest.mjs` with `CINEMA_API_BASE` set before any
   upload. `src/runtime.ts` is committed holding the `__CINEMA_API_BASE__`
