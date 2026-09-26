@@ -192,7 +192,7 @@ Production probe surface for Cinema/Azure readiness and current integration stat
 
 | E2E path | Environment / external boundary | What is actually exercised | Evidence / failure boundary |
 |---|---|---|---|
-| `cinema-e2e-azure.yml` | isolated Azure staging | build Z3 image → deploy Z3 → exact proof → build Cinema → deploy Cinema → health → Cinema→Z3 proof twice/replay | requires exact witness/energy/hashes and `VERIFIED_GLOBAL_OPTIMUM`; failure does not become PASS |
+| `cinema-e2e-azure.yml` | historical/manual Azure staging | build Z3 image → deploy Z3 → exact proof → build Cinema → deploy Cinema → health → Cinema→Z3 proof twice/replay | requires exact witness/energy/hashes and `VERIFIED_GLOBAL_OPTIMUM`; failure does not become PASS |
 | `cinema-browserbase-planbound-production-e2e.yml` | production Cinema + Browserbase | self-activate → create plan → approve → remote enable → connect → navigate → extract → screenshot → out-of-plan block → disconnect | uploads sanitized evidence; requires evidence hashes and a real 403 for out-of-plan navigation |
 | `copilot-cli-full-governed-e2e.yml` | GitHub Copilot CLI + public plugin + authenticated DSG MCP | install plugin → authenticate Copilot → activate DSG → add MCP → create/approve plan → alignment → constraints → execution → evidence → verify → fetch proof | independently re-fetches plan/execution/proof and requires computed truth plus receipt hash verification |
 | `copilot-cli-mcp-auth-e2e.yml` | Copilot CLI + authenticated DSG MCP | plugin install → Copilot auth gate → DSG activation → MCP add → direct `dsg_status` → agent-driven tool call | explicitly reports `ACTION_REQUIRED` when headless Copilot auth is unavailable; no fake PASS |
@@ -204,7 +204,7 @@ Production probe surface for Cinema/Azure readiness and current integration stat
 
 ### Azure isolated E2E specifics
 
-`cinema-e2e-azure.yml` creates per-run secrets, builds isolated images, deploys isolated Container Apps, then proves the solver directly and through Cinema. Its exact-proof assertion includes:
+`cinema-e2e-azure.yml` is retained as a manual historical Azure proof and is no longer triggered by pull requests during the AWS migration. When manually dispatched it creates per-run secrets, builds isolated images, deploys isolated Container Apps, then proves the solver directly and through Cinema. Its exact-proof assertion includes:
 
 ```text
 verified == true
