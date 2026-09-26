@@ -1,0 +1,95 @@
+name: Build DSG Cinema production image on AWS
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/build-aws-cinema.yml"
+      - "Dockerfile.cinema"
+      - "requirements-cinema.txt"
+      - "cinema_main.py"
+      - "api_v1/**"
+      - "revenue/**"
+      - "web/**"
+      - "openapi/**"
+      - "market_ready_payload/**"
+      - "tools/**"
+      - "config/owner-service-accounts.json"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-aws-cinema.yml"
+      - "Dockerfile.cinema"
+      - "requirements-cinema.txt"
+      - "cinema_main.py"
+      - "api_v1/**"
+      - "revenue/**"
+      - "web/**"
+      - "openapi/**"
+      - "market_ready_payload/**"
+      - "tools/**"
+      - "config/owner-service-accounts.json"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dsg-cinema-aws-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Cinema image locally
+        run: docker build -f Dockerfile.cinema -t dsg-cinema:${GITHUB_SHA} .
+      - name: Assert no Claw server in canonical image contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -Rni --exclude-dir=.git -E 'claw-server|browseros-neo-claw' Dockerfile.cinema cinema_main.py api_v1 revenue web openapi market_ready_payload tools
+          echo "CINEMA_NO_CLAW_CONTRACT=PASS"
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AWS_REGION: us-east-1
+      AWS_ROLE_ARN: arn:aws:iam::121205961822:role/dsg-cinema-github-deploy
+      ECR_REPOSITORY: dsg-cinema-prod
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build or reuse immutable image and verify digest
+        shell: bash
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          EXISTING_DIGEST="$(aws ecr describe-images             --repository-name "$ECR_REPOSITORY"             --image-ids imageTag="$GITHUB_SHA"             --query 'imageDetails[0].imageDigest'             --output text 2>/dev/null || true)"
+          if [[ "$EXISTING_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "AWS_CINEMA_IMAGE_REUSE=PASS digest=$EXISTING_DIGEST"
+          else
+            docker build -f Dockerfile.cinema -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
+          DIGEST="$(aws ecr describe-images             --repository-name "$ECR_REPOSITORY"             --image-ids imageTag="$GITHUB_SHA"             --query 'imageDetails[0].imageDigest'             --output text)"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "AWS_CINEMA_ECR_BUILD=PASS source_sha=$GITHUB_SHA digest=$DIGEST"
+      - name: Cost-safe deployment gate
+        run: |
+          echo "AWS_CINEMA_RUNTIME_DEPLOY=BLOCKED_BY_COST_GATE"
+          echo "No EC2/ECS/Fargate/ALB/NAT/App Runner/browser cloud is started by this workflow."
+          echo "Canonical target is BrowserOS capability + Cinema; Claw Server must not be recreated."
