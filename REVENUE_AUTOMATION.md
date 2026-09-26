@@ -144,7 +144,7 @@ without dropping a late plan update from another event stream.
 |---|---|---|
 | `revenue-verify.yml` | PR / push / dispatch | Tests, credential scan, AST check that entitlement is resolved before the solver runs, ledger determinism, report rendering |
 | `revenue-autopilot.yml` | daily 02:15 UTC / dispatch | Probes production, verifies the live chain, files evidence, and fails for any unavailable, malformed, or broken required probe |
-| `deploy-cinema-production.yml` | push to main | Uses a stable configured admin credential when present, records UNAVAILABLE when absent, rejects bad keys, and checks for secret leakage |
+| `deploy-cinema-production.yml` | manual dispatch only (historical Azure proof) | Retained for rollback/history; no longer an automatic production path during AWS migration |
 
 `scripts/revenue_report.py` renders the reconciliation. It reports
 `UNAVAILABLE` for any probe that failed and never estimates a missing number —

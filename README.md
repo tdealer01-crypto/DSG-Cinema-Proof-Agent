@@ -581,3 +581,8 @@ Likewise, possession of a credential is not proof that an action is authorized. 
 ## Repository
 
 https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent
+
+
+## AWS migration production note
+
+The active migration target is AWS. Azure deployment workflows are retained only for historical/manual rollback proof and are not automatic production acceptance. The canonical browser path is **BrowserOS capability + Cinema**, with Claw Server removed. Current production claims require immutable AWS image evidence, current runtime probes, and fresh governed E2E evidence.

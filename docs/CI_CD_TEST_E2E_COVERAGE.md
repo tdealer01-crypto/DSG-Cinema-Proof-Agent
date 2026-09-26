@@ -199,7 +199,7 @@ Production probe surface for Cinema/Azure readiness and current integration stat
 | `copilot-cli-plugin-e2e.yml` | public plugin/client package | plugin installation and plugin-facing execution contract | client artifact evidence |
 | `browserbase-production-smoke.yml` | Browserbase production | provider/session smoke boundary | live provider reachability/surface behavior |
 | `stripe-browserbase-surface-smoke.yml` | Stripe + browser provider surface | UI/browser-facing Stripe surface smoke | does not equal Stripe marketplace approval |
-| `deploy-cinema-production.yml` | production Azure | deploy + production runtime convergence/E2E | deploy run and live probes |
+| `deploy-cinema-production.yml` | historical/manual Azure | rollback/proof only; not current AWS production acceptance | manual deploy run and historical live probes |
 | `deploy-azure-3d-landing.yml` | production Azure static web + Cinema | browser contract + public website release | persisted `.deployment/azure-3d-landing.json` |
 
 ### Azure isolated E2E specifics

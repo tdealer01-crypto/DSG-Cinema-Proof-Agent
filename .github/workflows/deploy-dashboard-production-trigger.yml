@@ -1,11 +1,6 @@
-name: Trigger Cinema Production for Dashboard
+name: Historical Manual Cinema Deployment Trigger
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'web/customer-dashboard/**'
-      - '.github/workflows/deploy-dashboard-production-trigger.yml'
   workflow_dispatch:
 
 permissions:
@@ -27,4 +22,4 @@ jobs:
         run: |
           set -euo pipefail
           gh workflow run deploy-cinema-production.yml --repo "$REPO" --ref main
-          echo "Dispatched Deploy Cinema + Z3 Production for dashboard commit $GITHUB_SHA"
+          echo "Dispatched historical/manual Cinema Azure deployment for dashboard commit $GITHUB_SHA"
