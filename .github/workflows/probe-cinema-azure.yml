@@ -1,7 +1,6 @@
 name: Probe Cinema Azure Runtime
 
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -12,8 +11,8 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The staging GitHub Environment supplies the read-capable PR OIDC subject.
-    # The resource being probed below is the current production Container App.
+    # Historical/manual Azure diagnostic only. Azure is no longer the active production target.
+    # Do not run this on every PR; AWS migration CI is authoritative for new browser/runtime work.
     environment: staging
     env:
       RESOURCE_GROUP: rg-t.dealer01-0468
