@@ -34,7 +34,7 @@ The machine-readable channel state is
 | Path | Purpose |
 |---|---|
 | `.deployment/azure-3d-landing.json` | Receipt-verified official Azure landing URL |
-| `.github/workflows/deploy-cinema-production.yml` | Cinema deployment plus production E2E |
+| `.github/workflows/deploy-cinema-production.yml` | Historical/manual Azure Cinema deployment plus proof |
 | `.github/workflows/deploy-azure-3d-landing.yml` | Shared landing deployment and receipt |
 | `.github/workflows/coverage-verify.yml` | Complete pytest run plus measured overall/line/branch coverage gate and artifacts |
 | `.github/workflows/marketplace-launch-verify.yml` | Multi-Marketplace package and UI validation |
