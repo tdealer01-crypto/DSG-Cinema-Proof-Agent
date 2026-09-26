@@ -7,11 +7,14 @@ WORKDIR /app
 # a customer credential or remote repository grant.
 RUN apt-get update \
   && apt-get upgrade -y \
-  && apt-get install -y --no-install-recommends git ca-certificates \
+  && apt-get install -y --no-install-recommends git ca-certificates python3-venv \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-cinema.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /opt/dsg-cinema \
+  && /opt/dsg-cinema/bin/pip install --no-cache-dir --upgrade pip \
+  && /opt/dsg-cinema/bin/pip install --no-cache-dir -r requirements.txt
+ENV PATH="/opt/dsg-cinema/bin:$PATH"
 
 # Self-hosted Chromium runtime. AWS deployment overrides the legacy provider
 # compatibility names with DSG_BROWSER_PROVIDER=self_hosted and file-backed
