@@ -6,6 +6,7 @@ WORKDIR /app
 # snapshots and isolated target clones. Git is runtime infrastructure here, not
 # a customer credential or remote repository grant.
 RUN apt-get update \
+  && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
@@ -23,7 +24,10 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     DSG_MARKET_READY_RUNTIME=/revenue/market-ready \
     DSG_SANDBOX_MODE=0 \
     DSG_PLATFORM_REQUIRE_AUTH=1
-RUN python -m playwright install --with-deps chromium
+RUN python -m playwright install --with-deps chromium \
+  && apt-get update \
+  && apt-get upgrade -y \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY cinema_main.py marketplace_verification.py ./
 COPY logging_config.py middleware.py metrics.py error_monitoring.py sentry_config.py ./
