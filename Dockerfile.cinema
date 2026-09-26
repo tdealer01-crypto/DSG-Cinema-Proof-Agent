@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
 
 WORKDIR /app
 
@@ -13,19 +13,18 @@ RUN apt-get update \
 COPY requirements-cinema.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Azure-native Remote Browser: keep Chromium inside the Cinema image so the
-# account shared browser has no metered Browserbase dependency. Browser state and
-# privacy-minimized operational memory use the existing durable /revenue Azure
-# Files mount, so production does not require a second paid database. Deployments
-# can explicitly override either provider/backend if ever required.
+# Self-hosted Chromium runtime. AWS deployment overrides the legacy provider
+# compatibility names with DSG_BROWSER_PROVIDER=self_hosted and file-backed
+# browser memory. No Browserbase or Claw Server dependency is required.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     DSG_BROWSER_PROVIDER=azure_local \
     DSG_BROWSER_MEMORY_BACKEND=azure_files \
     DSG_MARKET_READY_RUNTIME=/revenue/market-ready \
     DSG_SANDBOX_MODE=0 \
     DSG_PLATFORM_REQUIRE_AUTH=1
-RUN python -m playwright install --with-deps chromium \
-  && apt-get update \
+# The Playwright Noble image already contains the matching Chromium browser and
+# system dependencies. Keep packages patched without reinstalling a second browser.
+RUN apt-get update \
   && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/*
 
