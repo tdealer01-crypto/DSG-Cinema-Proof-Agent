@@ -1,19 +1,6 @@
-name: Deploy Cinema + Z3 Production
+name: Historical Manual Cinema + Z3 Azure Deployment
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'z3_main.py'
-      - 'cinema_main.py'
-      - 'requirements.txt'
-      - 'requirements-cinema.txt'
-      - 'revenue/**'
-      - 'api_v1/**'
-      - 'Dockerfile'
-      - 'Dockerfile.cinema'
-      - 'tests/**'
-      - '.github/workflows/deploy-cinema-production.yml'
   workflow_dispatch:
 
 permissions:
