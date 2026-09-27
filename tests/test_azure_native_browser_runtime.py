@@ -106,7 +106,7 @@ class FakeBrowser:
 @pytest.fixture(autouse=True)
 def reset_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DSG_REMOTE_ACTION_STORE", str(tmp_path / "store"))
-    monkeypatch.setenv("DSG_BROWSER_PROVIDER", "azure_local")
+    monkeypatch.setenv("DSG_BROWSER_PROVIDER", "self_hosted")
     azure_local_browser._PLAYWRIGHT = None
     azure_local_browser._BROWSER = None
     azure_local_browser._CONTEXTS.clear()
@@ -120,7 +120,7 @@ def reset_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_safe_url_and_provider_configuration(monkeypatch: pytest.MonkeyPatch):
     assert azure_local_browser.configured() is True
-    for value in ("azure", "self_hosted"):
+    for value in ("self_hosted", "azure_local", "azure"):
         monkeypatch.setenv("DSG_BROWSER_PROVIDER", value)
         assert azure_local_browser.configured() is True
     monkeypatch.setenv("DSG_BROWSER_PROVIDER", "browserbase")
