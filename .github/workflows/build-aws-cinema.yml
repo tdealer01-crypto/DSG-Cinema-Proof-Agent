@@ -139,7 +139,7 @@ jobs:
           DIGEST="${{ steps.image.outputs.digest }}"
           FINDINGS=""
           SCAN_STATUS=""
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 60); do
             ERROR_FILE="$(mktemp)"
             if FINDINGS="$(aws ecr describe-image-scan-findings \
               --repository-name "$ECR_REPOSITORY" \
@@ -152,7 +152,9 @@ jobs:
               fi
               case "$SCAN_STATUS" in
                 FAILED|UNSUPPORTED_IMAGE|FINDINGS_UNAVAILABLE|LIMIT_EXCEEDED|IMAGE_ARCHIVED)
+                  echo "READINESS=BLOCKED"
                   echo "BLOCK: ECR image scan ended in status $SCAN_STATUS"
+                  echo "nextAction=Inspect the ECR scan status/finding source and publish a corrected immutable image before runtime deployment."
                   exit 26
                   ;;
               esac
@@ -161,6 +163,8 @@ jobs:
                 echo "ECR scan not registered yet; retrying attempt=$attempt"
               else
                 cat "$ERROR_FILE" >&2
+                echo "READINESS=BLOCKED"
+                echo "nextAction=Repair ECR scan-read access or the scan API error, then rerun the immutable-image security gate."
                 rm -f "$ERROR_FILE"
                 exit 27
               fi
@@ -169,7 +173,9 @@ jobs:
             sleep 5
           done
           if [[ "$SCAN_STATUS" != "COMPLETE" ]]; then
-            echo "BLOCK: ECR image scan did not complete within bounded polling window"
+            echo "READINESS=BLOCKED"
+            echo "BLOCK: ECR image scan did not complete within the five-minute bounded polling window"
+            echo "nextAction=Read the ECR scan result directly; rerun only after the same immutable digest reaches COMPLETE."
             exit 28
           fi
           CRITICAL="$(jq -r '.imageScanFindings.findingSeverityCounts.CRITICAL // 0' <<<"$FINDINGS")"
@@ -177,7 +183,9 @@ jobs:
           MEDIUM="$(jq -r '.imageScanFindings.findingSeverityCounts.MEDIUM // 0' <<<"$FINDINGS")"
           echo "AWS_CINEMA_ECR_SCAN critical=$CRITICAL high=$HIGH medium=$MEDIUM"
           if (( CRITICAL > 0 )); then
+            echo "READINESS=BLOCKED"
             echo "BLOCK: Cinema image has critical ECR findings"
+            echo "nextAction=Patch the vulnerable package(s), publish a new source-bound image, and require zero CRITICAL findings before deployment."
             exit 25
           fi
           echo "AWS_CINEMA_ECR_SCAN_GATE=PASS"
