@@ -63,6 +63,25 @@ jobs:
               print(f"CINEMA_CHROMIUM_SMOKE=PASS version={browser.version}")
               browser.close()
           PY
+      - name: Assert patched libcurl and local Git runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm dsg-cinema:${GITHUB_SHA} sh -lc '
+            version="$(dpkg-query -W -f='''${Version}''' libcurl4-gnutls)"
+            dpkg --compare-versions "$version" ge "8.21.0-2~bpo13+1"
+            test ! -x "$(command -v curl || true)"
+            tmp="$(mktemp -d)"
+            git init -q "$tmp/source"
+            git -C "$tmp/source" config user.email sandbox@dsg.invalid
+            git -C "$tmp/source" config user.name "DSG Sandbox"
+            echo proof > "$tmp/source/proof.txt"
+            git -C "$tmp/source" add .
+            git -C "$tmp/source" commit -qm proof
+            git clone -q --bare "$tmp/source" "$tmp/source.git"
+            test -f "$tmp/source.git/HEAD"
+            echo "CINEMA_PATCHED_LIBCURL_LOCAL_GIT=PASS version=$version"
+          '
       - name: Assert curl CLI absent from production image
         run: |
           set -euo pipefail
