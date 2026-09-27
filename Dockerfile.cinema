@@ -32,8 +32,8 @@ ENV PATH="/opt/dsg-cinema/bin:$PATH"
 # curl is only needed by the installer/download path; remove the CLI package from
 # the final runtime because the previous ECR scan bound all CRITICAL findings to it.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    DSG_BROWSER_PROVIDER=azure_local \
-    DSG_BROWSER_MEMORY_BACKEND=azure_files \
+    DSG_BROWSER_PROVIDER=self_hosted \
+    DSG_BROWSER_MEMORY_BACKEND=files \
     DSG_MARKET_READY_RUNTIME=/revenue/market-ready \
     DSG_SANDBOX_MODE=0 \
     DSG_PLATFORM_REQUIRE_AUTH=1
