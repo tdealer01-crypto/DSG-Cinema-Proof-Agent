@@ -45,6 +45,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build Cinema image locally
         run: docker build -f Dockerfile.cinema -t dsg-cinema:${GITHUB_SHA} .
+      - name: Smoke-test bundled Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm dsg-cinema:${GITHUB_SHA} python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=["--no-sandbox", "--disable-dev-shm-usage"],
+              )
+              page = browser.new_page()
+              page.set_content("<title>DSG Cinema smoke</title>")
+              assert page.title() == "DSG Cinema smoke"
+              print(f"CINEMA_CHROMIUM_SMOKE=PASS version={browser.version}")
+              browser.close()
+          PY
+      - name: Assert curl CLI absent from production image
+        run: |
+          set -euo pipefail
+          docker run --rm dsg-cinema:${GITHUB_SHA} sh -lc '! command -v curl'
+          echo "CINEMA_CURL_CLI_ABSENT=PASS"
       - name: Assert no Claw server in canonical image contract
         shell: bash
         run: |
