@@ -5,9 +5,20 @@ WORKDIR /app
 # Market-ready installation provisioning creates deterministic local Git source
 # snapshots and isolated target clones. Git is runtime infrastructure here, not
 # a customer credential or remote repository grant.
-RUN apt-get update \
+RUN printf '%s\n' \
+      'Types: deb' \
+      'URIs: http://deb.debian.org/debian' \
+      'Suites: trixie-backports' \
+      'Components: main' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+      > /etc/apt/sources.list.d/trixie-backports.sources \
+  && apt-get update \
   && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends git ca-certificates \
+  && apt-get install -y --no-install-recommends -t trixie-backports libcurl3t64-gnutls \
+  && LIBCURL_VERSION="$(dpkg-query -W -f='${Version}' libcurl4-gnutls)" \
+  && dpkg --compare-versions "$LIBCURL_VERSION" ge "8.21.0-2~bpo13+1" \
+  && echo "CINEMA_LIBCURL_VERSION=$LIBCURL_VERSION" \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-cinema.txt requirements.txt
