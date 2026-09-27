@@ -95,13 +95,41 @@ jobs:
         run: |
           set -euo pipefail
           DIGEST="${{ steps.image.outputs.digest }}"
-          aws ecr wait image-scan-complete \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-id imageDigest="$DIGEST"
-          FINDINGS="$(aws ecr describe-image-scan-findings \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-id imageDigest="$DIGEST" \
-            --output json)"
+          FINDINGS=""
+          SCAN_STATUS=""
+          for attempt in $(seq 1 30); do
+            ERROR_FILE="$(mktemp)"
+            if FINDINGS="$(aws ecr describe-image-scan-findings \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-id imageDigest="$DIGEST" \
+              --output json 2>"$ERROR_FILE")"; then
+              SCAN_STATUS="$(jq -r '.imageScanStatus.status // "UNKNOWN"' <<<"$FINDINGS")"
+              rm -f "$ERROR_FILE"
+              if [[ "$SCAN_STATUS" == "COMPLETE" ]]; then
+                break
+              fi
+              case "$SCAN_STATUS" in
+                FAILED|UNSUPPORTED_IMAGE|FINDINGS_UNAVAILABLE|LIMIT_EXCEEDED|IMAGE_ARCHIVED)
+                  echo "BLOCK: ECR image scan ended in status $SCAN_STATUS"
+                  exit 26
+                  ;;
+              esac
+            else
+              if grep -q "ScanNotFoundException" "$ERROR_FILE"; then
+                echo "ECR scan not registered yet; retrying attempt=$attempt"
+              else
+                cat "$ERROR_FILE" >&2
+                rm -f "$ERROR_FILE"
+                exit 27
+              fi
+              rm -f "$ERROR_FILE"
+            fi
+            sleep 5
+          done
+          if [[ "$SCAN_STATUS" != "COMPLETE" ]]; then
+            echo "BLOCK: ECR image scan did not complete within bounded polling window"
+            exit 28
+          fi
           CRITICAL="$(jq -r '.imageScanFindings.findingSeverityCounts.CRITICAL // 0' <<<"$FINDINGS")"
           HIGH="$(jq -r '.imageScanFindings.findingSeverityCounts.HIGH // 0' <<<"$FINDINGS")"
           MEDIUM="$(jq -r '.imageScanFindings.findingSeverityCounts.MEDIUM // 0' <<<"$FINDINGS")"
