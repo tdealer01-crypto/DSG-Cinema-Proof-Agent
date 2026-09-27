@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm dsg-cinema:${GITHUB_SHA} sh -lc '
-            version="$(dpkg-query -W -f='''${Version}''' libcurl4-gnutls)"
+            version="$(dpkg-query -W libcurl4-gnutls | cut -f2)"
             dpkg --compare-versions "$version" ge "8.21.0-2~bpo13+1"
             test ! -x "$(command -v curl || true)"
             tmp="$(mktemp -d)"
