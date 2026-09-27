@@ -45,6 +45,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build Cinema image locally
         run: docker build -f Dockerfile.cinema -t dsg-cinema:${GITHUB_SHA} .
+      - name: Smoke-test bundled Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm dsg-cinema:${GITHUB_SHA} python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=["--no-sandbox", "--disable-dev-shm-usage"],
+              )
+              page = browser.new_page()
+              page.set_content("<title>DSG Cinema smoke</title>")
+              assert page.title() == "DSG Cinema smoke"
+              print(f"CINEMA_CHROMIUM_SMOKE=PASS version={browser.version}")
+              browser.close()
+          PY
+      - name: Assert curl CLI absent from production image
+        run: |
+          set -euo pipefail
+          docker run --rm dsg-cinema:${GITHUB_SHA} sh -lc '! command -v curl'
+          echo "CINEMA_CURL_CLI_ABSENT=PASS"
       - name: Assert no Claw server in canonical image contract
         shell: bash
         run: |
@@ -95,13 +118,41 @@ jobs:
         run: |
           set -euo pipefail
           DIGEST="${{ steps.image.outputs.digest }}"
-          aws ecr wait image-scan-complete \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-id imageDigest="$DIGEST"
-          FINDINGS="$(aws ecr describe-image-scan-findings \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-id imageDigest="$DIGEST" \
-            --output json)"
+          FINDINGS=""
+          SCAN_STATUS=""
+          for attempt in $(seq 1 30); do
+            ERROR_FILE="$(mktemp)"
+            if FINDINGS="$(aws ecr describe-image-scan-findings \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-id imageDigest="$DIGEST" \
+              --output json 2>"$ERROR_FILE")"; then
+              SCAN_STATUS="$(jq -r '.imageScanStatus.status // "UNKNOWN"' <<<"$FINDINGS")"
+              rm -f "$ERROR_FILE"
+              if [[ "$SCAN_STATUS" == "COMPLETE" ]]; then
+                break
+              fi
+              case "$SCAN_STATUS" in
+                FAILED|UNSUPPORTED_IMAGE|FINDINGS_UNAVAILABLE|LIMIT_EXCEEDED|IMAGE_ARCHIVED)
+                  echo "BLOCK: ECR image scan ended in status $SCAN_STATUS"
+                  exit 26
+                  ;;
+              esac
+            else
+              if grep -q "ScanNotFoundException" "$ERROR_FILE"; then
+                echo "ECR scan not registered yet; retrying attempt=$attempt"
+              else
+                cat "$ERROR_FILE" >&2
+                rm -f "$ERROR_FILE"
+                exit 27
+              fi
+              rm -f "$ERROR_FILE"
+            fi
+            sleep 5
+          done
+          if [[ "$SCAN_STATUS" != "COMPLETE" ]]; then
+            echo "BLOCK: ECR image scan did not complete within bounded polling window"
+            exit 28
+          fi
           CRITICAL="$(jq -r '.imageScanFindings.findingSeverityCounts.CRITICAL // 0' <<<"$FINDINGS")"
           HIGH="$(jq -r '.imageScanFindings.findingSeverityCounts.HIGH // 0' <<<"$FINDINGS")"
           MEDIUM="$(jq -r '.imageScanFindings.findingSeverityCounts.MEDIUM // 0' <<<"$FINDINGS")"
