@@ -2,9 +2,11 @@
 
 ## Canonical architecture
 
-`Human / Agent / CLI -> DSG Cinema governance -> Azure shared Chromium -> Evidence`
+`Human / Agent / CLI -> DSG Cinema governance -> self-hosted shared Chromium -> Evidence`
 
-Production provider: `azure_container_apps`.
+Canonical AWS-migration runtime selector: `DSG_BROWSER_PROVIDER=self_hosted`.
+
+Compatibility boundary: the current API/provider wire label may still return `azure_container_apps` and persisted bindings may still contain `azure_local`. Those values are legacy compatibility aliases, not evidence that the browser is hosted on Azure. They remain until the external contract is versioned after AWS E2E.
 
 The shared browser is account-scoped and persistent. A mobile viewer, an approved agent executor, and an agent verifier can operate on the same browser profile, tabs, cookies, login state, URL, and DOM.
 
@@ -41,7 +43,7 @@ dsg-browser view
 dsg-browser view --open
 ```
 
-`view` returns a short-lived viewer URL. Opening a new viewer URL does not create a new browser profile; it attaches to the same account-scoped Azure browser session.
+`view` returns a short-lived viewer URL. Opening a new viewer URL does not create a new browser profile; it attaches to the same account-scoped self-hosted browser session.
 
 The mobile viewer supports touch/click, swipe/scroll, URL navigation, text input, Enter, Tab, and Backspace.
 
@@ -119,7 +121,7 @@ Re-approval is required when scope expands into a high-risk boundary such as pay
 1. Read `AGENTS.md`.
 2. Read `docs/REMOTE_BROWSER_USAGE.md`.
 3. Verify production provider/status.
-4. Reuse the existing shared Azure browser.
+4. Reuse the existing shared self-hosted browser.
 5. Connect under an approved plan.
 6. Execute in-scope actions continuously.
 7. Verify evidence.
@@ -127,7 +129,7 @@ Re-approval is required when scope expands into a high-risk boundary such as pay
 
 ## Required invariants
 
-- Production browser provider is Azure.
+- Canonical runtime selection is self-hosted Chromium; legacy Azure provider labels are compatibility aliases only.
 - Human and agent share one account-scoped persistent browser context.
 - Agent mutations are plan-bound and fail closed.
 - Verifier remains read-only.

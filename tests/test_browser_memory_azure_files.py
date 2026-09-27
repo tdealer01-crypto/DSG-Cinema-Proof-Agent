@@ -115,15 +115,22 @@ def test_store_facade_honors_explicit_backend_before_database_fallback(tmp_path:
     assert browser_memory_store.backend() == "disabled"
     assert browser_memory_store.configured() is False
 
-    monkeypatch.setenv("DSG_BROWSER_MEMORY_BACKEND", "azure_files")
+    # "files" is the canonical cloud-neutral runtime selector. The facade
+    # intentionally preserves "azure_files" as the current wire/backend label
+    # until the external contract is versioned, so old persisted consumers keep working.
+    monkeypatch.setenv("DSG_BROWSER_MEMORY_BACKEND", "files")
     monkeypatch.setenv("DSG_BROWSER_MEMORY_STORE", str(tmp_path / "memory"))
     assert browser_memory_store.backend() == "azure_files"
     assert browser_memory_store.configured() is True
     result = browser_memory_store.search_context(account_hash="e" * 64)
     assert result["backend"] == "azure_files"
 
+    # Legacy selector remains accepted during migration.
+    monkeypatch.setenv("DSG_BROWSER_MEMORY_BACKEND", "azure_files")
+    assert browser_memory_store.backend() == "azure_files"
+
     # An unrelated revenue database must not silently move browser memory away
-    # from the explicitly selected Azure Files production backend.
+    # from the explicitly selected file backend.
     monkeypatch.setenv("DSG_REVENUE_DATABASE_URL", "postgresql://configured")
     assert browser_memory_store.backend() == "azure_files"
 
