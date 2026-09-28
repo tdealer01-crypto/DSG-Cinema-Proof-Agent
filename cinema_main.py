@@ -19,6 +19,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -150,8 +151,29 @@ def _required_secret(name: str) -> str:
 
 def _backend_url() -> str:
     value = os.getenv("DSG_BACKEND_BASE_URL", "").strip().rstrip("/")
-    if not value.startswith("https://"):
+    parsed = urlsplit(value)
+    if parsed.scheme == "https":
+        if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ConfigurationError("DSG_BACKEND_BASE_URL is invalid")
+        return value
+
+    internal_enabled = os.getenv("DSG_BACKEND_INTERNAL_TRANSPORT", "").strip() == "1"
+    if not internal_enabled:
         raise ConfigurationError("DSG_BACKEND_BASE_URL must use HTTPS")
+
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "spacetime"
+        or parsed.port != 8787
+        or parsed.path.rstrip("/") != "/internal/z3"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigurationError(
+            "internal DSG_BACKEND_BASE_URL must be http://spacetime:8787/internal/z3"
+        )
     return value
 
 

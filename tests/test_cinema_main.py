@@ -503,3 +503,41 @@ def test_openai_plugin_channel_is_supported(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["channel"] == "openai_plugin"
+
+
+def test_internal_spacetime_z3_backend_requires_explicit_transport_flag(monkeypatch):
+    monkeypatch.setenv("DSG_BACKEND_BASE_URL", "http://spacetime:8787/internal/z3")
+    monkeypatch.delenv("DSG_BACKEND_INTERNAL_TRANSPORT", raising=False)
+    try:
+        cinema_main._backend_url()
+    except cinema_main.ConfigurationError as exc:
+        assert "must use HTTPS" in str(exc)
+    else:
+        raise AssertionError("internal HTTP backend was allowed without explicit flag")
+
+
+def test_internal_spacetime_z3_backend_is_exactly_bounded(monkeypatch):
+    monkeypatch.setenv("DSG_BACKEND_INTERNAL_TRANSPORT", "1")
+    monkeypatch.setenv("DSG_BACKEND_BASE_URL", "http://spacetime:8787/internal/z3")
+    assert cinema_main._backend_url() == "http://spacetime:8787/internal/z3"
+
+    for invalid in (
+        "http://127.0.0.1:8787/internal/z3",
+        "http://spacetime:8788/internal/z3",
+        "http://spacetime:8787/",
+        "http://evil:8787/internal/z3",
+        "http://spacetime:8787/internal/z3?x=1",
+    ):
+        monkeypatch.setenv("DSG_BACKEND_BASE_URL", invalid)
+        try:
+            cinema_main._backend_url()
+        except cinema_main.ConfigurationError:
+            pass
+        else:
+            raise AssertionError(f"unbounded internal backend accepted: {invalid}")
+
+
+def test_external_backend_still_requires_valid_https(monkeypatch):
+    monkeypatch.delenv("DSG_BACKEND_INTERNAL_TRANSPORT", raising=False)
+    monkeypatch.setenv("DSG_BACKEND_BASE_URL", "https://z3.example.test")
+    assert cinema_main._backend_url() == "https://z3.example.test"
