@@ -100,7 +100,9 @@ jobs:
   package-production:
     name: Bind to live Cinema production and package
     needs: verify
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Azure production is historical during the AWS migration. Keep live
+    # production binding operator-invoked only; push/PR still run verification.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: production
