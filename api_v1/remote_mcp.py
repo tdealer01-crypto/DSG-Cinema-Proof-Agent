@@ -9,6 +9,8 @@ credential/endpoint is exposed to the user or model.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 from contextvars import ContextVar
 from typing import Any, Optional
@@ -28,7 +30,7 @@ from . import (
     remote_pairing,
     shared_browser,
 )
-from .canonical import canonical_json
+from .canonical import canonical_hash, canonical_json
 from .models import Strict
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -42,6 +44,7 @@ router = APIRouter(tags=["remote-mcp"])
 _api_key_var: ContextVar[Optional[str]] = ContextVar("dsg_remote_mcp_api_key", default=None)
 _public_origin_var: ContextVar[Optional[str]] = ContextVar("dsg_remote_mcp_public_origin", default=None)
 _agent_name_var: ContextVar[Optional[str]] = ContextVar("dsg_remote_mcp_agent_name", default=None)
+_spacetime_context_var: ContextVar[Optional[dict[str, Any]]] = ContextVar("dsg_remote_mcp_spacetime_context", default=None)
 
 
 class ManagedRemoteSessionCreate(Strict):
@@ -86,6 +89,97 @@ def _current_api_key() -> Optional[str]:
 
 def _current_agent_name() -> Optional[str]:
     return (_agent_name_var.get() or "").strip() or None
+
+
+_SPACETIME_ROUTE_FOR_ACTION = {
+    "browser.remote.connect": "route.cinema-remote.connect",
+    "browser.remote.read": "route.cinema-remote.read",
+    "browser.remote.run": "route.cinema-remote.execute",
+}
+_SPACETIME_APPROVAL_ACTIONS = {"browser.remote.connect", "browser.remote.run"}
+
+
+def _decode_spacetime_context_header(value: Optional[str]) -> Optional[dict[str, Any]]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if len(raw) > 8192:
+        raise HTTPException(status_code=400, detail="SPACETIME_CONTEXT_HEADER_TOO_LARGE")
+    try:
+        padded = raw + "=" * (-len(raw) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="SPACETIME_CONTEXT_HEADER_INVALID") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="SPACETIME_CONTEXT_HEADER_INVALID")
+    return payload
+
+
+def _current_spacetime_context() -> Optional[dict[str, Any]]:
+    value = _spacetime_context_var.get()
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(ch in "0123456789abcdef" for ch in value)
+
+
+def _validate_spacetime_context(
+    *,
+    expected_actions: set[str],
+    arguments: dict[str, Any],
+    plan_id: str,
+    agent_identity: str,
+) -> Optional[dict[str, Any]]:
+    context = _current_spacetime_context()
+    if context is None:
+        return None
+
+    allowed_keys = {
+        "schema_version",
+        "authority",
+        "provider_action",
+        "plan_id",
+        "plan_hash",
+        "route_id",
+        "agent_id",
+        "principal",
+        "approval_token_sha256",
+        "decision_hash",
+        "decision_verdict",
+        "arguments_sha256",
+    }
+    if set(context) - allowed_keys:
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_CONTEXT_FIELDS_INVALID"})
+    if context.get("schema_version") != 1 or context.get("authority") != "dsg_spacetime":
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_CONTEXT_SCHEMA_INVALID"})
+
+    provider_action = context.get("provider_action")
+    if provider_action not in expected_actions:
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_ACTION_SCOPE_MISMATCH"})
+    expected_route = _SPACETIME_ROUTE_FOR_ACTION.get(str(provider_action))
+    if context.get("route_id") != expected_route:
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_ROUTE_SCOPE_MISMATCH"})
+    if context.get("decision_verdict") != "ALLOW":
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_DECISION_NOT_ALLOW"})
+    if context.get("plan_id") != plan_id:
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_PLAN_SCOPE_MISMATCH"})
+    if context.get("agent_id") != agent_identity:
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_AGENT_SCOPE_MISMATCH"})
+
+    if not _valid_sha256(context.get("plan_hash")):
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_PLAN_HASH_INVALID"})
+    if not _valid_sha256(context.get("decision_hash")):
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_DECISION_HASH_INVALID"})
+    expected_arguments_hash = canonical_hash(arguments)
+    if context.get("arguments_sha256") != expected_arguments_hash:
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_ARGUMENTS_SCOPE_MISMATCH"})
+    if provider_action in _SPACETIME_APPROVAL_ACTIONS and not _valid_sha256(
+        context.get("approval_token_sha256")
+    ):
+        raise HTTPException(status_code=409, detail={"error": "SPACETIME_APPROVAL_PROOF_REQUIRED"})
+    return context
 
 
 def _saved_binding_context() -> dict[str, str]:
@@ -266,7 +360,26 @@ async def _remote_agent_connect(args: ManagedRemoteSessionCreate) -> dict[str, A
 
     created: dict[str, Any] | None = None
     try:
-        created = await remote_pairing.agent_connect(request, x_dsg_api_key=canonical_key)
+        connect_arguments = {
+            "plan_id": plan_id,
+            "agent_identity": agent_identity,
+            "step_id": step_id,
+            "ttl_seconds": args.ttl_seconds,
+        }
+        spacetime_context = _validate_spacetime_context(
+            expected_actions={"browser.remote.connect"},
+            arguments=connect_arguments,
+            plan_id=plan_id,
+            agent_identity=agent_identity,
+        )
+        if spacetime_context is None:
+            created = await remote_pairing.agent_connect(request, x_dsg_api_key=canonical_key)
+        else:
+            created = await remote_pairing.spacetime_agent_connect(
+                request,
+                spacetime_context=spacetime_context,
+                x_dsg_api_key=canonical_key,
+            )
         executor.finalize_capability(
             capability,
             session_id=str(created["session_id"]),
@@ -303,25 +416,84 @@ async def _remote_disconnect(args: remote_browser.RemoteDisconnectRequest) -> di
 
 
 async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
-    """Execute an approved plan as one autonomous run.
+    """Execute one exact Spacetime-authorized read or mutation batch."""
+    canonical_key, _ = agent_pairing._authenticated_account(_current_api_key())
+    canonical_key = str(canonical_key)
+    plan_id = (args.plan_id or "").strip()
+    agent_identity = (args.agent_identity or "").strip()
+    if not plan_id or not agent_identity:
+        raise HTTPException(status_code=409, detail={"error": "REMOTE_BINDING_CONTEXT_REQUIRED"})
 
-    Every supplied step is already inside the approval boundary. A failed
-    primary/fallback action is recorded and the runner continues to the next
-    step; no new approval is created between attempts.
-    """
+    run_arguments = args.model_dump(mode="json", exclude_none=True)
+    spacetime_context = _validate_spacetime_context(
+        expected_actions={"browser.remote.read", "browser.remote.run"},
+        arguments=run_arguments,
+        plan_id=plan_id,
+        agent_identity=agent_identity,
+    )
+    provider_action = (
+        str(spacetime_context.get("provider_action")) if spacetime_context is not None else None
+    )
+    if provider_action == "browser.remote.read":
+        for item in args.steps:
+            if item.action.controller != "agent_verifier" or item.action.kind not in {
+                "browser.extract",
+                "browser.screenshot",
+            }:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error": "SPACETIME_READ_ROUTE_MUTATION_BLOCKED"},
+                )
+
+    public_origin = _public_origin_var.get()
+    if not public_origin:
+        raise HTTPException(status_code=503, detail="managed browser public origin is unavailable")
+    executor = _managed_executor()
+
     results: list[dict[str, Any]] = []
     for item in args.steps:
-        session = await _remote_agent_connect(
-            ManagedRemoteSessionCreate(
-                plan_id=args.plan_id,
-                agent_identity=args.agent_identity,
-                step_id=item.step_id,
-            )
+        capability = executor.allocate_capability(
+            plan_id=plan_id,
+            step_id=item.step_id,
+            agent_identity=agent_identity,
+            ttl_seconds=900,
         )
+        endpoint = f"{public_origin}/remote-browser/{_managed_path()}/action/{capability}"
+        request = remote_browser.RemoteSessionCreate(
+            plan_id=plan_id,
+            agent_identity=agent_identity,
+            step_id=item.step_id,
+            remote_endpoint=endpoint,
+            ttl_seconds=900,
+        )
+        session: dict[str, Any] | None = None
         try:
+            if spacetime_context is None:
+                session = await remote_pairing.agent_connect(
+                    request, x_dsg_api_key=canonical_key
+                )
+            else:
+                session = await remote_pairing.spacetime_agent_connect(
+                    request,
+                    spacetime_context=spacetime_context,
+                    bound_action=item.action,
+                    x_dsg_api_key=canonical_key,
+                )
+            executor.finalize_capability(
+                capability,
+                session_id=str(session["session_id"]),
+                plan_hash=str(session["plan_hash"]),
+                browser_policy=dict(session.get("browser_policy") or {}),
+            )
+            await executor.ensure_browser_session(
+                str(session["session_id"]),
+                plan_hash=str(session["plan_hash"]),
+                browser_policy=dict(session.get("browser_policy") or {}),
+            )
             result = await _remote_action(
                 remote_browser.RemoteActionRequest(
-                    session_token=str(session["session_token"]), action=item.action
+                    session_token=str(session["session_token"]),
+                    action=item.action,
                 )
             )
             result["fallback"] = item.fallback
@@ -338,59 +510,16 @@ async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
                     "error": exc.detail,
                 }
             )
-            continue
+        finally:
+            if session is None:
+                executor.revoke_capability(capability)
+
     return {
         "ok": any(bool(item.get("ok")) for item in results),
-        "plan_id": args.plan_id,
+        "plan_id": plan_id,
         "approval_reused": True,
         "approval_required_between_steps": False,
-        "steps_attempted": len(results),
-        "results": results,
-    }
-
-
-async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
-    """Execute an approved plan as one autonomous run.
-
-    Every supplied step is already inside the approval boundary. A failed
-    primary/fallback action is recorded and the runner continues to the next
-    step; no new approval is created between attempts.
-    """
-    results: list[dict[str, Any]] = []
-    for item in args.steps:
-        session = await _remote_agent_connect(
-            ManagedRemoteSessionCreate(
-                plan_id=args.plan_id,
-                agent_identity=args.agent_identity,
-                step_id=item.step_id,
-            )
-        )
-        try:
-            result = await _remote_action(
-                remote_browser.RemoteActionRequest(
-                    session_token=str(session["session_token"]), action=item.action
-                )
-            )
-            result["fallback"] = item.fallback
-            results.append(result)
-            if args.stop_on_success and bool(result.get("ok")) and not item.fallback:
-                break
-        except HTTPException as exc:
-            results.append(
-                {
-                    "ok": False,
-                    "step_id": item.step_id,
-                    "fallback": item.fallback,
-                    "status_code": exc.status_code,
-                    "error": exc.detail,
-                }
-            )
-            continue
-    return {
-        "ok": any(bool(item.get("ok")) for item in results),
-        "plan_id": args.plan_id,
-        "approval_reused": True,
-        "approval_required_between_steps": False,
+        "authority_source": "dsg_spacetime" if spacetime_context is not None else "cinema_plan",
         "steps_attempted": len(results),
         "results": results,
     }
@@ -545,6 +674,7 @@ async def handle_message(
     *,
     public_origin: Optional[str] = None,
     agent_name: Optional[str] = None,
+    spacetime_context: Optional[dict[str, Any]] = None,
 ) -> JSONResponse:
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
         return JSONResponse(status_code=400, content=_error(None, INVALID_REQUEST, "a JSON-RPC 2.0 message is required"))
@@ -596,9 +726,13 @@ async def handle_message(
         api_token = _api_key_var.set(api_key)
         origin_token = _public_origin_var.set(public_origin)
         agent_token = _agent_name_var.set((agent_name or "").strip() or None)
+        spacetime_token = _spacetime_context_var.set(
+            dict(spacetime_context) if isinstance(spacetime_context, dict) else None
+        )
         try:
             payload = await _call_tool(str(name), arguments)
         finally:
+            _spacetime_context_var.reset(spacetime_token)
             _agent_name_var.reset(agent_token)
             _public_origin_var.reset(origin_token)
             _api_key_var.reset(api_token)
@@ -613,6 +747,7 @@ async def mcp_endpoint(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
     x_dsg_agent_name: Optional[str] = Header(default=None, alias="X-DSG-Agent-Name"),
+    x_dsg_spacetime_context: Optional[str] = Header(default=None, alias="X-DSG-Spacetime-Context"),
 ) -> JSONResponse:
     try:
         message = await request.json()
@@ -629,11 +764,13 @@ async def mcp_endpoint(
         public_origin = _request_public_origin(request)
     except HTTPException:
         public_origin = None
+    spacetime_context = _decode_spacetime_context_header(x_dsg_spacetime_context)
     return await handle_message(
         message,
         api_key,
         public_origin=public_origin,
         agent_name=x_dsg_agent_name,
+        spacetime_context=spacetime_context,
     )
 
 

@@ -47,6 +47,7 @@ import socket
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -453,6 +454,158 @@ def _authorize_session(request: RemoteSessionCreate) -> tuple[dict[str, Any], An
     return result, step
 
 
+_SPACETIME_ROUTE_FOR_ACTION = {
+    "browser.remote.connect": "route.cinema-remote.connect",
+    "browser.remote.read": "route.cinema-remote.read",
+    "browser.remote.run": "route.cinema-remote.execute",
+}
+_SPACETIME_APPROVAL_ACTIONS = {"browser.remote.connect", "browser.remote.run"}
+
+
+def _spacetime_context_error(code: str) -> HTTPException:
+    return HTTPException(status_code=409, detail={"error": code})
+
+
+def _sha256_claim(value: Any, *, code: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise _spacetime_context_error(code)
+    return value
+
+
+def _validate_spacetime_session_context(
+    request: RemoteSessionCreate,
+    context: dict[str, Any],
+) -> tuple[str, str, str]:
+    if context.get("schema_version") != 1 or context.get("authority") != "dsg_spacetime":
+        raise _spacetime_context_error("SPACETIME_CONTEXT_SCHEMA_INVALID")
+    provider_action = context.get("provider_action")
+    expected_route = _SPACETIME_ROUTE_FOR_ACTION.get(str(provider_action))
+    if expected_route is None or context.get("route_id") != expected_route:
+        raise _spacetime_context_error("SPACETIME_ROUTE_SCOPE_MISMATCH")
+    if context.get("decision_verdict") != "ALLOW":
+        raise _spacetime_context_error("SPACETIME_DECISION_NOT_ALLOW")
+    if context.get("plan_id") != request.plan_id:
+        raise _spacetime_context_error("SPACETIME_PLAN_SCOPE_MISMATCH")
+    if context.get("agent_id") != request.agent_identity:
+        raise _spacetime_context_error("SPACETIME_AGENT_SCOPE_MISMATCH")
+    plan_hash = _sha256_claim(context.get("plan_hash"), code="SPACETIME_PLAN_HASH_INVALID")
+    decision_hash = _sha256_claim(
+        context.get("decision_hash"), code="SPACETIME_DECISION_HASH_INVALID"
+    )
+    _sha256_claim(
+        context.get("arguments_sha256"), code="SPACETIME_ARGUMENTS_HASH_INVALID"
+    )
+    if provider_action in _SPACETIME_APPROVAL_ACTIONS:
+        _sha256_claim(
+            context.get("approval_token_sha256"),
+            code="SPACETIME_APPROVAL_PROOF_REQUIRED",
+        )
+    return str(provider_action), plan_hash, decision_hash
+
+
+async def create_spacetime_session(
+    request: RemoteSessionCreate,
+    *,
+    spacetime_context: dict[str, Any],
+    bound_action: RemoteAction | None = None,
+    x_dsg_api_key: Optional[str] = None,
+) -> dict[str, Any]:
+    """Create a Cinema session from one already-authorized Spacetime decision.
+
+    Cinema remains the browser/session safety boundary but does not create or
+    approve a second plan. The transport-authenticated Spacetime context is
+    checked again here and the resulting session is bound to the exact action
+    when one is supplied.
+    """
+    billing.authorize_request(_api_key(x_dsg_api_key), service.VERIFIED_EXECUTION_SKU)
+    _ensure_store()
+    endpoint = _public_https_endpoint(request.remote_endpoint)
+    provider_action, plan_hash, decision_hash = _validate_spacetime_session_context(
+        request, spacetime_context
+    )
+
+    delegation = {"enabled": False, "operations": [], "origins": []}
+    browser_policy = {"enforced": False, "allowed_origins": []}
+    bound_action_sha256: str | None = None
+    step_action = provider_action
+    step_target = ""
+    if bound_action is not None:
+        step_target = ""
+        if bound_action.kind == "browser.navigate":
+            raw_target = bound_action.parameters.get("url")
+            if isinstance(raw_target, str):
+                step_target = raw_target
+        step = SimpleNamespace(
+            action=bound_action.kind,
+            target=step_target,
+            step_id=request.step_id,
+            parameters=dict(bound_action.parameters),
+        )
+        delegation = _delegation_policy(step)
+        browser_policy = _browser_policy(step)
+        bound_action_sha256 = canonical_hash(bound_action.model_dump(mode="json"))
+        step_action = bound_action.kind
+
+    now = int(time.time())
+    session_id = f"rbs_{uuid.uuid4().hex}"
+    payload = {
+        "v": TOKEN_VERSION,
+        "sid": session_id,
+        "plan_id": request.plan_id,
+        "plan_hash": plan_hash,
+        "agent_identity": request.agent_identity,
+        "step_id": request.step_id,
+        "step_action": step_action,
+        "step_target": step_target,
+        "endpoint": endpoint,
+        "user_controller_delegation": delegation,
+        "browser_policy": browser_policy,
+        "authority_source": "dsg_spacetime",
+        "spacetime_route_id": spacetime_context["route_id"],
+        "spacetime_decision_hash": decision_hash,
+        "spacetime_arguments_sha256": spacetime_context["arguments_sha256"],
+        "spacetime_approval_token_sha256": spacetime_context.get(
+            "approval_token_sha256"
+        ),
+        "bound_action_sha256": bound_action_sha256,
+        "iat": now,
+        "exp": now + request.ttl_seconds,
+    }
+    token = _seal(payload)
+    control_hash = canonical_hash(
+        {
+            "plan_id": request.plan_id,
+            "plan_hash": plan_hash,
+            "route_id": spacetime_context["route_id"],
+            "agent_id": request.agent_identity,
+            "step_id": request.step_id,
+            "decision_hash": decision_hash,
+            "arguments_sha256": spacetime_context["arguments_sha256"],
+            "bound_action_sha256": bound_action_sha256,
+        }
+    )
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "session_token": token,
+        "plan_id": request.plan_id,
+        "plan_hash": plan_hash,
+        "step_id": request.step_id,
+        "agent_identity": request.agent_identity,
+        "expires_at_unix": payload["exp"],
+        "decision": "ALLOW",
+        "control_hash": control_hash,
+        "remote_enabled": True,
+        "endpoint_exposed": False,
+        "controllers": ["user", "agent_executor", "agent_verifier"],
+        "user_controller_delegation": delegation,
+        "browser_policy": browser_policy,
+        "authority_source": "dsg_spacetime",
+        "spacetime_route_id": spacetime_context["route_id"],
+        "spacetime_decision_hash": decision_hash,
+    }
+
+
 def _revoked_path(session_id: str) -> Path:
     return _ensure_store() / "revoked" / session_id
 
@@ -803,6 +956,17 @@ async def execute_action(
     session_id = str(session["sid"])
     if _is_revoked(session_id):
         raise HTTPException(status_code=410, detail="remote authority was revoked by the user")
+    bound_action_sha256 = session.get("bound_action_sha256")
+    if bound_action_sha256:
+        actual_action_sha256 = canonical_hash(request.action.model_dump(mode="json"))
+        if actual_action_sha256 != bound_action_sha256:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "SPACETIME_ACTION_SCOPE_MISMATCH",
+                    "message": "The browser action differs from the exact Spacetime-authorized action.",
+                },
+            )
     if _direct_user_input(request.action):
         raise HTTPException(
             status_code=409,

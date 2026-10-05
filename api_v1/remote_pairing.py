@@ -236,6 +236,59 @@ async def agent_connect(
     return created
 
 
+async def spacetime_agent_connect(
+    request: remote_browser.RemoteSessionCreate,
+    *,
+    spacetime_context: dict[str, Any],
+    bound_action: remote_browser.RemoteAction | None = None,
+    x_dsg_api_key: Optional[str] = None,
+) -> dict[str, Any]:
+    """Join the user's shared browser using authority already decided by Spacetime.
+
+    This is intentionally not exposed as a separate public route. It is invoked
+    only from the authenticated Cinema MCP transport after the trusted
+    Spacetime execution context has been validated.
+    """
+    key = _api_key(x_dsg_api_key)
+    account_id = _account_id(key)
+    state = _read_state(account_id)
+    if not bool(state.get("enabled")):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "REMOTE_NOT_ENABLED_BY_USER",
+                "message": "The user has not enabled Remote for this account.",
+            },
+        )
+
+    created = await remote_browser.create_spacetime_session(
+        request,
+        spacetime_context=spacetime_context,
+        bound_action=bound_action,
+        x_dsg_api_key=key,
+    )
+    session_id = str(created["session_id"])
+
+    if shared_browser.configured() and _managed_cinema_endpoint(request.remote_endpoint):
+        created["shared_browser"] = await shared_browser.bind_cinema_session(
+            account_id,
+            session_id,
+            plan_hash=str(created["plan_hash"]),
+        )
+        created["browser_continuity"] = "ACCOUNT_SCOPED_PERSISTENT_CONTEXT"
+
+    sessions = _active_sessions(state)
+    if session_id not in sessions:
+        sessions.append(session_id)
+    state["session_ids"] = sessions
+    state["last_agent_identity"] = request.agent_identity
+    state["last_plan_id"] = request.plan_id
+    state["last_step_id"] = request.step_id
+    state["authority_source"] = "dsg_spacetime"
+    _write_state(account_id, state)
+    return created
+
+
 @router.post("/disable")
 async def disable_remote(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
