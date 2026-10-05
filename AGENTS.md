@@ -10,8 +10,11 @@ anything.
 
 ## Before you claim something works
 
-- **Run the suite from the repo root.** `python3 -m pytest -q` — 355 tests,
-  seconds to run. Green is the bar for a push.
+- **Run the suite from the repo root.** `python3 -m pytest -q` — 743 tests
+  at 2026-10-05, seconds to run (the count drifts; trust the run, not this
+  number). `benchmarks/pibench_dsg` needs the optional `litellm` package and
+  fails collection without it; use `--ignore=benchmarks` when it is not
+  installed. Green is the bar for a push.
 - **Fetch `/openapi.json` before asserting a route exists.** Several documents
   in this repository describe endpoints that were never built. The live spec is
   the only authority:
