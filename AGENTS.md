@@ -65,8 +65,18 @@ raise it; do not relax it and move on.
 
 ## Deployment
 
-Everything live is Azure. Vercel, Render and Railway appear only in retired
-documents.
+> **Status note, probed 2026-10-05 — the table below is legacy/audit context,
+> not the current production path.** The DSG architecture checkpoint of
+> 2026-10-05 names `AWS_ONLY` as the sole production cloud authority and Azure
+> as legacy/audit-only. Probes agree: the Azure Container App URL above did not
+> connect (`curl` HTTP 000), while `https://aws.dsg.pics/health` returned
+> HTTP 200 `{"status":"ready","backend":"ready"}`. Re-probe before relying on
+> either. Until the owner confirms the replacement `openapi.json` URL, treat the
+> Azure URL in "Before you claim something works" as unverified, not as the
+> authority it is described as.
+
+Azure was the live target before that checkpoint. Vercel, Render and Railway
+appear only in retired documents.
 
 | Component | Target |
 |---|---|
