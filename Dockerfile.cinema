@@ -7,20 +7,38 @@ WORKDIR /build
 RUN set -eux; \
     printf '%s\n' \
       'Types: deb-src' \
-      'URIs: http://deb.debian.org/debian' \
-      'Suites: trixie trixie-updates' \
+      'URIs: https://snapshot.debian.org/archive/debian/20261001T000000Z/' \
+      'Suites: trixie' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      'Check-Valid-Until: no' \
       > /etc/apt/sources.list.d/dsg-source.sources; \
     apt-get update; \
     apt-get install -y --no-install-recommends build-essential ca-certificates dpkg-dev \
       libssl-dev libexpat1-dev zlib1g-dev libpcre2-dev; \
     apt-get source 'git=1:2.47.3-0+deb13u1'; \
     cd /build/git-2.47.3; \
+    export DEB_BUILD_MAINT_OPTIONS='hardening=+all'; \
+    export CFLAGS="$(dpkg-buildflags --get CFLAGS)"; \
+    export CPPFLAGS="$(dpkg-buildflags --get CPPFLAGS)"; \
+    export LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"; \
     make -j2 prefix=/opt/dsg-local-git NO_CURL=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease all; \
     make prefix=/opt/dsg-local-git NO_CURL=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease install; \
     cp COPYING /opt/dsg-local-git/GIT-COPYING; \
-    /opt/dsg-local-git/bin/git --version
+    /opt/dsg-local-git/bin/git --version; \
+    mkdir -p /tmp/dsg-git-root/DEBIAN /tmp/dsg-git-root/opt /tmp/dsg-git-root/usr/local/bin; \
+    cp -a /opt/dsg-local-git /tmp/dsg-git-root/opt/; \
+    ln -s /opt/dsg-local-git/bin/git /tmp/dsg-git-root/usr/local/bin/git; \
+    printf '%s\n' \
+      'Package: git' \
+      'Version: 1:2.47.3-0+deb13u1+dsg1' \
+      'Source: git (1:2.47.3-0+deb13u1)' \
+      'Architecture: amd64' \
+      'Maintainer: DSG build <build@localhost>' \
+      'Depends: libc6, libssl3t64, libexpat1, zlib1g, libpcre2-8-0' \
+      'Description: Debian-sourced Git for DSG Cinema local-only repository work' \
+      > /tmp/dsg-git-root/DEBIAN/control; \
+    dpkg-deb --build --root-owner-group /tmp/dsg-git-root /tmp/dsg-git.deb
 
 # The Playwright Chromium binary dynamically requires libcups.so.2.
 # Build the Debian-authenticated CUPS library against OpenSSL, NOT GnuTLS.
@@ -30,25 +48,46 @@ WORKDIR /build
 RUN set -eux; \
     printf '%s\n' \
       'Types: deb-src' \
-      'URIs: http://deb.debian.org/debian' \
-      'Suites: trixie trixie-updates' \
+      'URIs: https://snapshot.debian.org/archive/debian/20261001T000000Z/' \
+      'Suites: trixie' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      'Check-Valid-Until: no' \
       > /etc/apt/sources.list.d/dsg-source.sources; \
     apt-get update; \
     apt-get install -y --no-install-recommends build-essential ca-certificates dpkg-dev \
       pkg-config libssl-dev zlib1g-dev; \
     apt-get source 'cups=2.4.10-3+deb13u2'; \
     cd /build/cups-2.4.10; \
+    export DEB_BUILD_MAINT_OPTIONS='hardening=+all'; \
+    export CFLAGS="$(dpkg-buildflags --get CFLAGS)"; \
+    export CPPFLAGS="$(dpkg-buildflags --get CPPFLAGS)"; \
+    export LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"; \
     ./configure --with-tls=openssl --disable-static --disable-gssapi; \
-    make -C cups -j2; \
+    make -C cups -j2 LDFLAGS="$LDFLAGS"; \
     mkdir -p /opt/dsg-openssl-cups; \
     cp -L cups/libcups.so.2 /opt/dsg-openssl-cups/libcups.so.2; \
     cp LICENSE /opt/dsg-openssl-cups/CUPS-LICENSE; \
     cp NOTICE /opt/dsg-openssl-cups/CUPS-NOTICE; \
     if ldd /opt/dsg-openssl-cups/libcups.so.2 | grep -q libgnutls; then \
       echo 'BLOCK: source-built libcups retained GnuTLS' >&2; exit 1; \
-    fi
+    fi; \
+    readelf -l cups/libcups.so.2 | grep -q GNU_RELRO; \
+    readelf -d cups/libcups.so.2 | grep -Eq 'BIND_NOW|FLAGS.*NOW'; \
+    mkdir -p /tmp/dsg-cups-root/DEBIAN /tmp/dsg-cups-root/opt \
+       /tmp/dsg-cups-root/usr/local/lib; \
+    cp -a /opt/dsg-openssl-cups /tmp/dsg-cups-root/opt/; \
+    cp -L cups/libcups.so.2 /tmp/dsg-cups-root/usr/local/lib/libcups.so.2; \
+    printf '%s\n' \
+      'Package: libcups2t64' \
+      'Version: 2.4.10-3+deb13u2+dsg1' \
+      'Source: cups (2.4.10-3+deb13u2)' \
+      'Architecture: amd64' \
+      'Maintainer: DSG build <build@localhost>' \
+      'Depends: libc6, libssl3t64, zlib1g' \
+      'Description: Debian-sourced libcups client rebuilt with OpenSSL TLS' \
+      > /tmp/dsg-cups-root/DEBIAN/control; \
+    dpkg-deb --build --root-owner-group /tmp/dsg-cups-root /tmp/dsg-cups.deb
 
 FROM python:3.11-slim-trixie
 LABEL org.opencontainers.image.description="DSG Cinema self-hosted Playwright: Debian-source Git (local only) + CUPS OpenSSL TLS; GnuTLS not included" \
@@ -64,11 +103,14 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ca-certificates libssl3t64 \
       libexpat1 zlib1g libpcre2-8-0; \
     rm -rf /var/lib/apt/lists/*
-COPY --from=dsg-git-local-builder /opt/dsg-local-git /opt/dsg-local-git
-COPY --from=dsg-cups-openssl-builder /opt/dsg-openssl-cups/libcups.so.2 /usr/local/lib/libcups.so.2
-# Login shells reset PATH; expose the source-built local Git command through
-# a standard executable directory without copying extra curl dependencies.
-RUN ln -s /opt/dsg-local-git/bin/git /usr/local/bin/git && ldconfig
+# Register custom native binaries as explicitly named Debian packages so
+# Inspector/ECR OS package inventory continues to cover their source versions.
+COPY --from=dsg-git-local-builder /tmp/dsg-git.deb /tmp/dsg-git.deb
+COPY --from=dsg-cups-openssl-builder /tmp/dsg-cups.deb /tmp/dsg-cups.deb
+RUN dpkg -i /tmp/dsg-git.deb /tmp/dsg-cups.deb \
+  && rm /tmp/dsg-git.deb /tmp/dsg-cups.deb \
+  && ldconfig \
+  && dpkg-query -W git libcups2t64
 ENV PATH="/opt/dsg-local-git/bin:/opt/dsg-local-git/libexec/git-core:$PATH"
 
 COPY requirements-cinema.txt requirements.txt
