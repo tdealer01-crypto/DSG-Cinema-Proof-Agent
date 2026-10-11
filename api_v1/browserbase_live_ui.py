@@ -115,7 +115,7 @@ async def live_frame(
     )
     provider = str(live.get("provider") or shared_browser.provider())
 
-    if provider == azure_local_browser.PROVIDER:
+    if azure_local_browser.is_local_provider(provider):
         if not live.get("connected"):
             return {
                 "ok": True,
@@ -238,7 +238,7 @@ kbd.addEventListener('keydown',e=>{{if(e.key==='Enter'){{e.preventDefault();send
 @router.get("/remote-browser/azure/view/{viewer_token}", include_in_schema=False)
 async def azure_live_view(viewer_token: str) -> HTMLResponse:
     viewer = _load_viewer(viewer_token)
-    if viewer.get("provider") != azure_local_browser.PROVIDER or not viewer.get("account_hash"):
+    if not azure_local_browser.is_local_provider(viewer.get("provider")) or not viewer.get("account_hash"):
         raise HTTPException(status_code=404, detail="Azure shared browser viewer is unavailable")
     return _azure_view_page(viewer_token)
 
@@ -246,7 +246,7 @@ async def azure_live_view(viewer_token: str) -> HTMLResponse:
 @router.get("/remote-browser/browserbase/embed/{viewer_token}", include_in_schema=False)
 async def embed_live_view(viewer_token: str) -> HTMLResponse:
     viewer = _load_viewer(viewer_token)
-    if viewer.get("provider") == azure_local_browser.PROVIDER:
+    if azure_local_browser.is_local_provider(viewer.get("provider")):
         return _azure_view_page(viewer_token)
 
     live_url = str(viewer.get("live_view_url") or "")
@@ -284,7 +284,7 @@ async def embed_live_view(viewer_token: str) -> HTMLResponse:
 @router.get("/remote-browser/azure/view/{viewer_token}/snapshot", include_in_schema=False)
 async def azure_snapshot(viewer_token: str) -> Response:
     viewer = _load_viewer(viewer_token)
-    if viewer.get("provider") != azure_local_browser.PROVIDER or not viewer.get("account_hash"):
+    if not azure_local_browser.is_local_provider(viewer.get("provider")) or not viewer.get("account_hash"):
         raise HTTPException(status_code=404, detail="Azure shared browser viewer is unavailable")
     raw = await azure_local_browser.snapshot(str(viewer["account_hash"]))
     return Response(
@@ -297,7 +297,7 @@ async def azure_snapshot(viewer_token: str) -> Response:
 @router.post("/remote-browser/azure/view/{viewer_token}/action", include_in_schema=False)
 async def azure_user_action(viewer_token: str, payload: dict[str, Any]) -> dict[str, Any]:
     viewer = _load_viewer(viewer_token)
-    if viewer.get("provider") != azure_local_browser.PROVIDER or not viewer.get("account_hash"):
+    if not azure_local_browser.is_local_provider(viewer.get("provider")) or not viewer.get("account_hash"):
         raise HTTPException(status_code=404, detail="Azure shared browser viewer is unavailable")
     # This route represents direct user input, not delegated agent authority. It
     # deliberately never writes the input payload to evidence or continuity.
