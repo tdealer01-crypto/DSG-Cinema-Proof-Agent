@@ -25,8 +25,9 @@ from fastapi import HTTPException
 
 from .canonical import utc_now
 
-PROVIDER = "azure_container_apps"
-BACKEND_VALUE = "azure_local"
+PROVIDER = "azure_container_apps"  # Legacy viewer label.
+BACKEND_VALUE = "azure_local"  # Persisted internal binding; keep unchanged.
+SELF_HOSTED_PROVIDER = "self_hosted_playwright"
 MAX_HISTORY = 50
 VIEWPORT = {"width": 1280, "height": 800}
 
@@ -34,6 +35,23 @@ _PLAYWRIGHT = None
 _BROWSER = None
 _CONTEXTS: dict[str, Any] = {}
 _LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def self_hosted_mode() -> bool:
+    return (os.getenv("DSG_BROWSER_PROVIDER") or "").strip().lower() == "self_hosted"
+
+
+def public_provider() -> str:
+    return SELF_HOSTED_PROVIDER if self_hosted_mode() else PROVIDER
+
+
+def public_backend() -> str:
+    return "self_hosted" if self_hosted_mode() else BACKEND_VALUE
+
+
+def is_local_provider(value: object) -> bool:
+    # Viewer capabilities issued before upgrade remain valid until expiry.
+    return value in {PROVIDER, SELF_HOSTED_PROVIDER}
 
 
 def configured() -> bool:
@@ -280,8 +298,8 @@ async def _observe(account_hash: str) -> dict[str, Any]:
 
 def _public_metadata(account_hash: str, metadata: dict[str, Any], *, connected: bool) -> dict[str, Any]:
     return {
-        "provider": PROVIDER,
-        "backend": BACKEND_VALUE,
+        "provider": public_provider(),
+        "backend": public_backend(),
         "connected": connected,
         "shared_profile": True,
         "context_persistent": True,
@@ -418,7 +436,7 @@ async def user_action(account_hash: str, action: dict[str, Any]) -> dict[str, An
     metadata = await _observe(account_hash)
     return {
         "ok": True,
-        "provider": PROVIDER,
+        "provider": public_provider(),
         "url": page.url,
         "title": await page.title(),
         "browser_session_id": metadata.get("browser_session_id"),
@@ -428,6 +446,11 @@ async def user_action(account_hash: str, action: dict[str, Any]) -> dict[str, An
 __all__ = [
     "BACKEND_VALUE",
     "PROVIDER",
+    "SELF_HOSTED_PROVIDER",
+    "self_hosted_mode",
+    "public_provider",
+    "public_backend",
+    "is_local_provider",
     "account_digest",
     "bind_cinema_session",
     "configured",

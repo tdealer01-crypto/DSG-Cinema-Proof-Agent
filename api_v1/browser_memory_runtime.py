@@ -136,7 +136,7 @@ def _capture_descriptor(path: str, body: Any) -> Optional[dict[str, Any]]:
         except Exception:
             return None
         account_hash = viewer.get("account_hash")
-        if viewer.get("provider") != azure_local_browser.PROVIDER or not isinstance(account_hash, str):
+        if not azure_local_browser.is_local_provider(viewer.get("provider")) or not isinstance(account_hash, str):
             return None
         return {
             "account_hash": account_hash,

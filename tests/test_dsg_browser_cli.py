@@ -75,3 +75,24 @@ def test_parser_exposes_product_commands():
     help_text = CLI.parser().format_help()
     for command in ("status", "view", "connect", "extract", "click", "type", "select", "upload", "download", "disconnect"):
         assert command in help_text
+
+
+@pytest.mark.parametrize("label", ["self_hosted_playwright", "azure_container_apps"])
+def test_view_accepts_current_aws_and_legacy_local_provider_labels(monkeypatch, capsys, label):
+    monkeypatch.setenv("DSG_CINEMA_BASE_URL", "https://aws.dsg.pics")
+    monkeypatch.setattr(CLI, "_request", lambda *a, **k: {
+        "provider": label, "connected": True,
+        "embed_url": "/remote-browser/azure/view/temporary-view-token",
+    })
+    CLI.cmd_view(Namespace(open=False))
+    output = capsys.readouterr().out.strip()
+    assert output == "https://aws.dsg.pics/remote-browser/azure/view/temporary-view-token"
+
+
+def test_view_rejects_nonlocal_provider_without_opening_url(monkeypatch):
+    monkeypatch.setattr(CLI, "_request", lambda *a, **k: {
+        "provider": "unverified-external", "connected": True,
+        "embed_url": "/remote-browser/azure/view/token",
+    })
+    with pytest.raises(CLI.BrowserCliError, match="unsupported local browser provider"):
+        CLI.cmd_view(Namespace(open=True))

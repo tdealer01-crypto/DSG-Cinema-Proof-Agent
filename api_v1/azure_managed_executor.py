@@ -206,7 +206,7 @@ async def azure_action(capability_token: str, payload: dict[str, Any]) -> dict[s
             status, body = await _perform_action(cinema_session_id, payload)
     await azure_local_browser.save_session(cinema_session_id)
     body["remote_status"] = status
-    body["provider"] = azure_local_browser.PROVIDER
+    body["provider"] = azure_local_browser.public_provider()
     return body
 
 

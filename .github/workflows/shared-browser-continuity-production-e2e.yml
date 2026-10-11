@@ -105,7 +105,7 @@ jobs:
           http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' \
             -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
           if [[ "$http" != "200" ]]; then safe_http_error remote_on "$http" "$work/enabled.json"; exit 1; fi
-          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and .shared_browser.provider == "azure_container_apps"' "$work/enabled.json" >/dev/null
+          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and (.shared_browser.provider == "azure_container_apps" or .shared_browser.provider == "self_hosted_playwright")' "$work/enabled.json" >/dev/null
           browser_id_on=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/enabled.json")
           [[ -n "$browser_id_on" ]]
           echo 'remote_on_azure_shared_browser=PASS'
@@ -113,7 +113,7 @@ jobs:
           http=$(curl -sS -o "$work/live.json" -w '%{http_code}' \
             "$CINEMA_BASE_URL/remote-browser/browserbase/live-frame" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
-          jq -e '.connected == true and .provider == "azure_container_apps" and (.embed_url | type == "string")' "$work/live.json" >/dev/null
+          jq -e '.connected == true and (.provider == "azure_container_apps" or .provider == "self_hosted_playwright") and (.embed_url | type == "string")' "$work/live.json" >/dev/null
           embed_path=$(jq -r '.embed_url' "$work/live.json")
           viewer_token="${embed_path##*/}"
           [[ -n "$viewer_token" ]]
@@ -132,7 +132,7 @@ jobs:
             -H 'Content-Type: application/json' \
             --data "$(jq -nc --arg url "$memory_live_url" '{kind:"navigate",parameters:{url:$url}}')")
           [[ "$http" == "200" ]]
-          jq -e '.ok == true and .provider == "azure_container_apps" and (.url | startswith("https://example.com/"))' "$work/user-action.json" >/dev/null
+          jq -e '.ok == true and (.provider == "azure_container_apps" or .provider == "self_hosted_playwright") and (.url | startswith("https://example.com/"))' "$work/user-action.json" >/dev/null
           http=$(curl -sS -o "$work/snapshot.png" -w '%{http_code}' "$CINEMA_BASE_URL/remote-browser/azure/view/$viewer_token/snapshot")
           [[ "$http" == "200" && -s "$work/snapshot.png" ]]
           echo 'user_same_browser=PASS'
@@ -174,7 +174,7 @@ jobs:
           provider_agent=$(jq -r '.result.structuredContent.managed_provider // empty' "$work/connect.json")
           continuity=$(jq -r '.result.structuredContent.browser_continuity // empty' "$work/connect.json")
           [[ -n "$session_token" && "$browser_id_agent" == "$browser_id_on" ]]
-          [[ "$provider_agent" == "azure_container_apps" && "$continuity" == "ACCOUNT_SCOPED_PERSISTENT_CONTEXT" ]]
+          [[ ( "$provider_agent" == "azure_container_apps" || "$provider_agent" == "self_hosted_playwright" ) && "$continuity" == "ACCOUNT_SCOPED_PERSISTENT_CONTEXT" ]]
           echo "::add-mask::$session_token"
           rm -f "$work/connect.json"
           echo 'agent_joined_same_browser=PASS'
@@ -206,7 +206,7 @@ jobs:
 
           http=$(curl -sS -o "$work/reenabled.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
-          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and .shared_browser.provider == "azure_container_apps"' "$work/reenabled.json" >/dev/null
+          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and (.shared_browser.provider == "azure_container_apps" or .shared_browser.provider == "self_hosted_playwright")' "$work/reenabled.json" >/dev/null
           browser_id_reon=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/reenabled.json")
           [[ "$browser_id_reon" == "$browser_id_on" ]]
           echo 'remote_reon_same_browser=PASS'
@@ -242,10 +242,11 @@ jobs:
             --arg plan_hash "$plan_hash" \
             --arg browser_session_hash "$(printf '%s' "$browser_id_on" | sha256sum | cut -d' ' -f1)" \
             --arg action_evidence_hash "$evidence_hash" \
+            --arg runtime_provider "$provider_agent" \
             --arg browser_memory_hash "$memory_hash_after" \
             --argjson browser_memory_stored_tokens "$memory_stored_tokens" \
             --argjson browser_memory_selected_tokens "$memory_selected_tokens" \
-            '{status:"PASS",commit:$commit,provider:"azure_container_apps",account_sha256:$account_hash,plan_hash:$plan_hash,browser_session_sha256:$browser_session_hash,context_persistent:true,user_live_view_same_browser:true,same_browser_on_agent_connect:true,agent_observed_user_navigation:true,browser_survived_agent_disconnect:true,browser_survived_remote_off:true,same_browser_after_remote_reenable:true,action_evidence_hash:$action_evidence_hash,browser_memory_backend:"azure_files",browser_memory_sanitized:true,browser_memory_survived_continuity_boundary:true,browser_memory_active_context_bounded:true,browser_memory_hash:$browser_memory_hash,browser_memory_stored_token_estimate:$browser_memory_stored_tokens,browser_memory_selected_token_estimate:$browser_memory_selected_tokens}' \
+            '{status:"PASS",commit:$commit,provider:$runtime_provider,account_sha256:$account_hash,plan_hash:$plan_hash,browser_session_sha256:$browser_session_hash,context_persistent:true,user_live_view_same_browser:true,same_browser_on_agent_connect:true,agent_observed_user_navigation:true,browser_survived_agent_disconnect:true,browser_survived_remote_off:true,same_browser_after_remote_reenable:true,action_evidence_hash:$action_evidence_hash,browser_memory_backend:"azure_files",browser_memory_sanitized:true,browser_memory_survived_continuity_boundary:true,browser_memory_active_context_bounded:true,browser_memory_hash:$browser_memory_hash,browser_memory_stored_token_estimate:$browser_memory_stored_tokens,browser_memory_selected_token_estimate:$browser_memory_selected_tokens}' \
             > shared-browser-continuity-evidence.json
           echo 'Shared Browser + Browser Memory Continuity Production E2E: PASS'
 

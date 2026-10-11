@@ -6,7 +6,7 @@
 
 Canonical AWS-migration runtime selector: `DSG_BROWSER_PROVIDER=self_hosted`.
 
-Compatibility boundary: the current API/provider wire label may still return `azure_container_apps` and persisted bindings may still contain `azure_local`. Those values are legacy compatibility aliases, not evidence that the browser is hosted on Azure. They remain until the external contract is versioned after AWS E2E.
+Compatibility boundary: the **11 October 2026** AWS-authenticated status readback returned public label `azure_container_apps` with persisted binding `azure_local`. Those are legacy compatibility identifiers, not proof of Azure hosting. Cinema PR #265 proposes `self_hosted_playwright` and `self_hosted` as public values when `DSG_BROWSER_PROVIDER=self_hosted` while intentionally keeping the `azure_local` session binding and old viewer tokens. Do not claim this metadata change is deployed until Cinema AWS image promotion and a new status readback succeed.
 
 The shared browser is account-scoped and persistent. A mobile viewer, an approved agent executor, and an agent verifier can operate on the same browser profile, tabs, cookies, login state, URL, and DOM.
 

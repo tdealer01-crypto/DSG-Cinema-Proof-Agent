@@ -171,10 +171,10 @@ def cmd_status(_: argparse.Namespace) -> None:
 
 def cmd_view(args: argparse.Namespace) -> None:
     data = _request("GET", "/remote-browser/browserbase/live-frame", require_api_key=True)
-    if data.get("provider") != "azure_container_apps":
-        raise BrowserCliError(f"production provider is not Azure: {data.get('provider')}")
+    if data.get("provider") not in {"self_hosted_playwright", "azure_container_apps"}:
+        raise BrowserCliError(f"unsupported local browser provider: {data.get('provider')}")
     if not data.get("connected") or not data.get("embed_url"):
-        raise BrowserCliError("shared Azure browser is not connected")
+        raise BrowserCliError("shared local browser is not connected")
     cfg = _config()
     url = urljoin(str(cfg["base_url"]).rstrip("/") + "/", str(data["embed_url"]).lstrip("/"))
     print(url)
@@ -298,7 +298,7 @@ def cmd_task(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="dsg-browser", description="DSG governed shared Azure browser CLI")
+    p = argparse.ArgumentParser(prog="dsg-browser", description="DSG governed shared browser CLI (AWS self-hosted or compatible legacy provider)")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("status").set_defaults(func=cmd_status)
     view = sub.add_parser("view", help="print a short-lived mobile/shared viewer URL")
