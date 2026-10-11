@@ -9,7 +9,19 @@ DSG ONE / Cinema is a deterministic governance, execution, and evidence runtime 
 
 It sits between an Agent and real execution. Authentication establishes **who** is calling; an approved plan, exact plan hash, permissions, runtime capabilities, deterministic verification, and evidence determine **what** that caller is authorized to do. A valid credential never grants out-of-plan authority.
 
-## Open the product
+## Active DSG OS / Cinema browser architecture — AWS source and evidence boundary
+
+**DSG OS** is the DSG-owned governed browser capability layer under **Spacetime**. **Cinema** is the account-scoped shared Chromium/Playwright execution provider and human viewer. This does **not** embed or relaunch the retired upstream BrowserOS/Claw server.
+
+`User/Agent → Spacetime Plan/Policy/Approval → DSG OS → Cinema shared browser → verified result/evidence`
+
+- The AWS runtime Compose selector is `DSG_BROWSER_PROVIDER=self_hosted` (see the private production runtime repository, `ops/aws/docker-compose.production.yml`); no independent Azure runtime is part of this AWS target.
+- A real user-bound **read-only** Cinema status route returned ALLOW with a signed Spacetime execution record on 11 October 2026. That status showed a connected shared browser, but does **not** prove high-risk signed Connect/Execute, fresh agent mutations, Browser Twin/Repair/Core Spin integration, or complete DSG OS E2E.
+- The running Cinema provider still reported the legacy labels `azure_container_apps` / `azure_local` at that time. [PR #265](https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent/pull/265) changes **public labels** for self-hosted mode, retaining persisted session bindings and legacy viewer compatibility. **Not production-verified until its Cinema image is promoted and the fresh status/readback proves the new label.**
+- Current public DSG ONE site: https://dsg.pics/ ; authenticated production governance: https://aws.dsg.pics/mcp . This does not imply the historical Cinema dashboard URL is currently hosted on AWS.
+- Canonical browser operation: [docs/REMOTE_BROWSER_USAGE.md](docs/REMOTE_BROWSER_USAGE.md). DSG OS capability contract: `DSG-Private-Production-Runtime/docs/DSG_OS_CAPABILITY_SPEC.md`.
+
+## Historical Azure product URL (September 2026 — not the current AWS authority)
 
 **Primary production customer surface**
 
@@ -38,7 +50,7 @@ Advanced routes remain available for diagnostics and integrations, but the custo
 
 ---
 
-## Current production truth — verified 3 September 2026
+## Historical Azure production checkpoint — verified 3 September 2026 (superseded by AWS target)
 
 DSG keeps **source state**, **image deployment**, and **runtime proof** separate so a successful proof is not overstated as a full redeploy of every component.
 
