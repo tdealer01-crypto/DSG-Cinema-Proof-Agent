@@ -10,7 +10,7 @@ RUN set -eux; \
       'URIs: http://deb.debian.org/debian' \
       'Suites: trixie trixie-updates' \
       'Components: main' \
-      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
       > /etc/apt/sources.list.d/dsg-source.sources; \
     apt-get update; \
     apt-get install -y --no-install-recommends build-essential ca-certificates dpkg-dev \
@@ -32,7 +32,7 @@ RUN set -eux; \
       'URIs: http://deb.debian.org/debian' \
       'Suites: trixie trixie-updates' \
       'Components: main' \
-      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
       > /etc/apt/sources.list.d/dsg-source.sources; \
     apt-get update; \
     apt-get install -y --no-install-recommends build-essential ca-certificates dpkg-dev \
