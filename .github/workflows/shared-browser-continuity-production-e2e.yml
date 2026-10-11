@@ -105,7 +105,7 @@ jobs:
           http=$(curl -sS -o "$work/enabled.json" -w '%{http_code}' \
             -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
           if [[ "$http" != "200" ]]; then safe_http_error remote_on "$http" "$work/enabled.json"; exit 1; fi
-          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and (.shared_browser(.provider == "azure_container_apps" or .provider == "self_hosted_playwright") or .shared_browser.provider == "self_hosted_playwright")' "$work/enabled.json" >/dev/null
+          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and (.shared_browser.provider == "azure_container_apps" or .shared_browser.provider == "self_hosted_playwright")' "$work/enabled.json" >/dev/null
           browser_id_on=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/enabled.json")
           [[ -n "$browser_id_on" ]]
           echo 'remote_on_azure_shared_browser=PASS'
@@ -206,7 +206,7 @@ jobs:
 
           http=$(curl -sS -o "$work/reenabled.json" -w '%{http_code}' -X POST "$CINEMA_BASE_URL/remote-browser/enable" -H "X-DSG-API-Key: $api_key")
           [[ "$http" == "200" ]]
-          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and (.shared_browser(.provider == "azure_container_apps" or .provider == "self_hosted_playwright") or .shared_browser.provider == "self_hosted_playwright")' "$work/reenabled.json" >/dev/null
+          jq -e '.remote_enabled == true and .shared_browser.connected == true and .shared_browser.context_persistent == true and (.shared_browser.provider == "azure_container_apps" or .shared_browser.provider == "self_hosted_playwright")' "$work/reenabled.json" >/dev/null
           browser_id_reon=$(jq -r '.shared_browser.browser_session_id // .shared_browser.browserbase_session_id // empty' "$work/reenabled.json")
           [[ "$browser_id_reon" == "$browser_id_on" ]]
           echo 'remote_reon_same_browser=PASS'
