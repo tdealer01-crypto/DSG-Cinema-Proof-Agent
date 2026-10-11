@@ -63,24 +63,29 @@ jobs:
               print(f"CINEMA_CHROMIUM_SMOKE=PASS version={browser.version}")
               browser.close()
           PY
-      - name: Assert patched libcurl and local Git runtime
+      - name: Assert GnuTLS-free Chromium and local Git operations
         shell: bash
         run: |
           set -euo pipefail
           docker run --rm dsg-cinema:${GITHUB_SHA} sh -lc '
-            version="$(dpkg-query -W libcurl4-gnutls | cut -f2)"
-            dpkg --compare-versions "$version" ge "8.21.0-2~bpo13+1"
-            test ! -x "$(command -v curl || true)"
+            set -eu
+            ! dpkg-query -W libgnutls30t64
+            ! ldconfig -p | grep libgnutls
+            git --version
             tmp="$(mktemp -d)"
             git init -q "$tmp/source"
             git -C "$tmp/source" config user.email sandbox@dsg.invalid
             git -C "$tmp/source" config user.name "DSG Sandbox"
-            echo proof > "$tmp/source/proof.txt"
+            printf "%s\\n" "proof" > "$tmp/source/proof.txt"
             git -C "$tmp/source" add .
             git -C "$tmp/source" commit -qm proof
             git clone -q --bare "$tmp/source" "$tmp/source.git"
             test -f "$tmp/source.git/HEAD"
-            echo "CINEMA_PATCHED_LIBCURL_LOCAL_GIT=PASS version=$version"
+            test -L /usr/local/lib/libcups.so.2 || test -f /usr/local/lib/libcups.so.2
+            ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/dsg-ldd.log
+            ! grep -q "not found" /tmp/dsg-ldd.log
+            ! grep -q libgnutls /tmp/dsg-ldd.log
+            echo "CINEMA_GNUTLS_ABSENT_LOCAL_GIT_AND_CHROMIUM=PASS"
           '
       - name: Assert curl CLI absent from production image
         run: |
