@@ -64,7 +64,7 @@ RUN set -eux; \
     export CPPFLAGS="$(dpkg-buildflags --get CPPFLAGS)"; \
     export LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"; \
     ./configure --with-tls=openssl --disable-static --disable-gssapi; \
-    make -C cups -j2 LDFLAGS="$LDFLAGS"; \
+    make -C cups -j2 DSOFLAGS="-shared -fPIC $LDFLAGS" LDFLAGS="$LDFLAGS"; \
     mkdir -p /opt/dsg-openssl-cups; \
     cp -L cups/libcups.so.2 /opt/dsg-openssl-cups/libcups.so.2; \
     cp LICENSE /opt/dsg-openssl-cups/CUPS-LICENSE; \
