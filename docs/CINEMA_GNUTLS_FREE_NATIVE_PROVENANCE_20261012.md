@@ -14,15 +14,16 @@ Switching the distro `libcurl4t64` package to OpenSSL would **not** eliminate Gn
 
 | Native library | Source and exact version | Build contract | Bundled notices | Functional limitation |
 | --- | --- | --- | --- | --- |
-| Git | Debian signed `git` source `1:2.47.3-0+deb13u1` via APT `deb-src` | `NO_CURL=YesPlease` to support **local** `init/commit/clone/checkout` only | `/opt/dsg-local-git/GIT-COPYING` (GPL) | Git HTTP(S) remote transport deliberately omitted; remote provider/network operations must use separately governed adapters |
-| CUPS libcups.so.2 | Debian signed `cups` source `2.4.10-3+deb13u2` via APT `deb-src` | `./configure --with-tls=openssl`, build real CUPS client shared library and link against OpenSSL | `/opt/dsg-openssl-cups/CUPS-LICENSE`, `/opt/dsg-openssl-cups/CUPS-NOTICE` | CUPS daemon not installed; Chromium client library remains dynamically linked |
+| Git | Debian signed `git` source `1:2.47.3-0+deb13u1` via dated Debian snapshot APT `deb-src` | `NO_CURL=YesPlease` to support **local** `init/commit/clone/checkout` only | `/opt/dsg-local-git/GIT-COPYING` (GPL) | Git HTTP(S) remote transport deliberately omitted; remote provider/network operations must use separately governed adapters |
+| CUPS libcups.so.2 | Debian signed `cups` source `2.4.10-3+deb13u2` via dated Debian snapshot APT `deb-src` | `./configure --with-tls=openssl`, build real CUPS client shared library and link against OpenSSL | `/opt/dsg-openssl-cups/CUPS-LICENSE`, `/opt/dsg-openssl-cups/CUPS-NOTICE` | CUPS daemon not installed; Chromium client library remains dynamically linked |
 
-Debian source package manifests/changelogs and archive signatures are inherited from signed APT metadata. Changes to source-build configurations are recorded in `Dockerfile.cinema`. These **custom-compiled components are not Debian-installed .deb packages in the final image**, so an ECR OS-package scan **may not identify all upstream Git/CUPS vulnerabilities**. Zero critical ECR findings must not be described as universal software safety or a full third-party-SBOM/independent-SCA PASS. A separate source-SBOM and ongoing CUPS/Git advisory review remain required.
+Debian source package manifests/changelogs and archive signatures are inherited from signed APT metadata. Changes to source-build configurations are recorded in `Dockerfile.cinema`. The custom-compiled components are now built as **explicit local `.deb` packages** with package names `git` and `libcups2t64`, Debian source-version identities, DSG `+dsg1` build suffixes, and standard `dpkg` inventory records. The packages retain native Git/CUPS license notices. This gives the ECR Debian OS-package scanner component names/versions rather than silently omitting all source-built native code. Because these binaries are custom builds and external package scanners do not necessarily understand every source patch or every native dependency, **ECR Critical=0 is not a guarantee that upstream Git/CUPS have zero vulnerabilities**. Keep an explicit source SBOM and separate advisories/security review. The exact code and compile flags are available in `Dockerfile.cinema`.
 
 ## Required release gate
 - [ ] Current-commit CI compiles the exact source and builds the immutable Cinema image.
 - [ ] Chromium Playwright starts and reads a test page without injecting a dummy CUPS library.
-- [ ] Runtime `dpkg-query`, `ldconfig -p` and Chromium `ldd` prove no GnuTLS dependency; no absent ELF dependencies.
+- [ ] Runtime `dpkg-query` lists custom `git` and `libcups2t64` with explicit source versions; `ldconfig -p` and Chromium `ldd` prove no GnuTLS dependency; no absent ELF dependencies. 
+- [ ] Custom CUPS ELF has `GNU_RELRO` and `BIND_NOW` linker hardening; source archives are pinned to the dated signed Debian snapshot.
 - [ ] **Local** Git init/commit/clone succeeds (not a network-enabled Git claim).
 - [ ] No upstream BrowserOS/Claw sidecar is bundled.
 - [ ] Current-commit ECR scan `COMPLETE` with `CRITICAL=0`, no suppression or override.
