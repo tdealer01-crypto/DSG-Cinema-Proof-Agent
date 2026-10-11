@@ -9,7 +9,7 @@ from . import azure_local_browser, browserbase_shared_profile
 
 def provider() -> str:
     if azure_local_browser.configured():
-        return azure_local_browser.PROVIDER
+        return azure_local_browser.public_provider()
     return "browserbase"
 
 
