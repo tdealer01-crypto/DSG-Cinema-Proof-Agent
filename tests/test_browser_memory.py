@@ -361,3 +361,24 @@ def test_install_mcp_tools_is_idempotent(monkeypatch):
     finally:
         remote_mcp.TOOLS = old_tools
         remote_mcp._BY_NAME = old_by_name
+
+
+def test_self_hosted_viewer_capture_keeps_memory_but_not_form_input(monkeypatch):
+    from api_v1 import browserbase_live_ui
+    monkeypatch.setattr(
+        browserbase_live_ui, "_load_viewer",
+        lambda _token: {"provider": "self_hosted_playwright", "account_hash": "c" * 64},
+    )
+    location = "/remote-browser/azure/view/self-hosted-viewer/action"
+    descriptor = browser_memory_runtime._capture_descriptor(
+        location, {"kind": "navigate", "parameters": {"url": "https://example.com/?private=1"}},
+    )
+    assert descriptor is not None
+    assert descriptor["actor"] == "USER"
+    assert descriptor["account_hash"] == "c" * 64
+    assert descriptor["action"] == "user.navigate"
+    assert "parameters" not in descriptor
+    assert "private" not in str(descriptor)
+    assert browser_memory_runtime._capture_descriptor(
+        location, {"kind": "type", "parameters": {"text": "sensitive-entry"}},
+    ) is None
