@@ -19,6 +19,7 @@ RUN set -eux; \
     cd /build/git-2.47.3; \
     make -j2 prefix=/opt/dsg-local-git NO_CURL=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease all; \
     make prefix=/opt/dsg-local-git NO_CURL=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease install; \
+    cp COPYING /opt/dsg-local-git/GIT-COPYING; \
     /opt/dsg-local-git/bin/git --version
 
 # The Playwright Chromium binary dynamically requires libcups.so.2.
@@ -43,11 +44,15 @@ RUN set -eux; \
     make -C cups -j2; \
     mkdir -p /opt/dsg-openssl-cups; \
     cp -L cups/libcups.so.2 /opt/dsg-openssl-cups/libcups.so.2; \
+    cp LICENSE /opt/dsg-openssl-cups/CUPS-LICENSE; \
+    cp NOTICE /opt/dsg-openssl-cups/CUPS-NOTICE; \
     if ldd /opt/dsg-openssl-cups/libcups.so.2 | grep -q libgnutls; then \
       echo 'BLOCK: source-built libcups retained GnuTLS' >&2; exit 1; \
     fi
 
 FROM python:3.11-slim-trixie
+LABEL org.opencontainers.image.description="DSG Cinema self-hosted Playwright: Debian-source Git (local only) + CUPS OpenSSL TLS; GnuTLS not included" \
+      org.opencontainers.image.licenses="DSG proprietary application; bundled Git GPL and CUPS Apache-2.0 notices in /opt"
 WORKDIR /app
 
 # This image deliberately has neither the Debian GnuTLS-linked Git package
