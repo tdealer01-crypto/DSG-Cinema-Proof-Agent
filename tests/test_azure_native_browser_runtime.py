@@ -174,7 +174,8 @@ async def test_context_creation_restore_checkpoint_observe_and_current(monkeypat
     assert len(observed_again["history"]) == 1
 
     current = await azure_local_browser.current_shared_browser("acct", create=False)
-    assert current["provider"] == "azure_container_apps"
+    assert current["provider"] == "self_hosted_playwright"
+    assert current["backend"] == "self_hosted"
     assert current["connected"] is True
     assert current["context_persistent"] is True
     assert current["continuity"]["privacy"].startswith("URL/title only")
