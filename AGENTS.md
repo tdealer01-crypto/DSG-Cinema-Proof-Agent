@@ -133,7 +133,7 @@ the owner's call.
 
 ## Remote Browser canonical path
 
-Remote Browser canonical path is `Chat/Agent/CLI -> DSG Spacetime governance -> DSG OS capability -> DSG Cinema -> AWS self-hosted shared Chromium -> Evidence`. DSG OS is not the deprecated upstream BrowserOS/Claw sidecar.
+Remote Browser canonical path is `Chat/Agent/CLI -> DSG Spacetime governance -> DSG OS capability -> DSG Cinema -> AWS self-hosted shared Chromium -> Evidence`. DSG OS is the sole canonical browser/runtime capability name. No retired external browser sidecar is part of this repository.
 
 Before browser work, read `docs/REMOTE_BROWSER_USAGE.md`. Use `scripts/dsg_browser.py` / installed command `dsg-browser` as the standard CLI surface. Reuse the account-scoped persistent Cinema shared Chromium browser; do not create a second browser stack. Historic `azure_local` persisted bindings and `azure_container_apps` viewer tokens are compatibility identifiers, not active Azure deployment proof.
 
