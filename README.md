@@ -11,7 +11,7 @@ It sits between an Agent and real execution. Authentication establishes **who** 
 
 ## Active DSG OS / Cinema browser architecture — AWS source and evidence boundary
 
-**DSG OS** is the DSG-owned governed browser capability layer under **Spacetime**. **Cinema** is the account-scoped shared Chromium/Playwright execution provider and human viewer. This does **not** embed or relaunch the retired upstream BrowserOS/Claw server.
+**DSG OS** is the DSG-owned governed browser capability layer under **Spacetime**. **Cinema** is the account-scoped shared Chromium/Playwright execution provider and human viewer. No retired external browser sidecar is embedded or relaunched.
 
 `User/Agent → Spacetime Plan/Policy/Approval → DSG OS → Cinema shared browser → verified result/evidence`
 
@@ -597,4 +597,4 @@ https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent
 
 ## AWS migration production note
 
-The active migration target is AWS. Azure deployment workflows are retained only for historical/manual rollback proof and are not automatic production acceptance. The canonical browser path is **BrowserOS capability + Cinema**, with Claw Server removed. Current production claims require immutable AWS image evidence, current runtime probes, and fresh governed E2E evidence.
+The active migration target is AWS. Azure deployment workflows are retained only for historical/manual rollback proof and are not automatic production acceptance. The canonical browser path is **DSG OS + Cinema**. No retired external browser sidecar is part of the active architecture. Current production claims require immutable AWS image evidence, current runtime probes, and fresh governed E2E evidence.

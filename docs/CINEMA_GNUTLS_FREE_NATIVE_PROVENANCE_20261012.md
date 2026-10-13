@@ -25,7 +25,7 @@ Debian source package manifests/changelogs and archive signatures are inherited 
 - [ ] Runtime `dpkg-query` lists custom `git` and `libcups2t64` with explicit source versions; `ldconfig -p` and Chromium `ldd` prove no GnuTLS dependency; no absent ELF dependencies. 
 - [ ] Custom CUPS ELF has `GNU_RELRO` and `BIND_NOW` linker hardening; source archives are pinned to the dated signed Debian snapshot.
 - [ ] **Local** Git init/commit/clone succeeds (not a network-enabled Git claim).
-- [ ] No upstream BrowserOS/Claw sidecar is bundled.
+- [ ] No retired external browser sidecar is bundled.
 - [ ] Current-commit ECR scan `COMPLETE` with `CRITICAL=0`, no suppression or override.
 - [ ] Only then operator-approved deploy to **existing** EC2, new running digest readback and user-bound low-risk Cinema status.
 - [ ] Separate signed Connect/Execute approval/E2E evidence, Viewer/Memory continuity, and DSG OS Browser Twin/Recovery/Core Spin verification remain independent.
