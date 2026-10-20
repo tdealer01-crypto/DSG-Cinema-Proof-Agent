@@ -156,7 +156,7 @@ def test_agent_skill_targets_canonical_spacetime_flow():
 def test_spacetime_package_contract_declares_canonical_tools_and_client_managed_auth():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     assert "MCP protocol 2025-06-18" in readme
-    assert "Bearer authentication via client-managed DSG_SPACETIME_API_KEY" in readme
+    assert "Authentication: client-managed OAuth or a provisioned Bearer DSG_SPACETIME_API_KEY" in readme
     assert "plugin installation and authenticated MCP use are separate gates" in readme
     assert "client credential binding is required" in readme
     assert "copilot mcp add --transport http" in readme
