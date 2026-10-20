@@ -3,7 +3,7 @@
   "mcpServers": {
     "dsg-spacetime": {
       "type": "streamable-http",
-      "url": "https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp"
+      "url": "https://aws.dsg.pics/mcp"
     }
   }
 }
