@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/workflows/build-aws-cinema.yml"
       - "Dockerfile.cinema"
+      - "scripts/verify_cinema_ecr_scan.py"
+      - "tests/test_verify_cinema_ecr_scan.py"
       - "requirements-cinema.txt"
       - "cinema_main.py"
       - "api_v1/**"
@@ -19,6 +21,8 @@ on:
     paths:
       - ".github/workflows/build-aws-cinema.yml"
       - "Dockerfile.cinema"
+      - "scripts/verify_cinema_ecr_scan.py"
+      - "tests/test_verify_cinema_ecr_scan.py"
       - "requirements-cinema.txt"
       - "cinema_main.py"
       - "api_v1/**"
@@ -43,6 +47,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Test exact-image ECR scan gate (hermetic)
+        run: python3 -m unittest discover -s tests -p 'test_verify_cinema_ecr_scan.py' -v
       - name: Build Cinema image locally
         run: docker build -f Dockerfile.cinema -t dsg-cinema:${GITHUB_SHA} .
       - name: Smoke-test bundled Chromium
@@ -139,7 +145,7 @@ jobs:
           echo "AWS_CINEMA_ECR_BUILD=PASS source_sha=$GITHUB_SHA digest=$DIGEST"
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
         id: image
-      - name: Block release on critical ECR findings
+      - name: Block unresolved critical/high ECR findings
         shell: bash
         run: |
           set -euo pipefail
@@ -185,17 +191,11 @@ jobs:
             echo "nextAction=Read the ECR scan result directly; rerun only after the same immutable digest reaches COMPLETE."
             exit 28
           fi
-          CRITICAL="$(jq -r '.imageScanFindings.findingSeverityCounts.CRITICAL // 0' <<<"$FINDINGS")"
-          HIGH="$(jq -r '.imageScanFindings.findingSeverityCounts.HIGH // 0' <<<"$FINDINGS")"
-          MEDIUM="$(jq -r '.imageScanFindings.findingSeverityCounts.MEDIUM // 0' <<<"$FINDINGS")"
-          echo "AWS_CINEMA_ECR_SCAN critical=$CRITICAL high=$HIGH medium=$MEDIUM"
-          if (( CRITICAL > 0 )); then
-            echo "READINESS=BLOCKED"
-            echo "BLOCK: Cinema image has critical ECR findings"
-            echo "nextAction=Patch the vulnerable package(s), publish a new source-bound image, and require zero CRITICAL findings before deployment."
-            exit 25
-          fi
-          echo "AWS_CINEMA_ECR_SCAN_GATE=PASS"
+          # Verify the COMPLETE scan belongs to this exact ECR repo+digest.
+          # HIGH findings require a corrected image or explicit reviewed release
+          # policy change; never report PASS from a CRITICAL-only scan.
+          printf '%s' "$FINDINGS" | python3 scripts/verify_cinema_ecr_scan.py \
+            --digest "$DIGEST" --repository "$ECR_REPOSITORY"
       - name: Cost-safe deployment gate
         run: |
           echo "AWS_CINEMA_RUNTIME_DEPLOY=BLOCKED_BY_COST_GATE"
