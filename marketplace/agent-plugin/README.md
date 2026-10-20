@@ -58,7 +58,7 @@ Portable MCP surface:
 ```text
 POST /mcp
 MCP protocol 2025-06-18
-Bearer authentication via client-managed DSG_SPACETIME_API_KEY
+Authentication: client-managed OAuth or a provisioned Bearer DSG_SPACETIME_API_KEY
 ```
 
 Canonical tools:
@@ -111,7 +111,7 @@ The portable package deliberately contains no API key or Authorization header. A
 
 Therefore **plugin installation and authenticated MCP use are separate gates**. Installation may succeed while the plugin-declared remote server remains unauthorized until the client binds a credential.
 
-Use the client application's own protected MCP credential mechanism. This is a separate step from plugin installation. Never place credentials in the repository. For GitHub Copilot CLI, the native MCP configuration supports a remote HTTP server plus an `Authorization` header. Prefer the interactive `/mcp` dashboard so the secret is not copied into repository files. If a client cannot attach a protected credential to the plugin-declared entry, configure the same Spacetime endpoint as a client-native authenticated MCP entry and keep that credential outside the plugin package.
+Use the client application's own protected MCP credential mechanism. This is a separate step from plugin installation. Never place credentials in the repository. For GitHub Copilot CLI, the native MCP configuration supports a remote HTTP server plus an `Authorization` header. Prefer the client's interactive MCP credential settings so the secret is not copied into repository files. The Cinema `/dashboard` is a customer browser UI, not a credential-entry page for `/mcp`. If a client cannot attach a protected credential to the plugin-declared entry, configure the same Spacetime endpoint as a client-native authenticated MCP entry and keep that credential outside the plugin package.
 
 A non-interactive Copilot CLI form also exists, but using it can place a token in shell history, so use it only in a trusted environment:
 
