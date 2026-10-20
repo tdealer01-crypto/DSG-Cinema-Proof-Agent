@@ -5,18 +5,18 @@
   },
   "metadata": {
     "description": "DSG ONE plugins for Spacetime-governed agent execution, evidence, replay, and deterministic proof.",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "plugins": [
     {
       "name": "dsg-governance",
       "description": "Govern AI agent execution through DSG Spacetime plan binding, licensed Routes, and tamper-evident execution evidence.",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "source": "./marketplace/agent-plugin",
       "author": {
         "name": "DSG ONE"
       },
-      "homepage": "https://dsgoneverifiedweb.z1.web.core.windows.net/",
+      "homepage": "https://aws.dsg.pics/dashboard",
       "repository": "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent",
       "keywords": [
         "agent-governance",
