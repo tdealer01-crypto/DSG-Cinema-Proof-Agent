@@ -35,7 +35,7 @@ marketplace/agent-plugin/
             └── revenue.md
 ```
 
-`plugin.json` targets Agent Plugins specification `1.0.0`. The plugin release is `1.1.0`. `mcp.json` declares the production DSG Spacetime MCP endpoint as Streamable HTTP. No credential is stored in the package; Agent Plugins 1.0 authorization is client-managed.
+`plugin.json` targets Agent Plugins specification `1.0.0`. The plugin release is `1.1.1`. `mcp.json` declares the production DSG Spacetime MCP endpoint as Streamable HTTP. No credential is stored in the package; Agent Plugins 1.0 authorization is client-managed.
 
 ## AWS-only production cutover (1.1.1)
 
@@ -117,7 +117,7 @@ copilot mcp add --transport http \
   https://aws.dsg.pics/mcp
 ```
 
-Do not commit a real key, paste it into issue/PR comments, store it in evidence, or print it in shared logs. Until an exact v1.1.0 authenticated client tool call is stored, authentication compatibility remains `NOT VERIFIED` even when package installation passes.
+Do not commit a real key, paste it into issue/PR comments, store it in evidence, or print it in shared logs. Until an exact v1.1.1 AWS authenticated client tool call is stored, authentication compatibility remains `NOT VERIFIED` even when package installation passes.
 
 ## Compatibility evidence
 
@@ -155,4 +155,4 @@ A useful integration must show, without requiring raw log inspection:
 
 ## Truth boundary
 
-Version `1.1.1` is the repository marketplace package targeting the AWS public DSG Spacetime production contract. A successful package/catalog check does not by itself prove authenticated Spacetime execution. The authenticated v1.1.0 client row remains `NOT VERIFIED` until a real client binds a protected credential and successfully calls the Spacetime MCP surface with stored evidence.
+Version `1.1.1` is the repository marketplace package targeting the AWS public DSG Spacetime production contract. A successful package/catalog check does not by itself prove authenticated Spacetime execution. The authenticated v1.1.1 AWS client row remains `NOT VERIFIED` until a real client binds a protected credential and successfully calls the Spacetime MCP surface with stored evidence.
