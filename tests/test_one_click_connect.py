@@ -86,7 +86,7 @@ def test_universal_connect_truth_matches_repository_channels():
     # explicit instead of deriving one endpoint from the other.
     spacetime_mcp_url = plugin_mcp["mcpServers"]["dsg-spacetime"]["url"]
     assert spacetime_mcp_url == (
-        "https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp"
+        "https://aws.dsg.pics/mcp"
     )
 
     cinema_base = launch["product"]["production_api_base"]
