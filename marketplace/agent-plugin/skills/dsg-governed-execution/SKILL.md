@@ -4,12 +4,16 @@ description: Govern an AI agent action through DSG Spacetime by discovering appr
 compatibility: Requires an Agent Plugins 1.0 client with MCP Streamable HTTP support, network access to the configured DSG Spacetime MCP endpoint, and client-managed DSG_SPACETIME_API_KEY credentials when the runtime requires authentication.
 metadata:
   author: DSG ONE
-  version: "1.1.0"
+  version: "1.1.1"
 ---
 
 # DSG Governed Execution
 
 Use DSG Spacetime as the execution boundary around an agent's real work. DSG must verify alignment with the approved plan, enforce Route and entitlement constraints, and retain evidence. It must not invent the result and a connection failure is never approval.
+
+## Production MCP target
+
+Use `https://aws.dsg.pics/mcp` for AWS-only DSG Spacetime governance. Never use retired Azure MCP URLs as live targets. This plugin does **not** pair directly to the Cinema dashboard: `dsg_pair_*` is a Cinema-only token and must not be sent to the Spacetime MCP endpoint. An authenticated client connection and an approved Cinema browser plan are separate proof gates.
 
 ## Canonical Spacetime workflow
 

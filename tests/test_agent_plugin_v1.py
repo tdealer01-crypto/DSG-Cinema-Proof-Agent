@@ -16,9 +16,9 @@ COPILOT_MCP_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-mcp-auth-e2e-
 COPILOT_FULL_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-full-governed-e2e-2026-08-21.json"
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
-PLUGIN_RELEASE = "1.1.0"
+PLUGIN_RELEASE = "1.1.1"
 SPACETIME_MCP_URL = (
-    "https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp"
+    "https://aws.dsg.pics/mcp"
 )
 PLUGIN_FIELDS = {
     "$schema",
@@ -99,7 +99,7 @@ def test_mcp_config_targets_spacetime_https_without_embedded_credentials():
 
     parsed = urlsplit(server["url"])
     assert parsed.scheme == "https"
-    assert parsed.hostname == "dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io"
+    assert parsed.hostname == "aws.dsg.pics"
     assert parsed.username is None and parsed.password is None
     assert parsed.fragment == ""
     assert parsed.path == "/mcp"
@@ -169,7 +169,7 @@ def test_spacetime_package_contract_declares_canonical_tools_and_client_managed_
 
 def test_plugin_readme_separates_current_release_from_historical_client_evidence():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
-    assert "Plugin release:** `1.1.0`" in readme
+    assert "Plugin release:** `1.1.1`" in readme
     assert "Agent Plugins specification:** `1.0.0`" in readme
     assert SPACETIME_MCP_URL.removesuffix("/mcp") in readme
     assert "spacetime_execute" in readme
@@ -180,7 +180,7 @@ def test_plugin_readme_separates_current_release_from_historical_client_evidence
     assert "32499134400" in readme
     assert "HISTORICAL v1.0.0" in readme
     assert readme.count("NOT VERIFIED") >= 3
-    assert "Historical v1.0.0 client runs do not prove v1.1.0 client compatibility" in readme
+    assert "Historical v1.0.0 and v1.1.0 client runs do not prove v1.1.1 AWS client compatibility" in readme
     assert "Copilot CLI — plugin v1.0.0" in readme
 
 
@@ -218,3 +218,21 @@ def test_revenue_reference_matches_spacetime_entitlement_boundary():
     assert "do not create a purchase automatically" in text
     assert "/billing/activate" not in text
     assert "/billing/checkout/session" not in text
+
+
+def test_aws_only_plugin_package_and_catalog_are_free_of_retired_hosts():
+    """Current plugin distribution must not silently revert to retired Azure endpoints."""
+    active_files = (
+        PLUGIN / "mcp.json",
+        PLUGIN / "plugin.json",
+        PLUGIN / "README.md",
+        MARKETPLACE,
+    )
+    for path in active_files:
+        data = path.read_text(encoding="utf-8")
+        assert "azurecontainerapps.io" not in data.lower(), path
+        assert "web.core.windows.net" not in data.lower(), path
+    assert _json(PLUGIN / "plugin.json")["homepage"] == "https://dsg.pics/"
+    catalog = _json(MARKETPLACE)
+    assert catalog["plugins"][0]["homepage"] == "https://dsg.pics/"
+    assert _json(PLUGIN / "mcp.json")["mcpServers"]["dsg-spacetime"]["url"] == "https://aws.dsg.pics/mcp"
