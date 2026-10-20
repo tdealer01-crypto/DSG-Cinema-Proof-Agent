@@ -1,10 +1,10 @@
 ---
 name: dsg-governed-execution
 description: Govern an AI agent action through DSG Spacetime by discovering approved capabilities, binding the proposed plan, executing only a licensed plan-bound Route, and verifying the resulting evidence. Use when an agent action needs an auditable ALLOW or BLOCK result without bypassing the user-approved plan.
-compatibility: Requires an Agent Plugins 1.0 client with MCP Streamable HTTP support, network access to the configured DSG Spacetime MCP endpoint, and client-managed DSG_SPACETIME_API_KEY credentials when the runtime requires authentication.
+compatibility: Requires an Agent Plugins 1.0 client with MCP Streamable HTTP support, network access to https://aws.dsg.pics/mcp (AWS production), and client-managed OAuth or supported bearer credentials when the runtime requires authentication.
 metadata:
   author: DSG ONE
-  version: "1.1.0"
+  version: "1.2.0"
 ---
 
 # DSG Governed Execution
