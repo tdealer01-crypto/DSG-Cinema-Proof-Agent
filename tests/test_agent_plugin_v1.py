@@ -173,6 +173,9 @@ def test_plugin_readme_separates_current_release_from_historical_client_evidence
     assert "Agent Plugins specification:** `1.0.0`" in readme
     assert SPACETIME_MCP_URL.removesuffix("/mcp") in readme
     assert "spacetime_execute" in readme
+    assert "https://aws.dsg.pics/dashboard" in readme
+    assert "https://aws.dsg.pics/mcp" in readme
+    assert "These addresses are not interchangeable" in readme
     assert "copilot plugin marketplace update dsg-agent-plugins" in readme
     assert "copilot plugin update dsg-governance" in readme
     assert "32482954936" in readme
