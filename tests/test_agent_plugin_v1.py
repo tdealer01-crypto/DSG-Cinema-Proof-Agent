@@ -16,9 +16,9 @@ COPILOT_MCP_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-mcp-auth-e2e-
 COPILOT_FULL_EVIDENCE = ROOT / "evidence" / "client" / "copilot-cli-full-governed-e2e-2026-08-21.json"
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
-PLUGIN_RELEASE = "1.1.0"
+PLUGIN_RELEASE = "1.2.0"
 SPACETIME_MCP_URL = (
-    "https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp"
+    "https://aws.dsg.pics/mcp"
 )
 PLUGIN_FIELDS = {
     "$schema",
@@ -60,6 +60,7 @@ def test_plugin_manifest_targets_agent_plugins_v1_and_spacetime_release():
     assert "--" not in manifest["name"]
     assert ".." not in manifest["name"]
     assert manifest["repository"] == "https://github.com/tdealer01-crypto/DSG-Cinema-Proof-Agent"
+    assert manifest["homepage"] == "https://aws.dsg.pics/dashboard"
     assert "spacetime" in {item.lower() for item in manifest["keywords"]}
 
 
@@ -76,6 +77,7 @@ def test_copilot_marketplace_catalog_points_to_spacetime_plugin_release():
     assert entry["name"] == manifest["name"] == "dsg-governance"
     assert entry["version"] == manifest["version"] == PLUGIN_RELEASE
     assert entry["source"] == "./marketplace/agent-plugin"
+    assert entry["homepage"] == "https://aws.dsg.pics/dashboard"
     assert entry["strict"] is True
     assert "mcpServers" not in entry
 
@@ -99,11 +101,12 @@ def test_mcp_config_targets_spacetime_https_without_embedded_credentials():
 
     parsed = urlsplit(server["url"])
     assert parsed.scheme == "https"
-    assert parsed.hostname == "dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io"
+    assert parsed.hostname == "aws.dsg.pics"
     assert parsed.username is None and parsed.password is None
     assert parsed.fragment == ""
     assert parsed.path == "/mcp"
     assert "headers" not in server
+    assert "azure" not in json.dumps(config).lower()
 
     serialized = json.dumps(config).lower()
     for secret_marker in (
@@ -169,10 +172,11 @@ def test_spacetime_package_contract_declares_canonical_tools_and_client_managed_
 
 def test_plugin_readme_separates_current_release_from_historical_client_evidence():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
-    assert "Plugin release:** `1.1.0`" in readme
+    assert "Plugin release:** `1.2.0`" in readme
     assert "Agent Plugins specification:** `1.0.0`" in readme
     assert SPACETIME_MCP_URL.removesuffix("/mcp") in readme
     assert "spacetime_execute" in readme
+    assert "https://aws.dsg.pics/dashboard" in readme
     assert "copilot plugin marketplace update dsg-agent-plugins" in readme
     assert "copilot plugin update dsg-governance" in readme
     assert "32482954936" in readme
@@ -180,7 +184,7 @@ def test_plugin_readme_separates_current_release_from_historical_client_evidence
     assert "32499134400" in readme
     assert "HISTORICAL v1.0.0" in readme
     assert readme.count("NOT VERIFIED") >= 3
-    assert "Historical v1.0.0 client runs do not prove v1.1.0 client compatibility" in readme
+    assert "Historical v1.0.0 client runs do not prove v1.2.0 client compatibility" in readme
     assert "Copilot CLI — plugin v1.0.0" in readme
 
 
