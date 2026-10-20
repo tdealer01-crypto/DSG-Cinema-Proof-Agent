@@ -81,12 +81,12 @@ def test_universal_connect_truth_matches_repository_channels():
     launch = json.loads((ROOT / "marketplace" / "launch-manifest.json").read_text(encoding="utf-8"))
     mobile = json.loads((ROOT / "mobile" / "base-apk.identity.json").read_text(encoding="utf-8"))
 
-    # The portable Agent Plugin now targets Spacetime. The customer landing still
+    # The portable Agent Plugin now targets AWS Spacetime. The legacy customer landing still
     # exposes Cinema's existing Direct API/MCP surfaces; keep the two products
     # explicit instead of deriving one endpoint from the other.
     spacetime_mcp_url = plugin_mcp["mcpServers"]["dsg-spacetime"]["url"]
     assert spacetime_mcp_url == (
-        "https://dsg-spacetime-prod.greenglacier-493f3f71.westus3.azurecontainerapps.io/mcp"
+        "https://aws.dsg.pics/mcp"
     )
 
     cinema_base = launch["product"]["production_api_base"]
