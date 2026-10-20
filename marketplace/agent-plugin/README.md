@@ -43,6 +43,16 @@ The live DSG Spacetime MCP endpoint is **`https://aws.dsg.pics/mcp`**, and the p
 
 Azure-era endpoints and run receipts remain **historical evidence only**, not supported production defaults. Keep OAuth/secret binding inside the client; do not embed tokens into this plugin package.
 
+### Cinema customer dashboard (separate from the MCP server)
+
+To open the existing **AWS Self-Hosted Cinema UI** in a browser, use:
+
+- [Cinema Dashboard](https://aws.dsg.pics/dashboard) — customer browser controls and shared-viewer entry
+- [DSG ONE](https://dsg.pics/) — product homepage and sign-in
+- `https://aws.dsg.pics/mcp` — **Spacetime MCP** for client-managed authenticated agent tools; not a visual dashboard
+
+These addresses are not interchangeable. A successful Dashboard HTTP response is not proof of an authenticated Shared Browser session or signed Cinema execution. A Cinema `dsg_pair_*` pairing token is not an OAuth/Bearer credential for Spacetime MCP. No old Azure endpoint is used as a fallback.
+
 ## Spacetime target
 
 ```text
