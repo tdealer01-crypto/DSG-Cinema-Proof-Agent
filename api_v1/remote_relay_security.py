@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -25,7 +26,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import APIRouter, Header, HTTPException
 
-from . import browserbase_executor, remote_browser
+from . import azure_local_browser, browserbase_executor, remote_browser
 
 router = APIRouter(tags=["remote-browser"])
 SIGNATURE_VERSION = "dsg.managed-relay.v1"
@@ -217,7 +218,32 @@ async def authenticated_browserbase_action(
 async def authenticated_live_view(
     x_dsg_api_key: Optional[str] = Header(default=None, alias="X-DSG-API-Key"),
 ) -> dict[str, Any]:
-    return await browserbase_executor.live_view(x_dsg_api_key=x_dsg_api_key)
+    """Compatibility response for the existing customer dashboard.
+
+    The legacy dashboard expects an HTTPS live_view_url. The customer-owned
+    self-hosted Playwright provider exposes a short-lived, same-origin viewer
+    instead. Reuse the existing authenticated viewer issuance and maintain
+    the original Browserbase behavior for Browserbase deployments. Never
+    return a provider-internal or tokenless URL.
+    """
+    if not azure_local_browser.configured():
+        return await browserbase_executor.live_view(x_dsg_api_key=x_dsg_api_key)
+
+    from . import browserbase_live_ui
+
+    # This function verifies the existing X-DSG-API-Key and account binding.
+    frame = await browserbase_live_ui.live_frame(x_dsg_api_key=x_dsg_api_key)
+    if not frame.get("connected"):
+        return {**frame, "live_view_url": None}
+
+    embed_path = frame.get("embed_url")
+    if not isinstance(embed_path, str) or not re.fullmatch(
+        r"/remote-browser/azure/view/[A-Za-z0-9_-]{20,128}", embed_path
+    ):
+        raise HTTPException(status_code=502, detail="shared browser viewer binding is invalid")
+
+    # Fixed trusted origin rather than an untrusted incoming Host header.
+    return {**frame, "live_view_url": "https://aws.dsg.pics" + embed_path}
 
 
 def install(app) -> None:
