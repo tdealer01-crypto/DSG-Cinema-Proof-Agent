@@ -142,9 +142,11 @@ RUN set -eux; \
        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
        libxfixes3 libxkbcommon0 libxrandr2; \
     # Noble's apt dependency graph can introduce GnuTLS after base upgrade. \
-    # Purge the binary package only after all apt operations, then assert \
+    # Purge apt and GnuTLS after all apt operations, then assert \
     # the final runtime has neither the package nor dynamic linker entry. \
-    apt-get purge -y libgnutls30t64; \
+    # apt requires GnuTLS on Noble and is not needed in the served image. \
+    # Remove both together with normal dependency checks (no --force). \
+    apt-get purge -y apt libgnutls30t64; \
     python -m playwright install chromium; \
     ldconfig; \
     git --version; \
