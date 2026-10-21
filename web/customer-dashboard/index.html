@@ -13,6 +13,20 @@
     <span class="status" id="connection">NOT CONNECTED</span>
   </header>
 
+  <!-- Human user entry: reuse the existing DSG ONE Auth0 PKCE + workspace
+       identity bridge. Never copy an Auth0 access token to the Cinema URL or
+       substitute a production Cinema master key for a user's account. -->
+  <section class="card" id="oauthEntry">
+    <div class="label">DSG ONE sign-in</div>
+    <h1>Continue with DSG ONE (OAuth)</h1>
+    <p class="status">Recommended for Free and paid users. Sign in with your existing DSG ONE Auth0 account. The Workroom uses your verified user identity and governed AWS Spacetime browser tools. No API key needs to be pasted.</p>
+    <p><a class="btn" id="oauthWorkroomLink" href="https://dsg.pics/dsg/workroom?tool=browser#live-controls">Sign in with DSG ONE</a></p>
+    <p class="status">This opens the governed Workroom. It does not automatically pair this legacy Cinema dashboard's Free account or enable the same-session Human Viewer. Pairing and browser execution still require their normal approval and account binding.</p>
+  </section>
+
+  <details class="advanced" id="developerKeyOptions">
+    <summary>Advanced · API key / legacy Cinema account</summary>
+    <p class="status">For developer-managed Cinema accounts only. OAuth sign-in is the recommended normal user entry above.</p>
   <section class="card activation">
     <div class="label">Account</div>
     <p class="status">Activate once or reconnect with your DSG API key. The key stays in this browser tab only.</p>
@@ -34,6 +48,7 @@
     <button class="btn" id="connect">Connect</button>
     <button class="btn secondary" id="disconnect" disabled>Disconnect</button>
   </section>
+  </details>
 
   <section class="grid">
     <div class="card"><div class="label">Plan</div><div class="value" id="plan">—</div></div>
