@@ -1,6 +1,6 @@
 """Authenticated same-origin UI bridge for Cinema shared browsers.
 
-Browserbase keeps its provider Live View iframe. The Azure-native provider uses
+Browserbase keeps its provider Live View iframe. The AWS self-hosted provider uses
 a same-origin screenshot/input bridge backed by the exact Playwright page shared
 with the agent. Viewer capabilities are short-lived and contain no DSG API key.
 """
@@ -138,7 +138,7 @@ async def live_frame(
             "connected": True,
             "browser_session_id": live.get("browser_session_id"),
             "browserbase_session_id": live.get("browserbase_session_id"),
-            "embed_url": f"/remote-browser/azure/view/{viewer}",
+            "embed_url": f"/remote-browser/self-hosted/view/{viewer}",
             "shared_profile": True,
             "context_persistent": True,
             "continuity": live.get("continuity"),
@@ -200,11 +200,11 @@ const screen=document.getElementById('screen');
 const url=document.getElementById('url');
 const kbd=document.getElementById('kbd');
 async function act(kind,parameters={{}}){{
-  const r=await fetch(`/remote-browser/azure/view/${{token}}/action`,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{kind,parameters}}),cache:'no-store'}});
+  const r=await fetch(`/remote-browser/self-hosted/view/${{token}}/action`,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{kind,parameters}}),cache:'no-store'}});
   if(!r.ok) throw new Error(await r.text());
   const v=await r.json(); if(v.url) url.value=v.url; return v;
 }}
-function refresh(){{screen.src=`/remote-browser/azure/view/${{token}}/snapshot?t=${{Date.now()}}`;}}
+function refresh(){{screen.src=`/remote-browser/self-hosted/view/${{token}}/snapshot?t=${{Date.now()}}`;}}
 function point(e){{const r=screen.getBoundingClientRect(); if(!r.width||!r.height)return null; return {{x:(e.clientX-r.left)*1280/r.width,y:(e.clientY-r.top)*800/r.height}};}}
 screen.onload=()=>setTimeout(refresh,450); screen.onerror=()=>setTimeout(refresh,1200); refresh();
 screen.addEventListener('pointerup',async e=>{{const p=point(e); if(!p)return; e.preventDefault(); try{{await act('click',p);}}catch(_){{}}}},{{passive:false}});
@@ -235,6 +235,7 @@ kbd.addEventListener('keydown',e=>{{if(e.key==='Enter'){{e.preventDefault();send
     )
 
 
+@router.get("/remote-browser/self-hosted/view/{viewer_token}", include_in_schema=False)
 @router.get("/remote-browser/azure/view/{viewer_token}", include_in_schema=False)
 async def azure_live_view(viewer_token: str) -> HTMLResponse:
     viewer = _load_viewer(viewer_token)
@@ -281,6 +282,7 @@ async def embed_live_view(viewer_token: str) -> HTMLResponse:
     )
 
 
+@router.get("/remote-browser/self-hosted/view/{viewer_token}/snapshot", include_in_schema=False)
 @router.get("/remote-browser/azure/view/{viewer_token}/snapshot", include_in_schema=False)
 async def azure_snapshot(viewer_token: str) -> Response:
     viewer = _load_viewer(viewer_token)
@@ -294,6 +296,7 @@ async def azure_snapshot(viewer_token: str) -> Response:
     )
 
 
+@router.post("/remote-browser/self-hosted/view/{viewer_token}/action", include_in_schema=False)
 @router.post("/remote-browser/azure/view/{viewer_token}/action", include_in_schema=False)
 async def azure_user_action(viewer_token: str, payload: dict[str, Any]) -> dict[str, Any]:
     viewer = _load_viewer(viewer_token)
