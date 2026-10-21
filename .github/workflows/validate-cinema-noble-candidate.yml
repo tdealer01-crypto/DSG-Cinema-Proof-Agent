@@ -83,6 +83,28 @@ jobs:
             test -f "$tmp/work.git/HEAD"
             echo CINEMA_NOBLE_LOCAL_GIT_SMOKE=PASS
           '
+      - name: Validate new FastAPI and Starlette runtime API contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT="$(docker run --rm -i dsg-cinema-noble-candidate:${GITHUB_SHA} python - <<'PY'
+          from fastapi.testclient import TestClient
+          from cinema_main import app
+
+          with TestClient(app) as client:
+              schema = client.get("/openapi.json")
+              assert schema.status_code == 200, (schema.status_code, schema.text[:400])
+              api = schema.json()
+              assert "/health" in api["paths"]
+              health = client.get("/health")
+              # No owner/backend secrets in the CI container: health MUST fail closed.
+              assert health.status_code == 503, (health.status_code, health.text[:400])
+              assert health.json().get("status") == "blocked"
+              print("CINEMA_NOBLE_API_IMPORT_OPENAPI_AND_AUTH=PASS")
+          PY
+          )"
+          echo "$OUTPUT"
+          grep -q 'CINEMA_NOBLE_API_IMPORT_OPENAPI_AND_AUTH=PASS' <<<"$OUTPUT"
       - name: Security scan full candidate image (all fix-statuses)
         # Independent open-source diagnosis; AWS ECR exact-digest scan remains
         # mandatory before any image can be published or promoted.
