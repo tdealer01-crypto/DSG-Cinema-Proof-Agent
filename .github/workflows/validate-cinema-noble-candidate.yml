@@ -30,7 +30,7 @@ jobs:
           set -euo pipefail
           docker build --pull --no-cache -f Dockerfile.cinema.noble \
             -t dsg-cinema-noble-candidate:${GITHUB_SHA} .
-      - name: Validate pinned system package floors and GnuTLS-free linkage
+      - name: Validate pinned package floors and Git CUPS Chromium GnuTLS-free linkage
         shell: bash
         run: |
           set -euo pipefail
@@ -38,12 +38,17 @@ jobs:
             dpkg-query -W libc6 libxml2 zlib1g git libcups2t64
             dpkg --compare-versions "$(dpkg-query -W libc6 | cut -f2)" ge "2.39-0ubuntu8.9"
             dpkg --compare-versions "$(dpkg-query -W libxml2 | cut -f2)" ge "2.9.14+dfsg-1.3ubuntu3.10"
-            ! dpkg-query -W libgnutls30t64
-            ! ldconfig -p | grep libgnutls
-            ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/dsg-noble-ldd.log
-            ! grep -q "not found" /tmp/dsg-noble-ldd.log
-            ! grep -q libgnutls /tmp/dsg-noble-ldd.log
-            ! command -v curl
+            # Ubuntu may retain GnuTLS for Essential apt. Governed execution
+            # surfaces may not dynamically link it; never force-remove apt.
+            ldd "$(command -v git)" | tee /tmp/dsg-noble-git-ldd.log
+            ldd /usr/local/lib/libcups.so.2 | tee /tmp/dsg-noble-cups-ldd.log
+            ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/dsg-noble-chromium-ldd.log
+            for linkage in /tmp/dsg-noble-git-ldd.log /tmp/dsg-noble-cups-ldd.log /tmp/dsg-noble-chromium-ldd.log; do
+              if grep -q "not found" "$linkage"; then echo "BLOCK: missing runtime library $linkage"; exit 1; fi
+              if grep -q libgnutls "$linkage"; then echo "BLOCK: GnuTLS linked into runtime surface $linkage"; exit 1; fi
+            done
+            if command -v curl >/dev/null 2>&1; then echo "BLOCK: curl binary present"; exit 1; fi
+            if ! dpkg-query -W apt libgnutls30t64 >/dev/null; then echo "BLOCK: Ubuntu essential package inventory drift"; exit 1; fi
             echo CINEMA_NOBLE_PACKAGE_AND_LINKAGE=PASS
           '
       - name: Launch real Chromium and execute a real browser action

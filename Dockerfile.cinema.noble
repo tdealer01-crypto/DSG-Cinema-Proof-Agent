@@ -89,13 +89,15 @@ RUN set -eux; \
     dpkg-deb --build --root-owner-group /tmp/dsg-cups-root /tmp/dsg-cups.deb
 
 FROM ubuntu:24.04
-LABEL org.opencontainers.image.description="DSG Cinema self-hosted Playwright: Ubuntu-source Git (local only) + CUPS OpenSSL TLS; GnuTLS not included" \
+LABEL org.opencontainers.image.description="DSG Cinema self-hosted Playwright: Ubuntu-source Git (local only) + CUPS OpenSSL TLS; Git/CUPS/Chromium GnuTLS-unlinked" \
       org.opencontainers.image.licenses="DSG proprietary application; bundled Git GPL and CUPS Apache-2.0 notices in /opt"
 WORKDIR /app
 
-# This image deliberately has neither the Ubuntu GnuTLS-linked Git package
-# nor distribution libcups2t64. Both are supplied as audited, purpose-built
-# components using authenticated Ubuntu sources and a GnuTLS-free runtime.
+# Apt on Noble requires its distro GnuTLS package; removing Essential apt is not
+# acceptable. Runtime acceptance is based on verifiable execution-surface
+# linkage: local Git (NO_CURL), source-built CUPS (OpenSSL) and Chromium must
+# not load GnuTLS. Ubuntu OS packages remain intact and MUST pass the full
+# uncompromised zero-CRITICAL/zero-HIGH Trivy and ECR scans.
 RUN set -eux; \
     apt-get update; \
     apt-get upgrade -y; \
@@ -141,16 +143,19 @@ RUN set -eux; \
        libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
        libxfixes3 libxkbcommon0 libxrandr2; \
+    # Preserve distro integrity; do not purge apt or its required GnuTLS. \
     python -m playwright install chromium; \
     ldconfig; \
     git --version; \
-    ! command -v curl; \
-    ! dpkg-query -W libgnutls30t64; \
-    ! ldconfig -p | grep libgnutls; \
+    if command -v curl >/dev/null 2>&1; then echo 'BLOCK: curl present' >&2; exit 1; fi; \
+    ldd "$(command -v git)" | tee /tmp/dsg-git-ldd.log; \
+    ldd /usr/local/lib/libcups.so.2 | tee /tmp/dsg-cups-ldd.log; \
     ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/chrome-ldd.log; \
-    ! grep -q 'not found' /tmp/chrome-ldd.log; \
-    ! grep -q libgnutls /tmp/chrome-ldd.log; \
-    rm -rf /var/lib/apt/lists/* /tmp/chrome-ldd.log
+    for report in /tmp/dsg-git-ldd.log /tmp/dsg-cups-ldd.log /tmp/chrome-ldd.log; do \
+      if grep -q 'not found' "$report"; then echo "BLOCK: unresolved runtime linkage: $report" >&2; exit 1; fi; \
+      if grep -q 'libgnutls' "$report"; then echo "BLOCK: GnuTLS linked into governed execution surface: $report" >&2; exit 1; fi; \
+    done; \
+    rm -rf /var/lib/apt/lists/* /tmp/chrome-ldd.log /tmp/dsg-git-ldd.log /tmp/dsg-cups-ldd.log
 
 COPY cinema_main.py marketplace_verification.py ./
 COPY logging_config.py middleware.py metrics.py error_monitoring.py sentry_config.py ./

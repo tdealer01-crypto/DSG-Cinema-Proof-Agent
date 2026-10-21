@@ -36,11 +36,17 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertIn("libxml2", self.source)
         self.assertIn("zlib1g", self.source)
 
-    def test_gnutls_absent_and_chromium_pipeline_preserved(self):
-        self.assertIn("! dpkg-query -W libgnutls30t64", self.source)
-        self.assertIn("! ldconfig -p | grep libgnutls", self.source)
+    def test_runtime_linkage_policy_and_chromium_pipeline_preserved(self):
+        # Ubuntu apt legitimately depends on GnuTLS. Governed execution
+        # surfaces still must not link to it. No forced Essential removal.
+        self.assertNotIn("apt-get purge -y apt", self.source)
+        self.assertIn("ldd \"$(command -v git)\"", self.source)
+        self.assertIn("ldd /usr/local/lib/libcups.so.2", self.source)
+        self.assertIn("ldd /ms-playwright/chromium-", self.source)
+        self.assertIn("if grep -q 'libgnutls'", self.source)
+        self.assertIn("exit 1", self.source)
         self.assertIn("python -m playwright install chromium", self.source)
-        self.assertIn("GnuTLS not included", self.source)
+        self.assertIn("Git/CUPS/Chromium GnuTLS-unlinked", self.source)
         self.assertIn('DSG_BROWSER_PROVIDER=self_hosted', self.source)
         self.assertIn('DSG_PLATFORM_REQUIRE_AUTH=1', self.source)
         self.assertIn('RUN python market_ready_payload/reconstruct.py', self.source)
@@ -55,17 +61,27 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertNotIn("docker push", self.workflow)
         self.assertNotIn("aws-actions/configure-aws-credentials", self.workflow)
         self.assertNotIn("workflow_dispatch", self.workflow)
+        self.assertIn('ldd "$(command -v git)"', self.workflow)
+        self.assertIn("ldd /usr/local/lib/libcups.so.2", self.workflow)
+        self.assertIn('if grep -q libgnutls "$linkage"', self.workflow)
+        self.assertIn("if ! dpkg-query -W apt libgnutls30t64", self.workflow)
 
 
-    def test_owner_dispatched_ecr_stage_cannot_mutate_runtime(self):
+    def test_protected_main_automatic_stage_cannot_mutate_runtime(self):
         stage = (
             ROOT / ".github/workflows/stage-aws-cinema-noble-candidate.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", stage)
         self.assertNotIn("pull_request:", stage)
-        self.assertNotIn("push:", stage)
+        self.assertIn("push:", stage)
+        self.assertIn("branches: [main]", stage)
+        self.assertIn("github.event_name == 'push'", stage)
         self.assertIn("github.ref == 'refs/heads/main'", stage)
         self.assertIn("github.actor == 'tdealer01-crypto'", stage)
+        self.assertIn("github.event_name == 'workflow_dispatch'", stage)
+        self.assertIn("for binary in", stage)
+        self.assertIn("GNUTLS_RUNTIME_LINK", stage)
+        self.assertNotIn("GNUTLS_PACKAGE_PRESENT", stage)
         self.assertIn("inputs.expected_source_sha == github.sha", stage)
         self.assertIn("STAGE_NOBLE_CINEMA_ECR_ONLY", stage)
         self.assertIn("test -f scripts/verify_cinema_ecr_scan.py", stage)
