@@ -238,7 +238,7 @@ async def authenticated_live_view(
 
     embed_path = frame.get("embed_url")
     if not isinstance(embed_path, str) or not re.fullmatch(
-        r"/remote-browser/azure/view/[A-Za-z0-9_-]{20,128}", embed_path
+        r"/remote-browser/(?:self-hosted|azure)/view/[A-Za-z0-9_-]{20,128}", embed_path
     ):
         raise HTTPException(status_code=502, detail="shared browser viewer binding is invalid")
 
