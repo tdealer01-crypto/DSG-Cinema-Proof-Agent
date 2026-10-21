@@ -1,0 +1,90 @@
+name: Verify isolated Ubuntu Noble Cinema candidate
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile.cinema.noble"
+      - ".github/workflows/validate-cinema-noble-candidate.yml"
+      - "tests/test_cinema_noble_source.py"
+      - "requirements-cinema.txt"
+      - "market_ready_payload/**"
+  # Intentionally no push-to-main build or ECR publisher:
+  # this is a non-production migration candidate with a blocking CVE scan.
+
+permissions:
+  contents: read
+
+jobs:
+  validate-noble-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source-only fail-closed assertions
+        run: python3 -m unittest -v tests/test_cinema_noble_source.py
+      - name: Build Ubuntu Noble candidate with signed Ubuntu source packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --no-cache -f Dockerfile.cinema.noble \
+            -t dsg-cinema-noble-candidate:${GITHUB_SHA} .
+      - name: Validate pinned system package floors and GnuTLS-free linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm dsg-cinema-noble-candidate:${GITHUB_SHA} sh -eu -c '
+            dpkg-query -W libc6 libxml2 zlib1g git libcups2t64
+            dpkg --compare-versions "$(dpkg-query -W -f="${Version}" libc6)" ge "2.39-0ubuntu8.9"
+            dpkg --compare-versions "$(dpkg-query -W -f="${Version}" libxml2)" ge "2.9.14+dfsg-1.3ubuntu3.10"
+            ! dpkg-query -W libgnutls30t64
+            ! ldconfig -p | grep libgnutls
+            ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/dsg-noble-ldd.log
+            ! grep -q "not found" /tmp/dsg-noble-ldd.log
+            ! grep -q libgnutls /tmp/dsg-noble-ldd.log
+            ! command -v curl
+            echo CINEMA_NOBLE_PACKAGE_AND_LINKAGE=PASS
+          '
+      - name: Launch real Chromium and execute a real browser action
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT="$(docker run --rm -i dsg-cinema-noble-candidate:${GITHUB_SHA} python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
+              )
+              page = browser.new_page()
+              page.set_content('<html><head><title>DSG Noble</title></head><body><button id="go">0</button><script>document.getElementById("go").addEventListener("click", function () {this.textContent="1";});</script></body></html>')
+              assert page.title() == "DSG Noble"
+              page.locator("#go").click()
+              assert page.locator("#go").inner_text() == "1"
+              assert page.screenshot(type="png").startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+              print("CINEMA_NOBLE_CHROMIUM_SMOKE=PASS version=" + browser.version)
+              browser.close()
+          PY
+          )"
+          echo "$OUTPUT"
+          grep -q "CINEMA_NOBLE_CHROMIUM_SMOKE=PASS" <<<"$OUTPUT"
+      - name: Exercise local-only Git clone without network credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm dsg-cinema-noble-candidate:${GITHUB_SHA} sh -eu -c '
+            tmp="$(mktemp -d)"
+            git init -q "$tmp/work"
+            git -C "$tmp/work" config user.name DSG
+            git -C "$tmp/work" config user.email sandbox@dsg.invalid
+            printf "%s\\n" proof > "$tmp/work/proof.txt"
+            git -C "$tmp/work" add .
+            git -C "$tmp/work" commit -qm proof
+            git clone -q --bare "$tmp/work" "$tmp/work.git"
+            test -f "$tmp/work.git/HEAD"
+            echo CINEMA_NOBLE_LOCAL_GIT_SMOKE=PASS
+          '
+      - name: Report candidate only, NOT promoted
+        run: |
+          echo "CINEMA_NOBLE_CANDIDATE=SOURCE_BUILD_AND_SMOKE_ONLY"
+          echo "CINEMA_NOBLE_ECR_ZERO_HIGH=NOT_VERIFIED"
+          echo "CINEMA_NOBLE_PRODUCTION_PROMOTION=BLOCKED_UNTIL_ECR_SCAN"
