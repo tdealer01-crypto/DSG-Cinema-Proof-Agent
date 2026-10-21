@@ -1,6 +1,14 @@
 (() => {
   let lastEmbedUrl = "";
+  let lastSessionId = "";
+  let viewerMountedAt = 0;
   let timer = null;
+
+  // Both routes are same-origin capabilities. /azure/view is a historical
+  // path name served by the current AWS self-hosted Playwright provider;
+  // it does NOT select or connect to Azure infrastructure.
+  const VIEWER_PATH = /^\/remote-browser\/(?:browserbase\/embed|azure\/view)\/[A-Za-z0-9_-]{20,128}$/;
+  const VIEWER_RENEW_MS = 50 * 60 * 1000;
 
   function panel() {
     let host = document.getElementById("sharedBrowserLive");
@@ -36,6 +44,8 @@
     if (frame && frame.src) frame.removeAttribute("src");
     if (hint) hint.textContent = message;
     lastEmbedUrl = "";
+    lastSessionId = "";
+    viewerMountedAt = 0;
   }
 
   async function refreshLiveView() {
@@ -58,7 +68,7 @@
         );
         return;
       }
-      if (!embedUrl.startsWith("/remote-browser/browserbase/embed/")) {
+      if (!VIEWER_PATH.test(embedUrl)) {
         throw new Error("Cinema returned an invalid shared-browser viewer URL");
       }
       host.hidden = false;
@@ -67,9 +77,18 @@
           ? "This is your persistent browser. Sign in once; when Remote is ON an approved agent joins this same session and plan scope."
           : "You and the agent are viewing and controlling this same browser session.";
       }
-      if (frame && embedUrl !== lastEmbedUrl) {
+      // Cinema issues a new short-lived URL on every status refresh.
+      // Never reload the human iframe on each poll: that loses keyboard focus
+      // during sign-in. Remount only for a different verified session or when
+      // the existing viewer capability is nearing expiry.
+      const sessionId = String(body.browser_session_id || body.browserbase_session_id || "");
+      if (!sessionId) throw new Error("Shared browser session identity is unavailable");
+      const renew = !viewerMountedAt || Date.now() - viewerMountedAt >= VIEWER_RENEW_MS;
+      if (frame && (sessionId !== lastSessionId || !frame.getAttribute("src") || renew)) {
         frame.src = embedUrl;
         lastEmbedUrl = embedUrl;
+        lastSessionId = sessionId;
+        viewerMountedAt = Date.now();
       }
     } catch (error) {
       const host = panel();
