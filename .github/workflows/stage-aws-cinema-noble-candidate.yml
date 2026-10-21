@@ -112,7 +112,7 @@ jobs:
             git clone -q --bare "$tmp/work" "$tmp/work.git"
             test -f "$tmp/work.git/HEAD"
             for pkg in python3-pip-whl python3-setuptools-whl python3-venv; do
-              if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+              if dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed$"; then
                 echo "CINEMA_NOBLE_STAGING=BLOCK reason=UNUSED_BUILD_WHEEL_PRESENT package=$pkg"; exit 1
               fi
             done
