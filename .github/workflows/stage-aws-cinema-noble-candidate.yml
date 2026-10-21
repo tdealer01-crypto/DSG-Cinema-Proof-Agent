@@ -111,6 +111,11 @@ jobs:
             git -C "$tmp/work" commit -qm proof
             git clone -q --bare "$tmp/work" "$tmp/work.git"
             test -f "$tmp/work.git/HEAD"
+            for pkg in python3-pip-whl python3-setuptools-whl python3-venv; do
+              if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+                echo "CINEMA_NOBLE_STAGING=BLOCK reason=UNUSED_BUILD_WHEEL_PRESENT package=$pkg"; exit 1
+              fi
+            done
             # GnuTLS is a normal Ubuntu apt dependency, not a release failure.
             # Security requires Git (NO_CURL), our CUPS/OpenSSL and Chromium
             # to be GnuTLS-free in actual ELF linker evidence.
