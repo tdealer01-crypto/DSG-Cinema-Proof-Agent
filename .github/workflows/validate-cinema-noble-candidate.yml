@@ -38,12 +38,12 @@ jobs:
             dpkg-query -W libc6 libxml2 zlib1g git libcups2t64
             dpkg --compare-versions "$(dpkg-query -W libc6 | cut -f2)" ge "2.39-0ubuntu8.9"
             dpkg --compare-versions "$(dpkg-query -W libxml2 | cut -f2)" ge "2.9.14+dfsg-1.3ubuntu3.10"
-            ! dpkg-query -W libgnutls30t64
-            ! ldconfig -p | grep libgnutls
+            if dpkg-query -W -f='${Status}' libgnutls30t64 2>/dev/null | grep -q "install ok installed"; then echo "BLOCK: GnuTLS installed"; exit 1; fi
+            if ldconfig -p | grep -q "libgnutls.so"; then echo "BLOCK: GnuTLS linked"; exit 1; fi
             ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/dsg-noble-ldd.log
-            ! grep -q "not found" /tmp/dsg-noble-ldd.log
-            ! grep -q libgnutls /tmp/dsg-noble-ldd.log
-            ! command -v curl
+            if grep -q "not found" /tmp/dsg-noble-ldd.log; then echo "BLOCK: missing Chromium lib"; exit 1; fi
+            if grep -q libgnutls /tmp/dsg-noble-ldd.log; then echo "BLOCK: Chromium GnuTLS"; exit 1; fi
+            if command -v curl >/dev/null 2>&1; then echo "BLOCK: curl binary present"; exit 1; fi
             echo CINEMA_NOBLE_PACKAGE_AND_LINKAGE=PASS
           '
       - name: Launch real Chromium and execute a real browser action
