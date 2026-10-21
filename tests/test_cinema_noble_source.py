@@ -37,8 +37,12 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertIn("zlib1g", self.source)
 
     def test_gnutls_absent_and_chromium_pipeline_preserved(self):
-        self.assertIn("! dpkg-query -W libgnutls30t64", self.source)
-        self.assertIn("! ldconfig -p | grep libgnutls", self.source)
+        self.assertIn("apt-get purge -y libgnutls30t64", self.source)
+        self.assertIn("if dpkg-query -W -f=", self.source)
+        self.assertIn("if ldconfig -p | grep -q 'libgnutls.so'", self.source)
+        self.assertIn("exit 1", self.source)
+        self.assertNotIn("! dpkg-query -W libgnutls30t64", self.source)
+        self.assertNotIn("! ldconfig -p | grep libgnutls", self.source)
         self.assertIn("python -m playwright install chromium", self.source)
         self.assertIn("GnuTLS not included", self.source)
         self.assertIn('DSG_BROWSER_PROVIDER=self_hosted', self.source)
@@ -55,6 +59,9 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertNotIn("docker push", self.workflow)
         self.assertNotIn("aws-actions/configure-aws-credentials", self.workflow)
         self.assertNotIn("workflow_dispatch", self.workflow)
+        self.assertIn("if dpkg-query -W -f=", self.workflow)
+        self.assertIn("if ldconfig -p | grep -q", self.workflow)
+        self.assertNotIn("! dpkg-query -W libgnutls30t64", self.workflow)
 
 
     def test_owner_dispatched_ecr_stage_cannot_mutate_runtime(self):
