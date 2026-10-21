@@ -37,7 +37,7 @@ jobs:
           docker run --rm dsg-cinema-noble-candidate:${GITHUB_SHA} sh -eu -c '
             dpkg-query -W libc6 libxml2 zlib1g git libcups2t64
             for pkg in python3-pip-whl python3-setuptools-whl python3-venv; do
-              if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+              if dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed$"; then
                 echo "BLOCK: unused Ubuntu pip wheel dependency still present: $pkg"; exit 1
               fi
             done
