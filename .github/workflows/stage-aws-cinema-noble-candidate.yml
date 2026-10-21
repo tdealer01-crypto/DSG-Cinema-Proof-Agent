@@ -92,8 +92,12 @@ jobs:
             git -C "$tmp/work" commit -qm proof
             git clone -q --bare "$tmp/work" "$tmp/work.git"
             test -f "$tmp/work.git/HEAD"
-            ! dpkg-query -W libgnutls30t64
-            ! ldconfig -p | grep libgnutls
+            if dpkg-query -W -f='${Status}' libgnutls30t64 2>/dev/null | grep -q "install ok installed"; then
+              echo "CINEMA_NOBLE_STAGING=BLOCK reason=GNUTLS_PACKAGE_PRESENT"; exit 1
+            fi
+            if ldconfig -p | grep -q "libgnutls.so"; then
+              echo "CINEMA_NOBLE_STAGING=BLOCK reason=GNUTLS_SHARED_LIBRARY_PRESENT"; exit 1
+            fi
           '
       - name: Block HIGH and CRITICAL with independent Trivy scan
         uses: aquasecurity/trivy-action@v0.36.0
