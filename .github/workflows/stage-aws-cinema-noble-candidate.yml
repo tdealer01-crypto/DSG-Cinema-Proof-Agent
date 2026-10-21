@@ -1,0 +1,172 @@
+name: Stage isolated Ubuntu Noble Cinema image in AWS ECR
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Enter STAGE_NOBLE_CINEMA_ECR_ONLY (no production runtime deployment)"
+        required: true
+        type: string
+      expected_source_sha:
+        description: "Exact main commit SHA to build and attest"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dsg-cinema-noble-ecr-stage
+  cancel-in-progress: false
+
+jobs:
+  stage-noble-image-only:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'tdealer01-crypto' &&
+      inputs.confirm == 'STAGE_NOBLE_CINEMA_ECR_ONLY' &&
+      inputs.expected_source_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      AWS_REGION: us-east-1
+      AWS_ROLE_ARN: arn:aws:iam::121205961822:role/dsg-cinema-github-deploy
+      ECR_REPOSITORY: dsg-cinema-prod
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Bind exact SHA and prerequisite source security gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.expected_source_sha }}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          test -f Dockerfile.cinema.noble
+          test -f requirements-cinema.noble.txt
+          # Security publisher PR #275 must already be merged. No fallback
+          # verifier or duplicated scanner implementation is permitted.
+          test -f scripts/verify_cinema_ecr_scan.py
+          python3 tests/test_cinema_noble_source.py
+          python3 tests/test_cinema_ecr_scan_gate.py
+      - name: Build immutable Ubuntu Noble candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --no-cache -f Dockerfile.cinema.noble \
+            -t "dsg-cinema-noble-candidate:$GITHUB_SHA" .
+      - name: Smoke actual API health, local Git, Chromium click and screenshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -i "dsg-cinema-noble-candidate:$GITHUB_SHA" python - <<'PY'
+          from fastapi.testclient import TestClient
+          from cinema_main import app
+          from playwright.sync_api import sync_playwright
+          with TestClient(app) as client:
+              spec=client.get("/openapi.json")
+              assert spec.status_code==200
+              assert "/health" in spec.json()["paths"]
+              result=client.get("/health")
+              assert result.status_code==503
+              assert result.json().get("status")=="blocked"
+          with sync_playwright() as pw:
+              browser=pw.chromium.launch(headless=True,args=["--no-sandbox","--disable-dev-shm-usage"])
+              page=browser.new_page()
+              page.set_content('<button id="b" onclick="this.textContent=\'YES\'">NO</button>')
+              page.locator("#b").click()
+              assert page.locator("#b").inner_text()=="YES"
+              assert page.screenshot(type="png").startswith(bytes((137,80,78,71,13,10,26,10)))
+              browser.close()
+          print("CINEMA_NOBLE_API_AND_CHROMIUM=PASS")
+          PY
+          docker run --rm "dsg-cinema-noble-candidate:$GITHUB_SHA" sh -eu -c '
+            tmp="$(mktemp -d)"
+            git init -q "$tmp/work"
+            git -C "$tmp/work" config user.name DSG
+            git -C "$tmp/work" config user.email sandbox@dsg.invalid
+            printf "proof\n" > "$tmp/work/proof.txt"
+            git -C "$tmp/work" add .
+            git -C "$tmp/work" commit -qm proof
+            git clone -q --bare "$tmp/work" "$tmp/work.git"
+            test -f "$tmp/work.git/HEAD"
+            ! dpkg-query -W libgnutls30t64
+            ! ldconfig -p | grep libgnutls
+          '
+      - name: Block HIGH and CRITICAL with independent Trivy scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: 'dsg-cinema-noble-candidate:${{ github.sha }}'
+          scan-type: image
+          severity: CRITICAL,HIGH
+          vuln-type: os,library
+          ignore-unfixed: false
+          format: table
+          exit-code: '1'
+          cache: 'false'
+      - name: Configure AWS publish identity with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: ECR login
+        uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Push once with immutable Noble candidate source tag
+        id: publish
+        shell: bash
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          TAG="noble-$GITHUB_SHA"
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$TAG"
+          EXISTING="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+             --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
+          if [[ "$EXISTING" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "CINEMA_NOBLE_STAGING=BLOCK reason=IMMUTABLE_TAG_ALREADY_EXISTS digest=$EXISTING"
+            echo "nextAction=Verify the already-staged immutable digest independently; do not relabel a new build as an existing image."
+            exit 56
+          fi
+          docker tag "dsg-cinema-noble-candidate:$GITHUB_SHA" "$IMAGE"
+          docker push "$IMAGE"
+          DIGEST="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+             --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "CINEMA_NOBLE_STAGED=PASS source_sha=$GITHUB_SHA digest=$DIGEST"
+      - name: Verify live AWS ECR scan for exact immutable digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIGEST="${{ steps.publish.outputs.digest }}"
+          STATUS=""
+          RAW=""
+          for attempt in $(seq 1 60); do
+            ERR="$(mktemp)"
+            if RAW="$(aws ecr describe-image-scan-findings \
+                --repository-name "$ECR_REPOSITORY" \
+                --image-id imageDigest="$DIGEST" --output json 2>"$ERR")"; then
+              rm -f "$ERR"
+              STATUS="$(jq -r '.imageScanStatus.status // "UNKNOWN"' <<<"$RAW")"
+              [[ "$STATUS" == "COMPLETE" ]] && break
+              case "$STATUS" in
+                FAILED|UNSUPPORTED_IMAGE|FINDINGS_UNAVAILABLE|LIMIT_EXCEEDED|IMAGE_ARCHIVED)
+                  echo "CINEMA_NOBLE_ECR=BLOCK scan_status=$STATUS"; exit 53 ;;
+              esac
+            elif grep -q ScanNotFoundException "$ERR"; then
+              rm -f "$ERR"
+            else
+              cat "$ERR" >&2
+              rm -f "$ERR"
+              echo "CINEMA_NOBLE_ECR=BLOCK scan_read_error"
+              exit 54
+            fi
+            sleep 5
+          done
+          [[ "$STATUS" == "COMPLETE" ]] || { echo "CINEMA_NOBLE_ECR=BLOCK scan_timeout"; exit 55; }
+          printf '%s\n' "$RAW" | python3 scripts/verify_cinema_ecr_scan.py
+          echo "CINEMA_NOBLE_ECR_ZERO_HIGH=PASS source_sha=$GITHUB_SHA digest=$DIGEST"
+          echo "CINEMA_NOBLE_RUNTIME_DEPLOY=NOT_EXECUTED"
