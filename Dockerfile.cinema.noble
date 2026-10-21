@@ -141,15 +141,19 @@ RUN set -eux; \
        libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
        libxfixes3 libxkbcommon0 libxrandr2; \
+    # Noble's apt dependency graph can introduce GnuTLS after base upgrade. \
+    # Purge the binary package only after all apt operations, then assert \
+    # the final runtime has neither the package nor dynamic linker entry. \
+    apt-get purge -y libgnutls30t64; \
     python -m playwright install chromium; \
     ldconfig; \
     git --version; \
-    ! command -v curl; \
-    ! dpkg-query -W libgnutls30t64; \
-    ! ldconfig -p | grep libgnutls; \
+    if command -v curl >/dev/null 2>&1; then echo 'BLOCK: curl present' >&2; exit 1; fi; \
+    if dpkg-query -W -f='${Status}' libgnutls30t64 2>/dev/null | grep -q 'install ok installed'; then echo 'BLOCK: GnuTLS package present' >&2; exit 1; fi; \
+    if ldconfig -p | grep -q 'libgnutls.so'; then echo 'BLOCK: GnuTLS shared library present' >&2; exit 1; fi; \
     ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/chrome-ldd.log; \
-    ! grep -q 'not found' /tmp/chrome-ldd.log; \
-    ! grep -q libgnutls /tmp/chrome-ldd.log; \
+    if grep -q 'not found' /tmp/chrome-ldd.log; then echo 'BLOCK: unresolved Chromium shared libraries' >&2; exit 1; fi; \
+    if grep -q libgnutls /tmp/chrome-ldd.log; then echo 'BLOCK: Chromium links GnuTLS' >&2; exit 1; fi; \
     rm -rf /var/lib/apt/lists/* /tmp/chrome-ldd.log
 
 COPY cinema_main.py marketplace_verification.py ./
