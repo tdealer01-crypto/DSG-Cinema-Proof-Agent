@@ -126,11 +126,12 @@ jobs:
           EXISTING="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
              --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
           if [[ "$EXISTING" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "CINEMA_NOBLE_IMAGE_REUSE=PASS digest=$EXISTING"
-          else
-            docker tag "dsg-cinema-noble-candidate:$GITHUB_SHA" "$IMAGE"
-            docker push "$IMAGE"
+            echo "CINEMA_NOBLE_STAGING=BLOCK reason=IMMUTABLE_TAG_ALREADY_EXISTS digest=$EXISTING"
+            echo "nextAction=Verify the already-staged immutable digest independently; do not relabel a new build as an existing image."
+            exit 56
           fi
+          docker tag "dsg-cinema-noble-candidate:$GITHUB_SHA" "$IMAGE"
+          docker push "$IMAGE"
           DIGEST="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
              --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
