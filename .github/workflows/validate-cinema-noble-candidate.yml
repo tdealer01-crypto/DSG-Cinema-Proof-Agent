@@ -60,7 +60,7 @@ jobs:
               assert page.title() == "DSG Noble"
               page.locator("#go").click()
               assert page.locator("#go").inner_text() == "1"
-              assert page.screenshot(type="png").startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+              assert page.screenshot(type="png").startswith(bytes((137, 80, 78, 71, 13, 10, 26, 10)))
               print("CINEMA_NOBLE_CHROMIUM_SMOKE=PASS version=" + browser.version)
               browser.close()
           PY
