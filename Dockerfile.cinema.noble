@@ -123,6 +123,20 @@ RUN python -m venv /opt/dsg-cinema \
   && /opt/dsg-cinema/bin/pip install --no-cache-dir --upgrade pip \
   && /opt/dsg-cinema/bin/pip install --no-cache-dir -r requirements.txt \
   && /opt/dsg-cinema/bin/python -m pip uninstall -y pip setuptools wheel
+# Ubuntu's python3-venv depends on python3-pip-whl, a build-only bundle
+# whose vendored urllib3 has 2 HIGH CVEs (duplicated by ECR source/binary
+# inventory). The server needs neither after its venv is built. Purge only
+# these NON-ESSENTIAL build tools through apt to preserve package provenance.
+# Never purge apt or libgnutls30t64 (Ubuntu Essential apt dependency).
+RUN set -eux; \
+    apt-get purge -y python3-venv python3-pip-whl python3-setuptools-whl; \
+    for pkg in python3-pip-whl python3-setuptools-whl python3-venv; do \
+      if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then \
+        echo "BLOCK: build-only wheel still installed: $pkg" >&2; exit 1; \
+      fi; \
+    done; \
+    /opt/dsg-cinema/bin/python -c "import fastapi, starlette, cryptography, playwright"; \
+    rm -rf /var/lib/apt/lists/*
 ENV PATH="/opt/dsg-cinema/bin:$PATH"
 
 # Headless Chromium plus same-page mobile shared viewer and Playwright action

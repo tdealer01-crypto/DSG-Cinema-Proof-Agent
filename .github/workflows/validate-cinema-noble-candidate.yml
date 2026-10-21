@@ -36,6 +36,11 @@ jobs:
           set -euo pipefail
           docker run --rm dsg-cinema-noble-candidate:${GITHUB_SHA} sh -eu -c '
             dpkg-query -W libc6 libxml2 zlib1g git libcups2t64
+            for pkg in python3-pip-whl python3-setuptools-whl python3-venv; do
+              if dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed$"; then
+                echo "BLOCK: unused Ubuntu pip wheel dependency still present: $pkg"; exit 1
+              fi
+            done
             dpkg --compare-versions "$(dpkg-query -W libc6 | cut -f2)" ge "2.39-0ubuntu8.9"
             dpkg --compare-versions "$(dpkg-query -W libxml2 | cut -f2)" ge "2.9.14+dfsg-1.3ubuntu3.10"
             # Ubuntu may retain GnuTLS for Essential apt. Governed execution
