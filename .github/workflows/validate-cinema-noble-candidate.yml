@@ -34,8 +34,8 @@ jobs:
           set -euo pipefail
           docker run --rm dsg-cinema-noble-candidate:${GITHUB_SHA} sh -eu -c '
             dpkg-query -W libc6 libxml2 zlib1g git libcups2t64
-            dpkg --compare-versions "$(dpkg-query -W -f="${Version}" libc6)" ge "2.39-0ubuntu8.9"
-            dpkg --compare-versions "$(dpkg-query -W -f="${Version}" libxml2)" ge "2.9.14+dfsg-1.3ubuntu3.10"
+            dpkg --compare-versions "$(dpkg-query -W libc6 | cut -f2)" ge "2.39-0ubuntu8.9"
+            dpkg --compare-versions "$(dpkg-query -W libxml2 | cut -f2)" ge "2.9.14+dfsg-1.3ubuntu3.10"
             ! dpkg-query -W libgnutls30t64
             ! ldconfig -p | grep libgnutls
             ldd /ms-playwright/chromium-*/chrome-linux64/chrome | tee /tmp/dsg-noble-ldd.log
