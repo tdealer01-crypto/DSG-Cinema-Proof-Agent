@@ -57,5 +57,26 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertNotIn("workflow_dispatch", self.workflow)
 
 
+    def test_owner_dispatched_ecr_stage_cannot_mutate_runtime(self):
+        stage = (
+            ROOT / ".github/workflows/stage-aws-cinema-noble-candidate.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", stage)
+        self.assertNotIn("pull_request:", stage)
+        self.assertNotIn("push:", stage)
+        self.assertIn("github.ref == 'refs/heads/main'", stage)
+        self.assertIn("github.actor == 'tdealer01-crypto'", stage)
+        self.assertIn("inputs.expected_source_sha == github.sha", stage)
+        self.assertIn("STAGE_NOBLE_CINEMA_ECR_ONLY", stage)
+        self.assertIn("test -f scripts/verify_cinema_ecr_scan.py", stage)
+        self.assertIn("IMMUTABLE_TAG_ALREADY_EXISTS", stage)
+        self.assertIn("imageDigest=\"$DIGEST\"", stage)
+        self.assertIn("scripts/verify_cinema_ecr_scan.py", stage)
+        self.assertIn("CINEMA_NOBLE_RUNTIME_DEPLOY=NOT_EXECUTED", stage)
+        self.assertNotIn("docker compose", stage)
+        self.assertNotIn("ssm send-command", stage)
+        self.assertNotIn("ecs update-service", stage)
+
+
 if __name__ == "__main__":
     unittest.main()
