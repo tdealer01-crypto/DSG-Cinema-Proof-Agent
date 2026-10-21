@@ -37,7 +37,7 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertIn("zlib1g", self.source)
 
     def test_gnutls_absent_and_chromium_pipeline_preserved(self):
-        self.assertIn("apt-get purge -y libgnutls30t64", self.source)
+        self.assertIn("apt-get purge -y apt libgnutls30t64", self.source)
         self.assertIn("if dpkg-query -W -f=", self.source)
         self.assertIn("if ldconfig -p | grep -q 'libgnutls.so'", self.source)
         self.assertIn("exit 1", self.source)
