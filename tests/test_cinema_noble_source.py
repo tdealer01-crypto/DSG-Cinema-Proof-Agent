@@ -35,6 +35,9 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertIn("2.9.14+dfsg-1.3ubuntu3.10", self.source)
         self.assertIn("libxml2", self.source)
         self.assertIn("zlib1g", self.source)
+        self.assertIn("apt-get purge -y python3-venv python3-pip-whl python3-setuptools-whl", self.source)
+        self.assertIn('for pkg in python3-pip-whl python3-setuptools-whl python3-venv', self.source)
+        self.assertIn('import fastapi, starlette, cryptography, playwright', self.source)
 
     def test_runtime_linkage_policy_and_chromium_pipeline_preserved(self):
         # Ubuntu apt legitimately depends on GnuTLS. Governed execution
