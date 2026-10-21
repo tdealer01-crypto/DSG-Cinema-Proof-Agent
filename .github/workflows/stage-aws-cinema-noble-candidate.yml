@@ -53,8 +53,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "${{ inputs.expected_source_sha }}" =~ ^[0-9a-f]{40}$ ]]
+          # The push event has no manual inputs; GitHub provides immutable
+          # checked-out SHA. A manual owner dispatch still binds supplied SHA.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "${{ inputs.expected_source_sha }}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${{ inputs.expected_source_sha }}" == "$GITHUB_SHA" ]]
+          elif [[ "$GITHUB_EVENT_NAME" != "push" ]]; then
+            echo "CINEMA_NOBLE_STAGING=BLOCK reason=UNSUPPORTED_EVENT"; exit 41
+          fi
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
           test -f Dockerfile.cinema.noble
           test -f requirements-cinema.noble.txt
           # Security publisher PR #275 must already be merged. No fallback
