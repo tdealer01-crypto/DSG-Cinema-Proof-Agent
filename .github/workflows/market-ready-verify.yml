@@ -44,10 +44,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(sha256sum market_ready_ui/index.html | cut -d' ' -f1)" = '103d08d706838a629b041f60ebb959682b8de0413bcf8746e6d542a7c4de0c2f'
+          # The packaged Market-Ready HTML remains SHA-256 pinned. The served
+          # bytes add only the audited post-verification OAuth navigation CTA.
+          python3 - <<'PY'
+          from pathlib import Path
+          from market_ready_payload.reconstruct import FILES, _verified_bytes, _add_oauth_entry
+          prefix, expected = FILES["index.html"]
+          baseline = _verified_bytes("index.html", prefix, expected)
+          assert Path("market_ready_ui/index.html").read_bytes() == _add_oauth_entry(baseline)
+          print("MARKET_READY_AUTH0_ENTRY=PASS")
+          PY
           test "$(sha256sum market_ready_ui/styles.css | cut -d' ' -f1)" = '3a3bc80a48497d55d4d94638fde5eb1f3ad6604300e28f97f6b488c13678a1f9'
           test "$(sha256sum market_ready_ui/app.js | cut -d' ' -f1)" = '16782b85e755820a2fb567ad507372dd27e98cf8068a4841eb781950ee710a35'
           node --check market_ready_ui/app.js
           python -m py_compile api_v1/market_ready_platform.py api_v1/market_ready_ui.py tools/dsgctl.py
-      - name: Run Market-Ready provisioner tests
-        run: python -m pytest -q tests/test_market_ready_platform.py
+      - name: Run Market-Ready provisioner and OAuth entry tests
+        run: python -m pytest -q tests/test_market_ready_platform.py tests/test_market_ready_oauth_entry.py

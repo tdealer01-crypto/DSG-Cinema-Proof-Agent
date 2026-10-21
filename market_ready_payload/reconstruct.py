@@ -38,6 +38,29 @@ def _verified_bytes(name: str, prefix: str, expected: str) -> bytes:
     return data
 
 
+# Deterministic, fail-closed UX migration. The underlying packaged HTML remains
+# SHA-256-verified before this audited post-verification patch is applied.
+# The user accesses the EXISTING DSG ONE Auth0 Workroom. This deliberately does
+# not claim to bind the legacy Cinema Free account or create a human live viewer.
+_OAUTH_WORK_ANCHOR = b'<div class="inline-actions"><button id="connectAgentTop"'
+_OAUTH_WORK_LINK = (
+    b'<a id="dsgOauthWorkroomLink" class="primary-btn" '
+    b'href="https://dsg.pics/dsg/workroom?tool=browser#live-controls" '
+    b'rel="noopener">Sign in with DSG ONE (Auth0)</a>'
+)
+
+
+def _add_oauth_entry(base: bytes) -> bytes:
+    """Inject the audited OAuth user entry only into the exact verified UI."""
+    if base.count(_OAUTH_WORK_ANCHOR) != 1:
+        raise ReconstructionError("Market-Ready work header contract changed")
+    return base.replace(
+        _OAUTH_WORK_ANCHOR,
+        b'<div class="inline-actions">' + _OAUTH_WORK_LINK + b'<button id="connectAgentTop"',
+        1,
+    )
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
@@ -53,7 +76,11 @@ def reconstruct() -> Path:
     """
     OUT.mkdir(parents=True, exist_ok=True)
     for name, (prefix, expected) in FILES.items():
-        _atomic_write(OUT / name, _verified_bytes(name, prefix, expected))
+        verified = _verified_bytes(name, prefix, expected)
+        # Apply a deterministic navigation-only UX patch after verifying the
+        # immutable upstream HTML checksum, never before.
+        rendered = _add_oauth_entry(verified) if name == "index.html" else verified
+        _atomic_write(OUT / name, rendered)
 
     if hashlib.sha256(CONFIG).hexdigest() != CONFIG_SHA256:
         raise ReconstructionError("production Market-Ready config hash mismatch")

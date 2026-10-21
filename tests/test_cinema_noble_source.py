@@ -98,6 +98,7 @@ class NobleCandidateSourceTests(unittest.TestCase):
             "api_v1/remote_relay_security.py",
             "web/customer-dashboard/browserbase-live.js",
             "web/customer-dashboard/index.html",
+            "market_ready_payload/**",
         ):
             self.assertIn(f'- "{source_path}"', stage)
         self.assertIn("test -f scripts/verify_cinema_ecr_scan.py", stage)
