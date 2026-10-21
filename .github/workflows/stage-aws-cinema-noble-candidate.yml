@@ -11,6 +11,11 @@ on:
       - ".github/workflows/stage-aws-cinema-noble-candidate.yml"
       - "tests/test_cinema_noble_source.py"
       - "scripts/verify_cinema_ecr_scan.py"
+      # Keep the sealed Noble browser image source-bound to the live viewer code.
+      # These source changes must stage on protected main, but never deploy.
+      - "api_v1/browserbase_live_ui.py"
+      - "api_v1/remote_relay_security.py"
+      - "web/customer-dashboard/browserbase-live.js"
   workflow_dispatch:
     inputs:
       confirm:
