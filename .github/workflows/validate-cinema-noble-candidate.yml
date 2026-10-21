@@ -5,6 +5,8 @@ on:
     paths:
       - "Dockerfile.cinema.noble"
       - ".github/workflows/validate-cinema-noble-candidate.yml"
+      - ".github/workflows/stage-aws-cinema-noble-candidate.yml"
+      - "requirements-cinema.noble.txt"
       - "tests/test_cinema_noble_source.py"
       - "requirements-cinema.txt"
       - "market_ready_payload/**"
