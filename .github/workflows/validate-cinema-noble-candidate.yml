@@ -83,6 +83,19 @@ jobs:
             test -f "$tmp/work.git/HEAD"
             echo CINEMA_NOBLE_LOCAL_GIT_SMOKE=PASS
           '
+      - name: Security scan full candidate image (all fix-statuses)
+        # Independent open-source diagnosis; AWS ECR exact-digest scan remains
+        # mandatory before any image can be published or promoted.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: 'dsg-cinema-noble-candidate:${{ github.sha }}'
+          scan-type: image
+          severity: 'CRITICAL,HIGH'
+          vuln-type: 'os,library'
+          ignore-unfixed: false
+          format: table
+          exit-code: '1'
+          cache: 'false'
       - name: Report candidate only, NOT promoted
         run: |
           echo "CINEMA_NOBLE_CANDIDATE=SOURCE_BUILD_AND_SMOKE_ONLY"
