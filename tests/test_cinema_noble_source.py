@@ -91,6 +91,14 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertIn('[[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]', stage)
         self.assertIn('[[ "$GITHUB_REF" == "refs/heads/main" ]]', stage)
         self.assertIn("STAGE_NOBLE_CINEMA_ECR_ONLY", stage)
+        # A viewer/login continuity fix must trigger a source-bound Noble
+        # image build without allowing the workflow to deploy runtime.
+        for source_path in (
+            "api_v1/browserbase_live_ui.py",
+            "api_v1/remote_relay_security.py",
+            "web/customer-dashboard/browserbase-live.js",
+        ):
+            self.assertIn(f'- "{source_path}"', stage)
         self.assertIn("test -f scripts/verify_cinema_ecr_scan.py", stage)
         self.assertIn("IMMUTABLE_TAG_ALREADY_EXISTS", stage)
         self.assertIn("imageDigest=\"$DIGEST\"", stage)
