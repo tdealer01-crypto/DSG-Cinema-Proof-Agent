@@ -7,7 +7,7 @@
   // Both routes are same-origin capabilities. /azure/view is a historical
   // path name served by the current AWS self-hosted Playwright provider;
   // it does NOT select or connect to Azure infrastructure.
-  const VIEWER_PATH = /^\/remote-browser\/(?:browserbase\/embed|azure\/view)\/[A-Za-z0-9_-]{20,128}$/;
+  const VIEWER_PATH = /^\/remote-browser\/(?:browserbase\/embed|self-hosted\/view|azure\/view)\/[A-Za-z0-9_-]{20,128}$/;
   const VIEWER_RENEW_MS = 50 * 60 * 1000;
 
   function panel() {
