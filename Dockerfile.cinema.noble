@@ -99,7 +99,7 @@ WORKDIR /app
 RUN set -eux; \
     apt-get update; \
     apt-get upgrade -y; \
-    apt-get install -y --no-install-recommends ca-certificates python3 python-is-python3 python3-venv python3-pip \
+    apt-get install -y --no-install-recommends ca-certificates python3 python-is-python3 python3-venv \
       libssl3t64 libxml2 libexpat1 zlib1g libpcre2-8-0; \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libc6)" ge '2.39-0ubuntu8.9'; \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libxml2)" ge '2.9.14+dfsg-1.3ubuntu3.10'; \
@@ -114,10 +114,13 @@ RUN dpkg -i /tmp/dsg-git.deb /tmp/dsg-cups.deb \
   && dpkg-query -W git libcups2t64
 ENV PATH="/opt/dsg-local-git/bin:/opt/dsg-local-git/libexec/git-core:$PATH"
 
-COPY requirements-cinema.txt requirements.txt
+COPY requirements-cinema.noble.txt requirements.txt
 RUN python -m venv /opt/dsg-cinema \
   && /opt/dsg-cinema/bin/pip install --no-cache-dir --upgrade pip \
-  && /opt/dsg-cinema/bin/pip install --no-cache-dir -r requirements.txt
+  && /opt/dsg-cinema/bin/pip install --no-cache-dir -r requirements.txt \
+  # The installed service never installs packages at runtime. Remove the pip
+  # wheel and its vulnerable vendored dependencies from the production venv.
+  && /opt/dsg-cinema/bin/python -m pip uninstall -y pip setuptools wheel
 ENV PATH="/opt/dsg-cinema/bin:$PATH"
 
 # Headless Chromium plus same-page mobile shared viewer and Playwright action
