@@ -14,6 +14,7 @@ on:
       # Keep the sealed Noble browser image source-bound to the live viewer code.
       # These source changes must stage on protected main, but never deploy.
       - "api_v1/browserbase_live_ui.py"
+      - "api_v1/remote_mcp.py"
       - "api_v1/remote_relay_security.py"
       - "web/customer-dashboard/browserbase-live.js"
       - "web/customer-dashboard/index.html"
