@@ -40,6 +40,9 @@ def install(app) -> None:
     # Short-lived agent credentials keep the master API key out of model/tool
     # payloads while preserving the exact existing MCP authorization path.
     importlib.import_module(f"{__name__}.agent_pairing").install(app)
+    # First-party Auth0 account links require two independent signed identities
+    # and proof of possession of the exact existing Free account; fail-closed.
+    importlib.import_module(f"{__name__}.oauth_cinema_link").install(app)
     # Managed execution is exposed only through authenticated signed relays.
     # Browserbase remains supported, while Azure-native Chromium uses the same
     # signature/nonce trust boundary through its own exact route.
