@@ -160,6 +160,8 @@ def _site_actor(assertion: str, subject: str) -> dict[str, Any]:
             or payload.get("auth0_client_id") != AUTH0_USER_CLIENT):
         raise _deny("SITE_IDENTITY_CONTEXT_MISMATCH", 403)
     _check_times(payload, 60)
+    if payload.get("membership_verified") is not True or payload.get("role") not in ("OWNER", "ADMIN", "OPERATOR"):
+        raise _deny("SITE_WORKSPACE_CONTROL_PERMISSION_REQUIRED", 403)
     actor, workspace, jti = payload.get("actor_id"), payload.get("workspace_id"), payload.get("jti")
     if not (isinstance(actor, str) and re.fullmatch(r"[a-zA-Z0-9_-]{8,128}", actor)
             and isinstance(workspace, str) and re.fullmatch(
