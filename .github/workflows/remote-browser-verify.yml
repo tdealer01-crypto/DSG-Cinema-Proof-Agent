@@ -24,6 +24,7 @@ on:
       - 'tests/test_agent_pairing.py'
       - 'tests/test_agent_auto_claim.py'
       - 'tests/test_remote_mcp.py'
+      - 'tests/test_remote_mcp_sequential_batch.py'
       - 'tests/test_unified_dashboard_e2e.py'
       - 'tests/test_chatgpt_remote_actions.py'
       - 'tests/test_stripe_marketplace_shared_browser.py'
@@ -54,6 +55,7 @@ on:
       - 'tests/test_agent_pairing.py'
       - 'tests/test_agent_auto_claim.py'
       - 'tests/test_remote_mcp.py'
+      - 'tests/test_remote_mcp_sequential_batch.py'
       - 'tests/test_unified_dashboard_e2e.py'
       - 'tests/test_chatgpt_remote_actions.py'
       - 'tests/test_stripe_marketplace_shared_browser.py'
@@ -113,6 +115,7 @@ jobs:
             tests/test_agent_pairing.py \
             tests/test_agent_auto_claim.py \
             tests/test_remote_mcp.py \
+            tests/test_remote_mcp_sequential_batch.py \
             tests/test_unified_dashboard_e2e.py \
             tests/test_chatgpt_remote_actions.py \
             tests/test_stripe_marketplace_shared_browser.py \
