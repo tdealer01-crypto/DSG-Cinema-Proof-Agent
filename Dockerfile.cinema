@@ -115,8 +115,12 @@ ENV PATH="/opt/dsg-local-git/bin:/opt/dsg-local-git/libexec/git-core:$PATH"
 
 COPY requirements-cinema.txt requirements.txt
 RUN python -m venv /opt/dsg-cinema \
-  && /opt/dsg-cinema/bin/pip install --no-cache-dir --upgrade pip \
-  && /opt/dsg-cinema/bin/pip install --no-cache-dir -r requirements.txt
+  && /opt/dsg-cinema/bin/pip install --no-cache-dir --retries 5 --timeout 30 --upgrade pip \
+  && for attempt in 1 2 3; do \
+       /opt/dsg-cinema/bin/pip install --no-cache-dir --retries 5 --timeout 30 -r requirements.txt && break; \
+       if [ "$attempt" -eq 3 ]; then echo 'Cinema dependency download failed after 3 bounded attempts' >&2; exit 1; fi; \
+       sleep 5; \
+     done
 ENV PATH="/opt/dsg-cinema/bin:$PATH"
 
 # Headless Chromium plus same-page mobile shared viewer and Playwright action
