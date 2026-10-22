@@ -108,6 +108,15 @@ async def live_frame(
 ) -> dict[str, Any]:
     key = remote_pairing._api_key(x_dsg_api_key)
     account_id = remote_pairing._account_id(key)
+    return await live_frame_for_verified_account(account_id)
+
+
+async def live_frame_for_verified_account(account_id: str) -> dict[str, Any]:
+    """Issue the existing account-specific human viewer after external identity proof.
+
+    The caller must have independently verified ownership and entitlement.
+    This function never authenticates a request or exposes a reusable key.
+    """
     state = remote_pairing._read_state(account_id)
     live = await shared_browser.current_shared_browser(
         account_id,
