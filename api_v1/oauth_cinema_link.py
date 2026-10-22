@@ -88,6 +88,16 @@ def _check_times(claims: dict[str, Any], max_age: int) -> None:
         raise _deny("OAUTH_JWT_EXPIRED_OR_STALE")
 
 
+async def _fetch_issuer_jwks() -> dict[str, Any]:
+    """Fetch ONLY the fixed Auth0 issuer JWKS; no redirects or untrusted jku."""
+    async with httpx.AsyncClient(timeout=4.0, follow_redirects=False, trust_env=False) as client:
+        response = await client.get(JWKS_URL)
+        response.raise_for_status()
+        if len(response.content) > 100_000:
+            raise ValueError("JWKS oversized")
+        return response.json()
+
+
 async def _auth0_subject(bearer: str) -> str:
     token = bearer.removeprefix("Bearer ").strip() if bearer.startswith("Bearer ") else ""
     header, claims, signed, signature = _parse_jwt(token)
@@ -95,12 +105,7 @@ async def _auth0_subject(bearer: str) -> str:
     if header.get("alg") != "RS256" or not isinstance(kid, str) or not kid or len(kid) > 150:
         raise _deny("OAUTH_ALGORITHM_OR_KID_DENIED")
     try:
-        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False, trust_env=False) as client:
-            response = await client.get(JWKS_URL)
-            response.raise_for_status()
-            if len(response.content) > 100_000:
-                raise ValueError("JWKS oversized")
-            jwks = response.json()
+        jwks = await _fetch_issuer_jwks()
         keys = [k for k in jwks["keys"]
                 if isinstance(k, dict) and k.get("kid") == kid
                 and k.get("kty") == "RSA" and k.get("use", "sig") == "sig"
