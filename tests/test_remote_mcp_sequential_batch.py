@@ -46,7 +46,7 @@ def _setup(monkeypatch, outcomes):
 
     async def connect(request, **kwargs):
         return {"session_id": request.step_id + "-session",
-                "session_token": request.step_id + "-token",
+                "session_token": (request.step_id + "-token-").ljust(48, "x"),
                 "plan_hash": "a" * 64, "browser_policy": {"allowed_origins": ["https://example.com"]}}
 
     async def action(request):
