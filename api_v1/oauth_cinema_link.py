@@ -291,22 +291,57 @@ async def link_existing_free_account(
             "no_production_key_exported": True}
 
 
+def _verified_bound_account(subject: str, actor: dict[str, Any]):
+    """Resolve only the uniquely linked, currently entitled Free Cinema account."""
+    key = _subject_digest(subject)
+    with _locked_store() as (_, data):
+        link = data["links"].get(key)
+        duplicate = [
+            digest for digest, record in data["links"].items()
+            if isinstance(record, dict) and record.get("account_id") == (
+                link.get("account_id") if isinstance(link, dict) else None
+            )
+        ]
+    if (not isinstance(link, dict) or len(duplicate) != 1
+            or link.get("actor_id") != actor["actor_id"]
+            or link.get("workspace_id") != actor["workspace_id"]):
+        raise _deny("CINEMA_FREE_ACCOUNT_NOT_LINKED", 403)
+    authorized = billing.authorize_account(link["account_id"], service.VERIFIED_EXECUTION_SKU)
+    account = authorized.account
+    if (account is None or account.plan != "free" or account.mode != "live"
+            or account.status != "active"):
+        raise _deny("CINEMA_FREE_ENTITLEMENT_NOT_ACTIVE", 403)
+    return account
+
+
+@router.get("/viewer")
+async def verified_human_viewer(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_dsg_site_assertion: str | None = Header(default=None, alias="X-DSG-Site-Assertion"),
+) -> dict[str, Any]:
+    """Owner-only view of the EXISTING same-account browser, not an agent permit.
+
+    Returns an expiring, same-origin capability URL only after both signed
+    identities and the current Cinema Free entitlement have been verified.
+    This route never establishes a new agent session or lifts plan approval.
+    """
+    _origin(request)
+    subject, actor = await _authorized_subject(authorization, x_dsg_site_assertion)
+    account = _verified_bound_account(subject, actor)
+    from . import browserbase_live_ui
+    view = await browserbase_live_ui.live_frame_for_verified_account(account.account_id)
+    return {**view, "ok": True, "account_bound": True,
+            "agent_paired": False, "agent_approval_granted": False}
+
+
 @router.get("/status")
 async def linked_account_status(
     authorization: str | None = Header(default=None),
     x_dsg_site_assertion: str | None = Header(default=None, alias="X-DSG-Site-Assertion"),
 ) -> dict[str, Any]:
     subject, actor = await _authorized_subject(authorization, x_dsg_site_assertion)
-    key = _subject_digest(subject)
-    with _locked_store() as (_, data):
-        link = data["links"].get(key)
-    if not isinstance(link, dict) or (link.get("actor_id") != actor["actor_id"] or
-                                      link.get("workspace_id") != actor["workspace_id"]):
-        raise _deny("CINEMA_FREE_ACCOUNT_NOT_LINKED", 403)
-    authorized = billing.authorize_account(link["account_id"], service.VERIFIED_EXECUTION_SKU)
-    account = authorized.account
-    if account is None or account.plan != "free" or account.mode != "live":
-        raise _deny("CINEMA_FREE_ENTITLEMENT_NOT_ACTIVE", 403)
+    account = _verified_bound_account(subject, actor)
     return {"ok": True, "linked": True, "account": account.public_view(),
             "agent_paired": False, "shared_browser_active": False}
 
