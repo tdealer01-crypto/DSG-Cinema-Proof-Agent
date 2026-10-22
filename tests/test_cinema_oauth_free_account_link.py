@@ -194,3 +194,79 @@ async def test_old_free_key_must_be_proven_and_never_returned(actors, monkeypatc
             unauthorized, authorization="Bearer "+auth(),
             x_dsg_site_assertion=site(), x_dsg_api_key="verified-existing-key",
         )
+
+
+@pytest.mark.asyncio
+async def test_oauth_viewer_uses_only_current_bound_account(actors, monkeypatch):
+    from api_v1 import browserbase_live_ui
+    auth, site = actors
+    account = SimpleNamespace(
+        account_id="acct_dsg_test0001", plan="free", mode="live", status="active",
+        public_view=lambda: {"account_id": "acct_dsg_test0001", "plan": "free"},
+    )
+    monkeypatch.setattr(link.billing, "authorize_account",
+                        lambda account_id, sku: SimpleNamespace(account=account)
+                        if account_id == "acct_dsg_test0001" else None)
+    link._bind("google-oauth2|12345678901",
+               link._site_actor(site(), "google-oauth2|12345678901"),
+               "acct_dsg_test0001")
+    observed = []
+
+    async def viewer(account_id):
+        observed.append(account_id)
+        return {"ok": True, "connected": True, "provider": "self_hosted_playwright",
+                "browser_session_id": "only-real-account-session",
+                "embed_url": "/remote-browser/self-hosted/view/" + "a" * 42}
+
+    monkeypatch.setattr(browserbase_live_ui, "live_frame_for_verified_account", viewer)
+    req = Request({"type": "http", "method": "GET",
+                   "headers": [(b"origin", b"https://dsg.pics")]})
+    result = await link.verified_human_viewer(
+        req, authorization="Bearer " + auth(), x_dsg_site_assertion=site()
+    )
+    assert observed == ["acct_dsg_test0001"]
+    assert result["account_bound"] is True
+    assert result["agent_approval_granted"] is False
+    assert result["agent_paired"] is False
+
+
+@pytest.mark.asyncio
+async def test_oauth_viewer_fails_closed_before_account_link(actors, monkeypatch):
+    from api_v1 import browserbase_live_ui
+    auth, site = actors
+    observed = []
+
+    async def viewer(account_id):
+        observed.append(account_id)
+        raise AssertionError("viewer must not run for unlinked user")
+
+    monkeypatch.setattr(browserbase_live_ui, "live_frame_for_verified_account", viewer)
+    req = Request({"type": "http", "method": "GET",
+                   "headers": [(b"origin", b"https://dsg.pics")]})
+    with pytest.raises(HTTPException) as error:
+        await link.verified_human_viewer(
+            req, authorization="Bearer " + auth(), x_dsg_site_assertion=site()
+        )
+    assert error.value.status_code == 403
+    assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_oauth_viewer_rejects_wrong_site_member_assertion(actors, monkeypatch):
+    from api_v1 import browserbase_live_ui
+    auth, site = actors
+    observed = []
+
+    async def viewer(account_id):
+        observed.append(account_id)
+        raise AssertionError("viewer must not run with another user's site assertion")
+
+    monkeypatch.setattr(browserbase_live_ui, "live_frame_for_verified_account", viewer)
+    req = Request({"type": "http", "method": "GET",
+                   "headers": [(b"origin", b"https://dsg.pics")]})
+    with pytest.raises(HTTPException):
+        await link.verified_human_viewer(
+            req, authorization="Bearer " + auth(),
+            x_dsg_site_assertion=site(sub="google-oauth2|other")
+        )
+    assert observed == []
