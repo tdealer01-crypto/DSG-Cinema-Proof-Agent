@@ -59,12 +59,13 @@ app.add_middleware(
     allow_origins=[
         "https://dashboard.stripe.com",
         "https://dashboard-test.stripe.com",
+        "https://dsg.pics",  # first-party signed DSG OAuth website bridge
         "https://dsgoneverifiedweb.z1.web.core.windows.net",
     ],
     allow_origin_regex=r"https://[a-z0-9-]+\.z[0-9]+\.web\.core\.windows\.net",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept", "X-DSG-API-Key", "Authorization"],
+    allow_headers=["Content-Type", "Accept", "X-DSG-API-Key", "Authorization", "X-DSG-Site-Assertion"],
 )
 
 
