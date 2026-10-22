@@ -498,7 +498,12 @@ async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
             )
             result["fallback"] = item.fallback
             results.append(result)
-            if args.stop_on_success and bool(result.get("ok")) and not item.fallback:
+            if args.stop_on_success:
+                if bool(result.get("ok")) and not item.fallback:
+                    break
+            elif not bool(result.get("ok")):
+                # A sequential task must not advance to a Submit/click after
+                # an earlier mutation failed or the browser state is uncertain.
                 break
         except HTTPException as exc:
             results.append(
@@ -510,12 +515,31 @@ async def _remote_agent_run_plan(args: AutonomousRunRequest) -> dict[str, Any]:
                     "error": exc.detail,
                 }
             )
+            if not args.stop_on_success:
+                break
         finally:
             if session is None:
                 executor.revoke_capability(capability)
 
+    completed_all_steps = len(results) == len(args.steps)
+    all_steps_succeeded = completed_all_steps and all(
+        bool(item.get("ok")) for item in results
+    )
+    failed_step = next(
+        (item for item in results if not bool(item.get("ok"))), None
+    )
+    # stop_on_success=True selects the first viable non-fallback action,
+    # while False means an exact sequential workflow requiring every step.
+    # Do not mistake one successful navigation for completed form submission.
+    succeeded = (
+        any(bool(item.get("ok")) for item in results)
+        if args.stop_on_success else all_steps_succeeded
+    )
     return {
-        "ok": any(bool(item.get("ok")) for item in results),
+        "ok": succeeded,
+        "all_steps_succeeded": all_steps_succeeded,
+        "completed_all_steps": completed_all_steps,
+        "failed_step_id": (failed_step or {}).get("step_id"),
         "plan_id": plan_id,
         "approval_reused": True,
         "approval_required_between_steps": False,
