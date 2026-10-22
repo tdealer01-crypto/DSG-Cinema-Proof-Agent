@@ -68,6 +68,7 @@ def actors(monkeypatch, tmp_path):
                   "auth0_iss": link.AUTH0_ISSUER,
                   "auth0_client_id": link.AUTH0_USER_CLIENT,
                   "actor_id": "actor_0123456789", "workspace_id": "workspace_01234567",
+                  "membership_verified": True, "role": "OWNER",
                   "jti": secrets.token_urlsafe(24), "iat": now,
                   "nbf": now, "exp": now+35}
         claims.update(overrides)
@@ -125,6 +126,8 @@ async def test_jwt_none_untrusted_header_and_tamper_block(actors):
     {"actor_id": "../../bad"},
     {"workspace_id": "a"},
     {"auth0_client_id": "approver"},
+    {"membership_verified": False},
+    {"role": "VIEWER"},
 ])
 def test_mismatched_website_actor_or_membership_assertion_blocks(actors, changes):
     _, site = actors
