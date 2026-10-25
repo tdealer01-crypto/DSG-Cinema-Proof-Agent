@@ -72,17 +72,17 @@
         throw new Error("Cinema returned an invalid shared-browser viewer URL");
       }
       host.hidden = false;
+      const sessionId = String(body.browser_session_id || body.browserbase_session_id || "");
+      if (!sessionId) throw new Error("Shared browser session identity is unavailable");
       if (hint) {
-        hint.textContent = body.context_persistent
-          ? "This is your persistent browser. Sign in once; when Remote is ON an approved agent joins this same session and plan scope."
-          : "You and the agent are viewing and controlling this same browser session.";
+        hint.textContent = "Viewer session: " + sessionId
+          + ". Compare with governed Agent browser.remote.status. Different IDs mean different sessions; stop before mutations. "
+          + (body.context_persistent ? "Login is retained in this viewer; do not share session tokens." : "Login persistence is NOT VERIFIED.");
       }
       // Cinema issues a new short-lived URL on every status refresh.
       // Never reload the human iframe on each poll: that loses keyboard focus
       // during sign-in. Remount only for a different verified session or when
       // the existing viewer capability is nearing expiry.
-      const sessionId = String(body.browser_session_id || body.browserbase_session_id || "");
-      if (!sessionId) throw new Error("Shared browser session identity is unavailable");
       const renew = !viewerMountedAt || Date.now() - viewerMountedAt >= VIEWER_RENEW_MS;
       if (frame && (sessionId !== lastSessionId || !frame.getAttribute("src") || renew)) {
         frame.src = embedUrl;

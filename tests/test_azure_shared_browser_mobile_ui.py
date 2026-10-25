@@ -22,3 +22,14 @@ def test_azure_shared_browser_uses_pointer_and_touch_input() -> None:
     assert "addEventListener('touchend'" in page
     assert "act('click',p)" in page
     assert "act('scroll'" in page
+
+
+def test_viewer_session_identity_is_escaped_and_marked_unverified() -> None:
+    page = _azure_view_page("viewer-test-token", browser_session_id="azure-example-session").body.decode("utf-8")
+    assert 'id="sessionProof"' in page
+    assert "Viewer session: azure-example-session" in page
+    assert "Agent match NOT VERIFIED" in page
+    escaped = _azure_view_page("viewer-test-token", browser_session_id="<script>bad</script>").body.decode("utf-8")
+    assert "&lt;script&gt;bad&lt;/script&gt;" in escaped
+    assert "<script>bad</script>" not in escaped
+    assert "Viewer session: UNVERIFIED" in _html()

@@ -136,8 +136,15 @@ async def live_frame_for_verified_account(account_id: str) -> dict[str, Any]:
                 "prerequisite": live.get("prerequisite"),
                 "continuity": live.get("continuity"),
             }
+        verified_session_id = live.get("browser_session_id")
+        if not isinstance(verified_session_id, str) or not verified_session_id:
+            return {
+                "ok": True, "connected": False, "provider": provider,
+                "embed_url": None, "prerequisite": "BROWSER_SESSION_ID_NOT_VERIFIED",
+            }
         viewer = _issue_viewer(
             provider=provider,
+            cinema_session_id=verified_session_id,
             account_hash=azure_local_browser.account_digest(account_id),
             ttl_seconds=AZURE_VIEW_TTL_SECONDS,
         )
@@ -186,8 +193,9 @@ async def live_frame_for_verified_account(account_id: str) -> dict[str, Any]:
     }
 
 
-def _azure_view_page(viewer_token: str) -> HTMLResponse:
+def _azure_view_page(viewer_token: str, *, browser_session_id: str = "") -> HTMLResponse:
     token = html.escape(viewer_token, quote=True)
+    identity = html.escape(browser_session_id, quote=True) if browser_session_id else "UNVERIFIED"
     page = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DSG Shared Browser</title>
@@ -197,10 +205,12 @@ html,body{{margin:0;width:100%;height:100%;background:#111;color:#eee;font-famil
 #bar{{height:44px}}#kbdbar{{height:52px;border-top:1px solid #333}}
 button{{height:32px;min-width:38px;touch-action:manipulation}}
 #url,#kbd{{height:34px;flex:1;box-sizing:border-box;font-size:16px}}
-#viewport{{height:calc(100% - 96px);display:flex;align-items:flex-start;justify-content:center;background:#222;overflow:hidden;touch-action:none}}
+#viewport{{height:calc(100% - 118px);display:flex;align-items:flex-start;justify-content:center;background:#222;overflow:hidden;touch-action:none}}
+#sessionProof{{height:22px;line-height:22px;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#303030;font-size:11px;color:#f5f5f5}}
 #screen{{display:block;max-width:100%;max-height:100%;outline:none;cursor:default;user-select:none;-webkit-user-drag:none;touch-action:none}}
 </style></head><body>
 <div id="bar"><button data-a="back">←</button><button data-a="forward">→</button><button data-a="reload">↻</button><input id="url" autocomplete="off" spellcheck="false" inputmode="url" placeholder="https://"><button id="go">Go</button></div>
+<div id="sessionProof" title="Compare with governed Agent browser.remote.status; matching ID alone is not page proof.">Viewer session: {identity} · Agent match NOT VERIFIED</div>
 <div id="viewport"><img id="screen" tabindex="0" alt="DSG shared browser"></div>
 <div id="kbdbar"><input id="kbd" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="แตะแล้วพิมพ์ข้อความ"><button id="send">Send</button><button data-key="Enter">↵</button><button data-key="Tab">Tab</button><button data-key="Backspace">⌫</button></div>
 <script>
@@ -250,14 +260,14 @@ async def azure_live_view(viewer_token: str) -> HTMLResponse:
     viewer = _load_viewer(viewer_token)
     if not azure_local_browser.is_local_provider(viewer.get("provider")) or not viewer.get("account_hash"):
         raise HTTPException(status_code=404, detail="Azure shared browser viewer is unavailable")
-    return _azure_view_page(viewer_token)
+    return _azure_view_page(viewer_token, browser_session_id=str(viewer.get("cinema_session_id") or ""))
 
 
 @router.get("/remote-browser/browserbase/embed/{viewer_token}", include_in_schema=False)
 async def embed_live_view(viewer_token: str) -> HTMLResponse:
     viewer = _load_viewer(viewer_token)
     if azure_local_browser.is_local_provider(viewer.get("provider")):
-        return _azure_view_page(viewer_token)
+        return _azure_view_page(viewer_token, browser_session_id=str(viewer.get("cinema_session_id") or ""))
 
     live_url = str(viewer.get("live_view_url") or "")
     try:
