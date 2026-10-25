@@ -98,6 +98,16 @@ async def _fetch_issuer_jwks() -> dict[str, Any]:
         return response.json()
 
 
+def _auth0_audience_matches(audience: Any) -> bool:
+    # RFC7519 permits one exact string or an array of exact strings. Auth0
+    # includes /userinfo alongside this API when the client requests openid.
+    if isinstance(audience, str):
+        return audience == AUTH0_AUDIENCE
+    return (isinstance(audience, list) and bool(audience)
+            and all(isinstance(item, str) and bool(item) for item in audience)
+            and AUTH0_AUDIENCE in audience)
+
+
 async def _auth0_subject(bearer: str) -> str:
     token = bearer.removeprefix("Bearer ").strip() if bearer.startswith("Bearer ") else ""
     header, claims, signed, signature = _parse_jwt(token)
@@ -126,7 +136,7 @@ async def _auth0_subject(bearer: str) -> str:
         raise
     except Exception:
         raise _deny("AUTH0_SIGNATURE_NOT_VERIFIED")
-    if (claims.get("iss") != AUTH0_ISSUER or claims.get("aud") != AUTH0_AUDIENCE
+    if (claims.get("iss") != AUTH0_ISSUER or not _auth0_audience_matches(claims.get("aud"))
             or claims.get("azp") != AUTH0_USER_CLIENT):
         raise _deny("AUTH0_ISSUER_AUDIENCE_CLIENT_DENIED", 403)
     if "dsg.use" not in str(claims.get("scope") or "").split():

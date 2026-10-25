@@ -10,6 +10,7 @@ on:
       - "tests/test_cinema_noble_source.py"
       - "requirements-cinema.txt"
       - "market_ready_payload/**"
+      - "api_v1/oauth_cinema_link.py"
   # Intentionally no push-to-main build or ECR publisher:
   # this is a non-production migration candidate with a blocking CVE scan.
 
