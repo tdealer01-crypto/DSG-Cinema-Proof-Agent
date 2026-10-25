@@ -91,6 +91,44 @@ async def test_only_trusted_auth0_rs256_jwks_user_scope(actors):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("audience", [
+    [link.AUTH0_AUDIENCE],
+    [link.AUTH0_AUDIENCE, link.AUTH0_ISSUER + "userinfo"],
+    [link.AUTH0_ISSUER + "userinfo", link.AUTH0_AUDIENCE],
+])
+async def test_trusted_auth0_array_audience_identifies_only_the_same_user(actors, audience):
+    auth, _ = actors
+    assert await link._auth0_subject("Bearer " + auth(aud=audience)) == "google-oauth2|12345678901"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audience", [
+    None, False, 1, {}, [], ["https://evil.example"],
+    [link.AUTH0_AUDIENCE + "/"], [link.AUTH0_AUDIENCE.upper()],
+    [[link.AUTH0_AUDIENCE]], [link.AUTH0_AUDIENCE, None],
+    [link.AUTH0_AUDIENCE, False], [link.AUTH0_AUDIENCE, ""],
+    link.AUTH0_AUDIENCE + " https://evil.example",
+])
+async def test_malformed_or_nonmatching_audience_never_identifies_user(actors, audience):
+    auth, _ = actors
+    with pytest.raises(HTTPException) as error:
+        await link._auth0_subject("Bearer " + auth(aud=audience))
+    assert error.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overrides", [
+    {"iss": "https://evil.example/"}, {"azp": "unapproved-client"},
+    {"scope": "openid profile"}, {"exp": 1}, {"sub": ""},
+])
+async def test_array_audience_preserves_issuer_client_scope_expiry_and_subject_guards(actors, overrides):
+    auth, _ = actors
+    with pytest.raises(HTTPException):
+        await link._auth0_subject("Bearer " + auth(
+            aud=[link.AUTH0_AUDIENCE, link.AUTH0_ISSUER + "userinfo"], **overrides))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("overrides", [
     {"aud": "https://evil.example"},
     {"iss": "https://evil.example/"},
@@ -197,7 +235,8 @@ async def test_old_free_key_must_be_proven_and_never_returned(actors, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_oauth_viewer_uses_only_current_bound_account(actors, monkeypatch):
+@pytest.mark.parametrize("array_audience", [False, True])
+async def test_oauth_viewer_uses_only_current_bound_account(actors, monkeypatch, array_audience):
     from api_v1 import browserbase_live_ui
     auth, site = actors
     account = SimpleNamespace(
@@ -222,7 +261,9 @@ async def test_oauth_viewer_uses_only_current_bound_account(actors, monkeypatch)
     req = Request({"type": "http", "method": "GET",
                    "headers": [(b"origin", b"https://dsg.pics")]})
     result = await link.verified_human_viewer(
-        req, authorization="Bearer " + auth(), x_dsg_site_assertion=site()
+        req, authorization="Bearer " + auth(aud=[link.AUTH0_AUDIENCE, link.AUTH0_ISSUER + "userinfo"]
+                                             if array_audience else link.AUTH0_AUDIENCE),
+        x_dsg_site_assertion=site()
     )
     assert observed == ["acct_dsg_test0001"]
     assert result["account_bound"] is True

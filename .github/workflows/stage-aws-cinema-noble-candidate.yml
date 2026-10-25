@@ -16,6 +16,7 @@ on:
       - "api_v1/browserbase_live_ui.py"
       - "api_v1/remote_mcp.py"
       - "api_v1/remote_relay_security.py"
+      - "api_v1/oauth_cinema_link.py"
       - "web/customer-dashboard/browserbase-live.js"
       - "web/customer-dashboard/index.html"
       # The served /dashboard is reconstructed from verified Market-Ready chunks.
