@@ -193,7 +193,7 @@ jobs:
           fi
           # The trusted ECR API result, not a static manifest claim, is the
           # release authority. Parser failures and HIGH findings fail closed.
-          printf '%s\n' "$FINDINGS" | python3 scripts/verify_cinema_ecr_scan.py
+          printf '%s\n' "$FINDINGS" | python3 scripts/verify_cinema_ecr_scan.py --digest "$DIGEST" --repository "$ECR_REPOSITORY"
       - name: Cost-safe deployment gate
         run: |
           echo "AWS_CINEMA_RUNTIME_DEPLOY=BLOCKED_BY_COST_GATE"
