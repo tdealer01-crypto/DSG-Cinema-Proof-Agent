@@ -214,6 +214,6 @@ jobs:
             sleep 5
           done
           [[ "$STATUS" == "COMPLETE" ]] || { echo "CINEMA_NOBLE_ECR=BLOCK scan_timeout"; exit 55; }
-          printf '%s\n' "$RAW" | python3 scripts/verify_cinema_ecr_scan.py
+          printf '%s\n' "$RAW" | python3 scripts/verify_cinema_ecr_scan.py --digest "$DIGEST" --repository "$ECR_REPOSITORY"
           echo "CINEMA_NOBLE_ECR_ZERO_HIGH=PASS source_sha=$GITHUB_SHA digest=$DIGEST"
           echo "CINEMA_NOBLE_RUNTIME_DEPLOY=NOT_EXECUTED"
