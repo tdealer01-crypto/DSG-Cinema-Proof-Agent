@@ -6,14 +6,24 @@ Only a completed scan with zero reported CRITICAL/HIGH is eligible for later gat
 """
 from __future__ import annotations
 
+import argparse
 import json
+import re
 import sys
 from typing import Any
 
 
-def decide(payload: Any) -> tuple[bool, str, dict[str, int]]:
+def decide(payload: Any, *, digest: str, repository: str) -> tuple[bool, str, dict[str, int]]:
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not repository:
+        return False, "INVALID_EXPECTED_IMAGE_ID", {}
     if not isinstance(payload, dict):
         return False, "INVALID_SCAN_RESPONSE", {}
+    # An ECR response must attest this *same* digest and repository, rather
+    # than an unrelated successful scan or a stale source-bound image.
+    if (payload.get("repositoryName") != repository
+            or not isinstance(payload.get("imageId"), dict)
+            or payload["imageId"].get("imageDigest") != digest):
+        return False, "IMAGE_IDENTITY_MISMATCH", {}
     status = payload.get("imageScanStatus")
     if not isinstance(status, dict) or status.get("status") != "COMPLETE":
         return False, "SCAN_NOT_COMPLETE", {}
@@ -37,12 +47,16 @@ def decide(payload: Any) -> tuple[bool, str, dict[str, int]]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--digest", required=True)
+    parser.add_argument("--repository", required=True)
+    args = parser.parse_args()
     try:
         data = json.load(sys.stdin)
     except (ValueError, UnicodeError):
         print("READINESS=BLOCKED reason=INVALID_SCAN_JSON", flush=True)
         return 25
-    allowed, reason, counts = decide(data)
+    allowed, reason, counts = decide(data, digest=args.digest, repository=args.repository)
     if counts:
         print(
             "AWS_CINEMA_ECR_SCAN status=COMPLETE"
