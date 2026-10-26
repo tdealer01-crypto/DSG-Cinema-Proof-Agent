@@ -105,6 +105,16 @@ class NobleCandidateSourceTests(unittest.TestCase):
         self.assertIn("IMMUTABLE_TAG_ALREADY_EXISTS", stage)
         self.assertIn("imageDigest=\"$DIGEST\"", stage)
         self.assertIn("scripts/verify_cinema_ecr_scan.py", stage)
+        self.assertIn(
+            'python3 scripts/verify_cinema_ecr_scan.py --digest "$DIGEST" --repository "$ECR_REPOSITORY"',
+            stage,
+        )
+        # Never regress to a no-argument invocation after the verifier
+        # requires exact source-bound repository and digest.
+        self.assertNotIn(
+            'python3 scripts/verify_cinema_ecr_scan.py\\n',
+            stage,
+        )
         self.assertIn("CINEMA_NOBLE_RUNTIME_DEPLOY=NOT_EXECUTED", stage)
         self.assertNotIn("dpkg-query -W -f=", stage)
         self.assertIn('if dpkg -s "$pkg"', stage)
