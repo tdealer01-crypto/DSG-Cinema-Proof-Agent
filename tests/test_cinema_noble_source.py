@@ -112,7 +112,7 @@ class NobleCandidateSourceTests(unittest.TestCase):
         # Never regress to a no-argument invocation after the verifier
         # requires exact source-bound repository and digest.
         self.assertNotIn(
-            'python3 scripts/verify_cinema_ecr_scan.py\\n',
+            'python3 scripts/verify_cinema_ecr_scan.py\n',
             stage,
         )
         self.assertIn("CINEMA_NOBLE_RUNTIME_DEPLOY=NOT_EXECUTED", stage)
