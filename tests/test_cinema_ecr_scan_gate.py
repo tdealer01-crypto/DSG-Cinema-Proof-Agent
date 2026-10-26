@@ -10,10 +10,14 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify_cinema_ecr_scan.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "build-aws-cinema.yml"
+DIGEST = "sha256:" + "a" * 64
+REPOSITORY = "dsg-cinema-prod"
 
 
 def response(status="COMPLETE", counts=None):
     return {
+        "repositoryName": REPOSITORY,
+        "imageId": {"imageDigest": DIGEST},
         "imageScanStatus": {"status": status},
         "imageScanFindings": {
             "findingSeverityCounts": {} if counts is None else counts,
@@ -26,7 +30,8 @@ class EcrScanGateTests(unittest.TestCase):
     def run_gate(self, payload):
         raw = payload if isinstance(payload, str) else json.dumps(payload)
         return subprocess.run(
-            [sys.executable, str(SCRIPT)],
+            [sys.executable, str(SCRIPT), "--digest", DIGEST,
+             "--repository", REPOSITORY],
             input=raw,
             capture_output=True,
             text=True,
@@ -77,10 +82,30 @@ class EcrScanGateTests(unittest.TestCase):
                     self.run_gate(response(counts={"HIGH": count})).returncode, 0
                 )
 
+    def test_other_image_digest_cannot_reuse_zero_finding_scan(self):
+        payload = response()
+        payload["imageId"]["imageDigest"] = "sha256:" + "b" * 64
+        result = self.run_gate(payload)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("IMAGE_IDENTITY_MISMATCH", result.stdout)
+
+    def test_other_repository_cannot_reuse_zero_finding_scan(self):
+        payload = response()
+        payload["repositoryName"] = "different-cinema-repository"
+        result = self.run_gate(payload)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("IMAGE_IDENTITY_MISMATCH", result.stdout)
+
+    def test_missing_image_identity_fails_closed(self):
+        payload = response()
+        payload.pop("imageId")
+        self.assertNotEqual(self.run_gate(payload).returncode, 0)
+
     def test_workflow_applies_gate_after_real_scan_before_readiness(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("scripts/verify_cinema_ecr_scan.py", workflow)
         self.assertIn('printf \'%s\\n\' "$FINDINGS" | python3 scripts/verify_cinema_ecr_scan.py', workflow)
+        self.assertIn('--digest "$DIGEST" --repository "$ECR_REPOSITORY"', workflow)
         self.assertLess(
             workflow.index('aws ecr describe-image-scan-findings'),
             workflow.index('printf \'%s\\n\' "$FINDINGS" | python3'),
