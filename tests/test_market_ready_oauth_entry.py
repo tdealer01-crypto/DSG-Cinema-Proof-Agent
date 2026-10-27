@@ -108,6 +108,7 @@ def test_existing_user_has_visible_noncreating_path_and_explicit_new_account_cho
     original = _verified_bytes("index.html", prefix, sha)
     safe = _add_existing_workspace_recovery(_add_scoped_navigation(_add_oauth_entry(original)))
     assert safe.count(b'id="returningDsgWorkroom"') == 1
+    assert safe.count(b'id="openExistingCinemaKey"') == 1
     assert safe.count(b'id="confirmSeparateCinemaWorkspace"') == 1
     assert safe.count(b'id="activateWorkspace"') == 1
     assert b"Open existing DSG ONE login" in safe
@@ -125,6 +126,8 @@ def test_duplicate_workspace_creation_guard_is_fail_closed_and_retry_is_stable()
     assert guarded != original
     assert b'if(!consent||!consent.checked)' in guarded
     assert b'confirmSeparateCinemaWorkspace' in guarded
+    assert b'$("openExistingCinemaKey").onclick=' in guarded
+    assert b'showView("settings");$("apiKeyInput").focus()' in guarded
     assert b'activation_id:activationAttemptId()' in guarded
     assert b'activation_id:uuid()' not in guarded
     assert b'function activationAttemptId()' in guarded
