@@ -117,6 +117,91 @@ def _add_scope_styles(base: bytes) -> bytes:
     return base + _SCOPE_STYLES
 
 
+
+# Existing-user recovery is a *navigation/consent* guard. An email or team name
+# is never treated as account ownership; no Cinema credentials or Auth0 tokens
+# cross accounts, browser tabs or URL query strings.
+_RECOVERY_MODAL_OLD = (
+    b'<span class="eyebrow">START FREE</span><h2 id="workspaceModalTitle">Create your DSG workspace</h2>'
+    b'<p>One step. DSG activates the free evaluation and stores the credential only in this browser tab.</p>'
+)
+_RECOVERY_MODAL_NEW = (
+    b'<span class="eyebrow">EXISTING WORKSPACE</span>'
+    b'<h2 id="workspaceModalTitle">Continue with your existing workspace</h2>'
+    b'<p>Do not create another Cinema Free account just because this tab cannot find its session.</p>'
+    b'<a id="returningDsgWorkroom" class="primary-btn" '
+    b'href="https://dsg.pics/dsg/workroom?tool=browser#live-controls" '
+    b'target="_blank" rel="noopener noreferrer">Open existing DSG ONE login</a>'
+    b'<p class="helper">DSG ONE OAuth and Cinema Free are separate account sessions until verified linking.'
+    b' For an existing Cinema account, close this dialog and use Settings > Connect existing workspace'
+    b' with the original API key. The email field does not recover a Cinema account.</p>'
+    b'<h3 id="newCinemaWorkspaceHeading">Create a separate new Cinema Free workspace</h3>'
+)
+_RECOVERY_CONSENT_ANCHOR = b'<button id="activateWorkspace" class="primary-btn full">Create workspace</button>'
+_RECOVERY_CONSENT_HTML = (
+    b'<label class="checkbox-row"><input id="confirmSeparateCinemaWorkspace" type="checkbox" />'
+    b'I want a new, separate Cinema Free workspace.</label>\n      '
+    b'<button id="activateWorkspace" class="primary-btn full">Create new Cinema workspace</button>'
+)
+
+
+def _add_existing_workspace_recovery(base: bytes) -> bytes:
+    if base.count(_RECOVERY_MODAL_OLD) != 1 or base.count(_RECOVERY_CONSENT_ANCHOR) != 1:
+        raise ReconstructionError("Market-Ready workspace modal contract changed")
+    return base.replace(_RECOVERY_MODAL_OLD, _RECOVERY_MODAL_NEW, 1).replace(
+        _RECOVERY_CONSENT_ANCHOR, _RECOVERY_CONSENT_HTML, 1
+    )
+
+
+# The original JS bundle is checksum-verified first. This guarded patch
+# preserves all API/authority paths while preventing casual duplicate
+# activations and reusing one attempt ID for retry in the same browser tab.
+_ACTIVATION_UUID_SOURCE = b'function uuid(){return crypto.randomUUID ? crypto.randomUUID() :'
+_ACTIVATION_CONSENT_SOURCE = b'async function activateWorkspace(){const name='
+_ACTIVATION_ID_SOURCE = b'activation_id:uuid(),display_name:name'
+_ACTIVATION_SUCCESS_SOURCE = b'key=body.api_key;write(KEY_SLOT,key);setWorkspaceName(name);'
+
+
+def _guard_workspace_activation(base: bytes) -> bytes:
+    for needle in (
+        _ACTIVATION_UUID_SOURCE,
+        _ACTIVATION_CONSENT_SOURCE,
+        _ACTIVATION_ID_SOURCE,
+        _ACTIVATION_SUCCESS_SOURCE,
+    ):
+        if base.count(needle) != 1:
+            raise ReconstructionError("Market-Ready activation script contract changed")
+    guarded = base.replace(
+        _ACTIVATION_CONSENT_SOURCE,
+        b'async function activateWorkspace(){'
+        b'const consent=$("confirmSeparateCinemaWorkspace");'
+        b'if(!consent||!consent.checked){'
+        b'$("activationError").textContent='
+        b'"Use your existing workspace above, or explicitly confirm creation of a separate Cinema account.";'
+        b'return;}const name=',
+        1,
+    )
+    guarded = guarded.replace(
+        _ACTIVATION_UUID_SOURCE,
+        b'const ACTIVATION_ATTEMPT_SLOT="dsg-one-pending-activation-id";'
+        b'function activationAttemptId(){let id=read(ACTIVATION_ATTEMPT_SLOT);'
+        b'if(!id){id=uuid();write(ACTIVATION_ATTEMPT_SLOT,id)}return id}\n'
+        + _ACTIVATION_UUID_SOURCE,
+        1,
+    )
+    guarded = guarded.replace(
+        _ACTIVATION_ID_SOURCE,
+        b'activation_id:activationAttemptId(),display_name:name',
+        1,
+    )
+    guarded = guarded.replace(
+        _ACTIVATION_SUCCESS_SOURCE,
+        b'remove(ACTIVATION_ATTEMPT_SLOT);' + _ACTIVATION_SUCCESS_SOURCE,
+        1,
+    )
+    return guarded
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
@@ -135,8 +220,9 @@ def reconstruct() -> Path:
         verified = _verified_bytes(name, prefix, expected)
         # Apply a deterministic navigation-only UX patch after verifying the
         # immutable upstream HTML checksum, never before.
-        rendered = (_add_scoped_navigation(_add_oauth_entry(verified)) if name == "index.html"
-                    else _add_scope_styles(verified) if name == "styles.css" else verified)
+        rendered = (_add_existing_workspace_recovery(_add_scoped_navigation(_add_oauth_entry(verified))) if name == "index.html"
+                    else _add_scope_styles(verified) if name == "styles.css"
+                    else _guard_workspace_activation(verified) if name == "app.js" else verified)
         _atomic_write(OUT / name, rendered)
 
     if hashlib.sha256(CONFIG).hexdigest() != CONFIG_SHA256:
