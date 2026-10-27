@@ -132,6 +132,8 @@ _RECOVERY_MODAL_NEW = (
     b'<a id="returningDsgWorkroom" class="primary-btn" '
     b'href="https://dsg.pics/dsg/workroom?tool=browser#live-controls" '
     b'target="_blank" rel="noopener noreferrer">Open existing DSG ONE login</a>'
+    b'<button id="openExistingCinemaKey" type="button" class="secondary-btn">'
+    b'Connect existing Cinema workspace with key</button>'
     b'<p class="helper">DSG ONE OAuth and Cinema Free are separate account sessions until verified linking.'
     b' For an existing Cinema account, close this dialog and use Settings > Connect existing workspace'
     b' with the original API key. The email field does not recover a Cinema account.</p>'
@@ -159,6 +161,10 @@ def _add_existing_workspace_recovery(base: bytes) -> bytes:
 _ACTIVATION_UUID_SOURCE = b'function uuid(){return crypto.randomUUID ? crypto.randomUUID() :'
 _ACTIVATION_CONSENT_SOURCE = b'async function activateWorkspace(){const name='
 _ACTIVATION_ID_SOURCE = b'activation_id:uuid(),display_name:name'
+_EXISTING_KEY_HANDLER_SOURCE = (
+    b'$("activateWorkspace").onclick=activateWorkspace;'
+    b'$("closeWorkspaceModal").onclick=closeActivation;'
+)
 _ACTIVATION_SUCCESS_SOURCE = b'key=body.api_key;write(KEY_SLOT,key);setWorkspaceName(name);'
 
 
@@ -168,6 +174,7 @@ def _guard_workspace_activation(base: bytes) -> bytes:
         _ACTIVATION_CONSENT_SOURCE,
         _ACTIVATION_ID_SOURCE,
         _ACTIVATION_SUCCESS_SOURCE,
+        _EXISTING_KEY_HANDLER_SOURCE,
     ):
         if base.count(needle) != 1:
             raise ReconstructionError("Market-Ready activation script contract changed")
@@ -197,6 +204,14 @@ def _guard_workspace_activation(base: bytes) -> bytes:
     guarded = guarded.replace(
         _ACTIVATION_SUCCESS_SOURCE,
         b'remove(ACTIVATION_ATTEMPT_SLOT);' + _ACTIVATION_SUCCESS_SOURCE,
+        1,
+    )
+    guarded = guarded.replace(
+        _EXISTING_KEY_HANDLER_SOURCE,
+        b'$("activateWorkspace").onclick=activateWorkspace;'
+        b'$("openExistingCinemaKey").onclick=()=>{closeActivation();'
+        b'showView("settings");$("apiKeyInput").focus()};'
+        b'$("closeWorkspaceModal").onclick=closeActivation;',
         1,
     )
     return guarded
