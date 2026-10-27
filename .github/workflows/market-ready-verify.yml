@@ -51,16 +51,17 @@ jobs:
           from market_ready_payload.reconstruct import (
               FILES, _verified_bytes, _add_oauth_entry,
               _add_scoped_navigation, _add_scope_styles,
+              _add_existing_workspace_recovery, _guard_workspace_activation,
           )
           for name in ("index.html", "styles.css", "app.js"):
               prefix, expected = FILES[name]
               original = _verified_bytes(name, prefix, expected)
               if name == "index.html":
-                  rendered = _add_scoped_navigation(_add_oauth_entry(original))
+                  rendered = _add_existing_workspace_recovery(_add_scoped_navigation(_add_oauth_entry(original)))
               elif name == "styles.css":
                   rendered = _add_scope_styles(original)
               else:
-                  rendered = original
+                  rendered = _guard_workspace_activation(original)
               assert Path("market_ready_ui", name).read_bytes() == rendered, name
           print("MARKET_READY_VERIFIED_BASELINE_AND_SCOPED_UI=PASS")
           PY
