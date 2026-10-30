@@ -24,6 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException
 
 from .canonical import utc_now
+from . import shared_input_broker
 
 PROVIDER = "azure_container_apps"  # Legacy viewer label.
 BACKEND_VALUE = "azure_local"  # Persisted internal binding; keep unchanged.
@@ -398,7 +399,7 @@ async def snapshot(account_hash: str) -> bytes:
         raise HTTPException(status_code=503, detail="Azure shared browser snapshot failed") from exc
 
 
-async def user_action(account_hash: str, action: dict[str, Any]) -> dict[str, Any]:
+async def _user_action_unlocked(account_hash: str, action: dict[str, Any]) -> dict[str, Any]:
     """Apply direct user input to the account browser. No plan authority is granted."""
 
     page = await _page_for_hash(account_hash)
@@ -441,6 +442,12 @@ async def user_action(account_hash: str, action: dict[str, Any]) -> dict[str, An
         "title": await page.title(),
         "browser_session_id": metadata.get("browser_session_id"),
     }
+
+
+async def user_action(account_hash: str, action: dict[str, Any]) -> dict[str, Any]:
+    """Use the existing viewer input path, with automatic human priority."""
+    async with shared_input_broker.human_input(account_hash):
+        return await _user_action_unlocked(account_hash, action)
 
 
 __all__ = [
