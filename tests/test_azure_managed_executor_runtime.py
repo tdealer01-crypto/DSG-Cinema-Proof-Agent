@@ -240,6 +240,13 @@ async def test_azure_action_validates_capability_serializes_mutation_and_saves(
     monkeypatch.setattr(azure_managed_executor, "ensure_browser_session", ensure)
     monkeypatch.setattr(azure_managed_executor, "_perform_action", perform)
     monkeypatch.setattr(azure_local_browser, "save_session", save)
+    # The production executor receives this account binding from a signed
+    # Cinema connect; this unit test stubs that independently verified fact.
+    monkeypatch.setattr(
+        browserbase_executor, "_read_binding",
+        lambda _sid: {"provider": azure_local_browser.BACKEND_VALUE,
+                      "account_hash": azure_local_browser.account_digest("acct-test")},
+    )
 
     base = {
         "version": "dsg.remote-action.v1",
