@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from fastapi import Header, HTTPException
 
-from . import azure_local_browser, browserbase_executor
+from . import azure_local_browser, browserbase_executor, shared_input_broker
 
 allocate_capability = browserbase_executor.allocate_capability
 finalize_capability = browserbase_executor.finalize_capability
@@ -200,11 +200,22 @@ async def azure_action(capability_token: str, payload: dict[str, Any]) -> dict[s
     kind = str((payload.get("action") or {}).get("kind") or "")
     if kind in browserbase_executor._READ_ONLY_ACTIONS:
         status, body = await _perform_action(cinema_session_id, payload)
+        await azure_local_browser.save_session(cinema_session_id)
     else:
-        lock = browserbase_executor._MUTATION_LOCKS.setdefault(cinema_session_id, asyncio.Lock())
-        async with lock:
-            status, body = await _perform_action(cinema_session_id, payload)
-    await azure_local_browser.save_session(cinema_session_id)
+        # Viewer and agent share the same account-specific Playwright page.
+        # Session ID alone is not a common lock key; resolve its trusted binding.
+        binding = browserbase_executor._read_binding(cinema_session_id)
+        if not isinstance(binding, dict) or binding.get("provider") != azure_local_browser.BACKEND_VALUE:
+            raise HTTPException(status_code=409, detail={"error": "SHARED_BROWSER_ACCOUNT_BINDING_INVALID"})
+        account_hash = binding.get("account_hash")
+        async with shared_input_broker.agent_input(account_hash):
+            # Validate again after a bounded human handoff: a permit can expire
+            # while waiting. This adds no approval or user prompt.
+            browserbase_executor._validate_envelope(capability, payload)
+            lock = browserbase_executor._MUTATION_LOCKS.setdefault(cinema_session_id, asyncio.Lock())
+            async with lock:
+                status, body = await _perform_action(cinema_session_id, payload)
+                await azure_local_browser.save_session(cinema_session_id)
     body["remote_status"] = status
     body["provider"] = azure_local_browser.public_provider()
     return body
